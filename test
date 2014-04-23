@@ -1,0 +1,31 @@
+browser/components/preferences/in-content/advanced.xul:#ifdef MOZ_DATA_REPORTING
+browser/components/preferences/in-content/advanced.xul:#ifdef MOZ_DATA_REPORTING
+browser/components/preferences/advanced.xul:#ifdef MOZ_DATA_REPORTING
+browser/components/preferences/advanced.xul:#ifdef MOZ_DATA_REPORTING
+browser/installer/package-manifest.in:#ifdef MOZ_DATA_REPORTING
+browser/base/content/browser.js:#ifdef MOZ_DATA_REPORTING
+browser/base/content/browser.js:#ifdef MOZ_DATA_REPORTING
+build/docs/mozinfo.rst:   Whether data reporting (MOZ_DATA_REPORTING) is enabled for this build.
+configure:  MOZ_DATA_REPORTING=0
+configure:    (''' MOZ_DATA_REPORTING ''', ' 1 ')
+configure:#define MOZ_DATA_REPORTING 1
+configure:    (''' MOZ_DATA_REPORTING ''', r''' $MOZ_DATA_REPORTING ''')
+configure.in:dnl policy alert), set MOZ_DATA_REPORTING.
+configure.in:  MOZ_DATA_REPORTING=0
+configure.in:  AC_DEFINE(MOZ_DATA_REPORTING)
+configure.in:  AC_SUBST(MOZ_DATA_REPORTING)
+configure.in~:dnl policy alert), set MOZ_DATA_REPORTING.
+configure.in~:  MOZ_DATA_REPORTING=1
+configure.in~:  AC_DEFINE(MOZ_DATA_REPORTING)
+configure.in~:  AC_SUBST(MOZ_DATA_REPORTING)
+mobile/android/confvars.sh~:MOZ_DATA_REPORTING=1
+mobile/android/confvars.sh:MOZ_DATA_REPORTING=1
+mobile/android/base/BrowserApp.java:                if (AppConstants.MOZ_DATA_REPORTING) {
+mobile/android/base/AppConstants.java.in:    public static final boolean MOZ_DATA_REPORTING =
+mobile/android/base/AppConstants.java.in:#ifdef MOZ_DATA_REPORTING
+mobile/android/base/preferences/GeckoPreferences.java:                    if (!AppConstants.MOZ_DATA_REPORTING) {
+modules/libpref/src/Makefile.in:ifdef MOZ_DATA_REPORTING
+Binary file python/mozbuild/mozbuild/mozinfo.pyc matches
+python/mozbuild/mozbuild/mozinfo.py:    d['datareporting'] = bool(substs.get('MOZ_DATA_REPORTING'))
+services/moz.build:    # MOZ_SERVICES_HEALTHREPORT and therefore MOZ_DATA_REPORTING are
+services/moz.build:    if CONFIG['MOZ_DATA_REPORTING']:

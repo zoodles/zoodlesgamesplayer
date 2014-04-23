@@ -1,0 +1,7 @@
+android/branding/aurora/configure.sh:ANDROID_PACKAGE_NAME=org.mozilla.fennec_aurora
+android/defs.mk:else ifeq (org.mozilla.fennec_aurora,$(ANDROID_PACKAGE_NAME))
+android/defs.mk:MOZ_ANDROID_SHARED_ACCOUNT_TYPE = org.mozilla.fennec_sync
+android/defs.mk:MOZ_ANDROID_SHARED_FXACCOUNT_TYPE = org.mozilla.fennec_account
+android/defs.mk:MOZ_ANDROID_SHARED_ACCOUNT_TYPE = org.mozilla.fennec_sync
+android/defs.mk:MOZ_ANDROID_SHARED_FXACCOUNT_TYPE = org.mozilla.fennec_account
+android/base/Makefile.in:# Like generated/org/mozilla/fennec_$USERID.
