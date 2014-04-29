@@ -19,18 +19,64 @@
   <title>&aboutPage.title;</title>
   <link rel="stylesheet" href="chrome://browser/skin/aboutPage.css" type="text/css"/>
   <link rel="icon" type="image/png" sizes="64x64" href="chrome://branding/content/favicon64.png" />
+  <script type="text/javascript;version=1.8" src="chrome://browser/content/jquery-2.1.0.min.js"></script>
+  <style>
+  .container .content {
+    display: none;
+    margin: 0;
+  }
+  #install-flash{
+    background-color:#E8FBFF;
+    padding:15px;
+  }
+  .white_bg{
+    background-color:#FFFFFF;
+    margin:0;
+  }
+  body{
+    padding:0 !important;
+  }
+  ul{
+    margin:0 !important;
+  }
+
+</style>
 </head>
 
 <body dir="&locale.dir;">
-    <ul id="aboutLinks">
+    <div class="white_bg"><img src="chrome://branding/content/logo.png" width="400"/></div>
+    <ul id="aboutLinks" class="container">
+      <li><a href="#"><span class="header">&aboutPage.about.zoodles;</span></a></li>
+      <div class="content white_bg" >
+         <div style="padding:10px;">
+        "Zoodles Games Player" maximizes your child's Zoodles experience in Kid Mode."Zoodles Games Player" is an app that supports Adobe Flash Player running on newer Android Systems. With "Zoodles Games Player" installed, you have access to thousands of Zoodles Flash learning games for free!
+	</div>
+        <div id="install-flash" style="display: table-row;">
+                <div style="display: table-cell; vertical-align: middle; padding:10px; text-align:center;">
+			<a href="http://www.zoodles.com/flash-install/index.html" style="text-decoration:underline; color:#2A9BCE">DOWNLOAD ADOBE FLASH PLAYER NOW TO FINISH INSTALLATION</a>
+                </div>
+	</div>
+      </div>
+
+
       <li><a href="http://www.mozilla.org/en-US/legal/privacy/firefox.html">&aboutPage.privacyPolicy.label;</a></li>
       <li><a href="about:rights">&aboutPage.rights.label;</a></li>
       <li><a href="http://www.mozilla.org/credits/">&aboutPage.credits.label;</a></li>
       <li><a href="about:license">&aboutPage.license.label;</a></li>
       <div class="bottom-border"></div>
     </ul>
+    <script>
+	$(".header").click(function () {
+	    $header = $(this);
+	    //getting the next element
+	    $content = $(".content");
+	    //open up the content needed - toggle the slide- if visible, slide up, if not slidedown.
+	    $content.slideToggle(500, function () {
 
+	    });
 
+	});
+    </script>
 
     <script type="application/javascript;version=1.8"><![CDATA[
       let Ci = Components.interfaces, Cc = Components.classes, Cu = Components.utils, Cr = Components.results;

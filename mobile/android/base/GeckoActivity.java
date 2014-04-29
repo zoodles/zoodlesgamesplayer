@@ -11,6 +11,8 @@ import android.content.Intent;
 import android.support.v4.app.FragmentActivity;
 import android.os.Build;
 import android.app.Activity;
+import org.mozilla.gecko.GeckoApp;
+
 import java.lang.reflect.Method;
 import java.util.List;
 
@@ -108,7 +110,11 @@ public class GeckoActivity extends FragmentActivity implements GeckoActivityStat
 	@Override
 	public void onWindowFocusChanged(boolean hasFocus) {
 		if(isKidModeRunning()) {
-			closeStatusBar(this);
+			Intent intent = getIntent();
+			String action = intent.getAction();
+			if (intent == null || !GeckoApp.ACTION_OPEN_NORMAL_PAGE.equalsIgnoreCase(action)) {
+				closeStatusBar(this);
+			}
 		}
 	}
 

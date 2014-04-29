@@ -8,6 +8,7 @@ chrome.jar:
 % content browser %content/ contentaccessible=yes
 
 * content/about.xhtml                  (content/about.xhtml)
+  content/jquery-2.1.0.min.js          (content/jquery-2.1.0.min.js)
   content/config.xhtml                 (content/config.xhtml)
   content/config.js                    (content/config.js)
   content/aboutAddons.xhtml            (content/aboutAddons.xhtml)

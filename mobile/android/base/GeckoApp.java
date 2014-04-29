@@ -136,6 +136,7 @@ public abstract class GeckoApp
 		Tabs.OnTabsChangedListener {
 	private static final String LOGTAG = "GeckoApp";
 	private static final int ONE_DAY_MS = 1000 * 60 * 60 * 24;
+	public static final String ACTION_OPEN_NORMAL_PAGE = "com.zoodles.action.VIEW_WEBSITE_FROM_ZOODLES";
 	private View z_back_bar;
 
 	private static enum StartupAction {
@@ -1466,7 +1467,7 @@ public abstract class GeckoApp
 	 *
 	 * @param url External URL to load, or null to load the default URL
 	 */
-	protected void loadStartupTab(String url) {
+	protected void loadStartupTab(String url, boolean strictMode) {
 		if (url == null) {
 			if (!mShouldRestore) {
 				z_back_bar.setVisibility(View.GONE);
@@ -1475,14 +1476,21 @@ public abstract class GeckoApp
 				Tabs.getInstance().loadUrl(AboutPages.UPDATER, Tabs.LOADURL_NEW_TAB | Tabs.LOADURL_USER_ENTERED | Tabs.LOADURL_EXTERNAL);
 			}
 		} else {
-			z_back_bar.setVisibility(View.VISIBLE);
+			if(strictMode) {
+				z_back_bar.setVisibility(View.VISIBLE);
+			}else{
+				z_back_bar.setVisibility(View.GONE);
+			}
 			// If given an external URL, load it
 			int flags = Tabs.LOADURL_NEW_TAB | Tabs.LOADURL_USER_ENTERED | Tabs.LOADURL_EXTERNAL;
 			Tabs.getInstance().loadUrl(url, flags);
 		}
 	}
+	protected void loadStartupTab(String url) {
+		loadStartupTab(url, true);
+	}
 
-	private void initialize() {
+		private void initialize() {
 		mInitialized = true;
 
 		Intent intent = getIntent();
@@ -1542,7 +1550,11 @@ public abstract class GeckoApp
 		// External URLs should always be loaded regardless of whether Gecko is
 		// already running.
 		if (isExternalURL) {
-			loadStartupTab(passedUri);
+			if(ACTION_OPEN_NORMAL_PAGE.equalsIgnoreCase(action)) {
+				loadStartupTab(passedUri, false);
+			}else{
+				loadStartupTab(passedUri, true);
+			}
 		} else if (!mIsRestoringActivity) {
 			loadStartupTab(null);
 		}

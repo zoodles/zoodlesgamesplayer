@@ -55,7 +55,7 @@ MOZ_FOLD_LIBS=1
 # Enable navigator.mozPay
 MOZ_PAY=1
 
-# Enable UI for healthreporter, KidBrowser no more report
+# Enable UI for healthreporter, ZoodlesGamesPlayer no more report
 MOZ_SERVICES_HEALTHREPORT=0
 
 # Enable FirefoxAccounts
