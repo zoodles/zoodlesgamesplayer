@@ -4,8 +4,8 @@
 <!-- rights.locale-direction instead of the usual local.dir entity, so RTL can skip translating page. -->
 <!ENTITY rights.locale-direction "ltr">
 <!ENTITY rights.pagetitle       "about:rights">
-<!ENTITY rights.intro-header    "About Your Rights">
-<!ENTITY rights.intro "&brandFullName; is free and open source software, built by a community of thousands from all over the world. There are a few things you should know:">
+<!ENTITY rights.intro-header    "About Zoodles Games Player">
+<!ENTITY rights.intro "Zoodles Games Player is free and open source software. There are a few things you should know:">
 
 <!-- Note on pointa / pointb / pointc form:
      These points each have an embedded link in the HTML, so each point is

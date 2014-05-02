@@ -19,6 +19,10 @@
 <body class="aboutPageWideContainer">
 <h1>about:buildconfig</h1>
 #ifdef BUILD_HOSTNAME
+<h2>Source</h2>
+<p>You can get source code at <a href="https://github.com/zoodles/zoodlesgamesplayer">https://github.com/zoodles/zoodlesgamesplayer</a></p>
+<h2>Build Instruction</h2>
+<p>Please follow this link to build <a href="https://wiki.mozilla.org/Mobile/Fennec/Android">https://wiki.mozilla.org/Mobile/Fennec/Android</a></p>
 <h2>Build Machine</h2>
 <p>@BUILD_HOSTNAME@</p>
 #endif
@@ -28,8 +32,6 @@
 <p>Built from <a href="@SOURCE_REPO@/rev/@SOURCE_CHANGESET@">@SOURCE_REPO@/rev/@SOURCE_CHANGESET@</a></p>
 #endif
 #elifdef SOURCE_GIT_COMMIT
-<h2>Source</h2>
-<p>Built from git commit <a href="#">@SOURCE_GIT_COMMIT@</a></p>
 #endif
 <h2>Build platform</h2>
 <table>

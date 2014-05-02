@@ -16,7 +16,10 @@
 <!ENTITY aboutPage.support.label                "Support">
 <!ENTITY aboutPage.privacyPolicy.label          "Privacy Policy">
 <!ENTITY aboutPage.rights.label                 "Know Your Rights">
-<!ENTITY aboutPage.about.zoodles                "About &quot;Zoodles Games Player&quot;">
+<!ENTITY aboutPage.about.zoodles_download_now   "DOWNLOAD ADOBE FLASH PLAYER NOW TO FINISH INSTALLATION">
 <!ENTITY aboutPage.relNotes.label               "Release Notes">
 <!ENTITY aboutPage.credits.label                "Credits">
 <!ENTITY aboutPage.license.label                "Licensing Information">
+<!ENTITY aboutPage.terms	                "Terms of Service">
+<!ENTITY aboutPage.about.zoodles                "About &quot;Zoodles Games Player&quot;">
+<!ENTITY aboutPage.about.zoodles_description    "Zoodles Games Player&quot; maximizes your child's Zoodles experience in Kid Mode.&quot;Zoodles Games Player&quot; is an app that supports Adobe Flash Player running on newer Android Systems. With &quot;Zoodles Games Player&quot; installed, you have access to thousands of Zoodles Flash learning games for free!">

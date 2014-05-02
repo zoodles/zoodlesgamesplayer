@@ -101,6 +101,8 @@ public class GeckoApplication extends Application {
         HomeConfigInvalidator.getInstance().init(getApplicationContext());
 	    //Auto play flash
 	    org.mozilla.gecko.PrefsHelper.setPref("plugin.enable", "1");
+	    //Auto play flash
+	    org.mozilla.gecko.PrefsHelper.setPref("intl.locale.matchOS", true);
 
 	    super.onCreate();
     }

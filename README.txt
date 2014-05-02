@@ -26,3 +26,8 @@ testing, may be buggy. Firefox nightlies, for example, can be found at:
             - or -
     http://nightly.mozilla.org/
 
+
+Building and Packaging
+./mach build && pushd obj-arm-linux-androideabi/mobile/android/locales && for loc in $(cat ../../../../mobile/android/locales/maemo-locales); do LOCALE_MERGEDIR=$PWD/merge-$loc make merge-$loc LOCALE_MERGEDIR=$PWD/merge-$loc; make LOCALE_MERGEDIR=$PWD/merge-$loc chrome-$loc LOCALE_MERGEDIR=$PWD/merge-$loc; done && popd && ./mach package
+
+
