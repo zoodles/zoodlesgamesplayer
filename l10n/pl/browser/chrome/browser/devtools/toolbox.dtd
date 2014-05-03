@@ -1,0 +1,83 @@
+<!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+
+<!ENTITY closeCmd.key "W">
+
+<!ENTITY toolboxCloseButton.tooltip "Zamknij narzędzia dla programistów">
+<!ENTITY toolboxOptionsButton.key      "O">
+<!ENTITY toolboxNextTool.key "]">
+<!ENTITY toolboxPreviousTool.key "[">
+
+<!ENTITY toolboxZoomIn.key "+">
+<!ENTITY toolboxZoomIn.key2 "=">
+<!ENTITY toolboxZoomOut.key "-">
+<!ENTITY toolboxZoomReset.key "0">
+
+<!-- LOCALIZATION NOTE (options.context.advancedSettings): This is the label for
+  -  the heading of the advanced settings group in the options panel. -->
+<!ENTITY options.context.advancedSettings "Ustawienia zaawansowane">
+
+<!ENTITY options.context.inspector "Inspektor">
+<!ENTITY options.defaultColorUnit.label "Domyślny model przestrzeni barw">
+<!ENTITY options.defaultColorUnit.accesskey "D">
+<!ENTITY options.defaultColorUnit.hex "Hex">
+<!ENTITY options.defaultColorUnit.hsl "HSL(A)">
+<!ENTITY options.defaultColorUnit.rgb "RGB(A)">
+<!ENTITY options.defaultColorUnit.name "Nazwy kolorów">
+
+<!ENTITY options.context.triggersPageRefresh "* Tylko aktualna sesja, przeładowuje stronę">
+
+<!-- LOCALIZATION NOTE (options.enableChrome.label3): This is the label for the
+  -  checkbox that toggles chrome debugging, i.e. devtools.chrome.enabled
+  -  boolean preference in about:config, in the options panel. -->
+<!ENTITY options.enableChrome.label3    "Włącz debugowanie chrome">
+<!ENTITY options.enableChrome.tooltip   "Włączenie tej opcji pozwoli na używanie wielu narzędzi dla programistów w kontekście przeglądarki">
+
+<!-- LOCALIZATION NOTE (options.enableRemote.label3): This is the label for the
+  -  checkbox that toggles remote debugging, i.e. devtools.debugger.remote-enabled
+  -  boolean preference in about:config, in the options panel. -->
+<!ENTITY options.enableRemote.label3    "Włącz debugowanie zdalne">
+<!ENTITY options.enableRemote.tooltip  "Włączenie tej opcji pozwoli na debugowanie zdalnych instancji Firefoksa takich jak Firefox OS z poziomu narzędzi dla programistów">
+
+<!ENTITY options.disableJavaScript.label "Wyłącz JavaScript *">
+<!ENTITY options.disableJavaScript.tooltip "Wyłącza JavaScript w aktualnej karcie. Jeśli karta lub narzędzia zostaną zamknięte, ustawienie zostanie zapomniane.">
+<!ENTITY options.disableCache.label "Wyłącz pamięć podręczną *">
+<!ENTITY options.disableCache.tooltip "Wyłącza pamięć podręczną w aktualnej karcie. Jeśli karta lub narzędzia zostaną zamknięte, ustawienie zostanie zapomniane.">
+
+<!ENTITY options.selectDefaultTools.label "Domyślne narzędzia dla programistów">
+<!ENTITY options.selectAdditionalTools.label "Narzędzia dla programistów zainstalowane przez dodatki">
+<!ENTITY options.selectEnabledToolboxButtons.label "Przyciski narzędzi dla programistów">
+
+<!-- LOCALIZATION NOTE (options.toolNotSupported.label): This is the label for
+  -  the explanation of the * marker on a tool which is currently not supported
+  -  for the target of the toolbox. -->
+<!ENTITY options.toolNotSupported.label  "* Nieobsługiwane dla aktualnego celu narzędzi">
+
+<!-- LOCALIZATION NOTE (options.selectDevToolsTheme.label): This is the label for
+  -  the heading of the radiobox corresponding to the theme of the developer
+  -  tools. -->
+<!ENTITY options.selectDevToolsTheme.label   "Wybierz motyw dla narzędzi dla programistów:">
+<!ENTITY options.darkTheme.label             "Ciemny motyw">
+<!ENTITY options.lightTheme.label            "Jasny motyw">
+
+<!-- LOCALIZATION NOTE (options.webconsole.label): This is the label for the
+  -  heading of the group of Web Console preferences in the options panel. -->
+<!ENTITY options.webconsole.label            "Konsola WWW">
+
+<!ENTITY options.enablePersistentLogging.label "Trwałe dzienniki">
+<!ENTITY options.enablePersistentLogging.tooltip "Po włączeniu tej opcji konsola nie będzie czyścić wyjścia po przejściu do kolejnej strony">
+
+<!ENTITY options.timestampMessages.label "Znaczniki czasu">
+<!ENTITY options.timestampMessages.tooltip "Po włączeniu tej opcji komendy i ich wyjście w konsoli WWW będą wyświetlane obok znaczników czasu">
+
+<!ENTITY options.styleeditor.label "Edytor stylów">
+<!ENTITY options.stylesheetSourceMaps.label "Pokazuj oryginalne źródła">
+<!ENTITY options.stylesheetSourceMaps.tooltip "Pokazuj oryginalne źródła (np. pliki Saas) w edytorze stylów i inspektorze">
+<!ENTITY options.stylesheetAutocompletion.label "Automatyczne uzupełnianie CSS">
+<!ENTITY options.stylesheetAutocompletion.tooltip "Podczas pisania uzupełniaj automatycznie wartości, własności i selektory CSS w edytorze stylów">
+
+<!ENTITY options.profiler.label "Profiler JavaScript">
+
+<!ENTITY options.showPlatformData.label "Wyświetlaj informacje platformy Gecko">
+<!ENTITY options.showPlatformData.tooltip "Po włączeniu tej opcji Profiler JavaScript będzie raportował symbole platformy Gecko">

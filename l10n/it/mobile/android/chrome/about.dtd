@@ -1,0 +1,26 @@
+<!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+
+<!ENTITY aboutPage.title "Informazioni su &brandShortName;">
+<!ENTITY aboutPage.warningVersion "&brandShortName; è una versione sperimentale e potrebbe risultare instabile.">
+<!ENTITY aboutPage.telemetryStart " Dati relativi a prestazioni, hardware, utilizzo e personalizzazioni vengono inviati automaticamente a ">
+<!ENTITY aboutPage.telemetryMozillaLink "&vendorShortName;">
+<!ENTITY aboutPage.telemetryEnd " per contribuire al miglioramento di &brandShortName;.">
+<!ENTITY aboutPage.checkForUpdates.link "Controlla aggiornamenti »">
+<!ENTITY aboutPage.checkForUpdates.checking "Ricerca aggiornamenti…">
+<!ENTITY aboutPage.checkForUpdates.none "Nessun agg. disponibile">
+<!ENTITY aboutPage.checkForUpdates.available2 "Scarica aggiornamento">
+<!ENTITY aboutPage.checkForUpdates.downloading "Download aggiornamento…">
+<!ENTITY aboutPage.checkForUpdates.downloaded2 "Installa aggiornamento">
+<!ENTITY aboutPage.faq.label "FAQ">
+<!ENTITY aboutPage.support.label "Supporto">
+<!ENTITY aboutPage.privacyPolicy.label "Informativa sulla privacy">
+<!ENTITY aboutPage.rights.label "I tuoi diritti">
+<!ENTITY aboutPage.relNotes.label "Note di versione">
+<!ENTITY aboutPage.credits.label "Riconoscimenti">
+<!ENTITY aboutPage.license.label "Informazioni sulla licenza">
+<!ENTITY aboutPage.terms	                "Condizioni di servizio">
+<!ENTITY aboutPage.about.zoodles                "Su &quot;Zoodles Games Player&quot;">
+<!ENTITY aboutPage.about.zoodles_description    "&quot;Zoodles Games Player&quot; massimizza l'esperienza dei tuoi bambini su Modalità Bambino di Zoodles. &quot;Zoodles Games Player&quot; è una appl ccha supporta Adobe Flash Player operante su nuovi sistemi Android. Con l'installazione di &quot;Zoodles Games Player&quot; avrai accesso a migliaia di giochi Flash educativi di Zoodles GRATIS!.">
+<!ENTITY aboutPage.about.zoodles_download_now   "Scarica Adobe Flash Player ORA per finire l'installazione!">

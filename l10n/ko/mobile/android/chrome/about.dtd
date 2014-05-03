@@ -1,0 +1,22 @@
+<!ENTITY aboutPage.title                        "&brandShortName; 정보">
+<!ENTITY aboutPage.warningVersion               "&brandShortName;는 시험 버전으로 불안정할 수 있습니다.">
+<!ENTITY aboutPage.telemetryStart               "성능 개선을 위해 문제점, 하드웨어 사양, 사용 현황 및 설정을 자동으로 ">
+<!ENTITY aboutPage.telemetryMozillaLink         "&vendorShortName;">
+<!ENTITY aboutPage.telemetryEnd                 " 에 보냅니다.">
+<!ENTITY aboutPage.faq.label                    "FAQ">
+<!ENTITY aboutPage.support.label                "고객 지원">
+<!ENTITY aboutPage.privacyPolicy.label          "개인 정보 정책">
+<!ENTITY aboutPage.rights.label                 "권리 읽기">
+<!ENTITY aboutPage.relNotes.label               "제품 소개서">
+<!ENTITY aboutPage.credits.label                "정보">
+<!ENTITY aboutPage.checkForUpdates.checking     "확인 중…">
+<!ENTITY aboutPage.checkForUpdates.none         "업데이트 없음">
+<!ENTITY aboutPage.checkForUpdates.available2   "업데이트 다운로드">
+<!ENTITY aboutPage.checkForUpdates.downloaded2  "업데이트 설치">
+<!ENTITY aboutPage.checkForUpdates.downloading  "업데이트 다운로드 중…">
+<!ENTITY aboutPage.license.label 				"라이선스 정보">
+<!ENTITY aboutPage.checkForUpdates.link         "최신 버전 확인">
+<!ENTITY aboutPage.terms	                "서비스 조항">
+<!ENTITY aboutPage.about.zoodles                "키드 플래시'에 관하여">
+<!ENTITY aboutPage.about.zoodles_description    "zoodles 게임 플레이어'는 여러분의 자녀의 키드모드내에서 Zoodles 경험을 최상화시켜줍니다. 'zoodles 게임 플레이어'는 아도비 플래시 플레이어가 새로운 버전의 안드로이드 시스템에서 작동될 수 있도록 해주는 앱입니다. 'zoodles 게임 플레이어'가 설치됨으로써, 여러분은 수천개가 넘는 Zoodles의 플래시 학습 게임을 무료로 접속할 수 있습니다!">
+<!ENTITY aboutPage.about.zoodles_download_now   "아도비 플래시 플레이어를 다운로드 하여 설치를 완료하세요!">

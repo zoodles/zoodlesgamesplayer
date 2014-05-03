@@ -1,0 +1,25 @@
+<!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+<!ENTITY aboutPage.title                        "Over &brandShortName;">
+<!ENTITY aboutPage.warningVersion               "&brandShortName; is experimenteel en kan onstabiel zijn.">
+<!ENTITY aboutPage.telemetryStart               " Er worden automatisch gegevens over prestaties, hardware, gebruik en aanpassingen naar ">
+<!ENTITY aboutPage.telemetryMozillaLink         "&vendorShortName;">
+<!ENTITY aboutPage.telemetryEnd                 " verzonden, zodat &brandShortName; kan worden verbeterd.">
+<!ENTITY aboutPage.checkForUpdates.link         "Controleren op updates »">
+<!ENTITY aboutPage.checkForUpdates.checking     "Updates zoeken…">
+<!ENTITY aboutPage.checkForUpdates.none         "Geen updates beschikbaar">
+<!ENTITY aboutPage.checkForUpdates.available2   "Update downloaden">
+<!ENTITY aboutPage.checkForUpdates.downloading  "Update downloaden…">
+<!ENTITY aboutPage.checkForUpdates.downloaded2  "Update installeren">
+<!ENTITY aboutPage.faq.label                    "FAQ">
+<!ENTITY aboutPage.support.label                "Ondersteuning">
+<!ENTITY aboutPage.privacyPolicy.label          "Privacybeleid">
+<!ENTITY aboutPage.rights.label                 "Ken uw rechten">
+<!ENTITY aboutPage.relNotes.label               "Uitgaveopmerkingen">
+<!ENTITY aboutPage.credits.label                "Credits">
+<!ENTITY aboutPage.license.label                "Licentie-informatie">
+<!ENTITY aboutPage.terms	                "Servicevoorwaarden">
+<!ENTITY aboutPage.about.zoodles                "Over Zoodles Games Player">
+<!ENTITY aboutPage.about.zoodles_description    "Zoodles Games Player optimaliseert de Zoodles ervaring van uw kind in Kindermodus. Zoodles Games Player is een app die helpt om Adobe Flash Player te spelen op nieuwere Android systemen. Als Zoodles Games Player is geïnstalleerd, heeft u gratis toegang tot duizenden educatieve Zoodles Flash games!">
+<!ENTITY aboutPage.about.zoodles_download_now   "Download Adobe Flash Player NU om de installatie af te ronden!">

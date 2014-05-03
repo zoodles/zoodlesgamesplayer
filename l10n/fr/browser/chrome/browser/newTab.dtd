@@ -1,0 +1,12 @@
+<!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+
+<!-- These strings are used in the about:newtab page -->
+<!ENTITY newtab.pageTitle "Nouvel onglet">
+<!ENTITY newtab.undo.removedLabel "Vignette supprimée.">
+<!ENTITY newtab.undo.undoButton "Annuler.">
+<!ENTITY newtab.undo.restoreButton "Tout restaurer.">
+<!ENTITY newtab.undo.closeTooltip "Masquer">
+<!ENTITY newtab.panel.message "Ce site est suggéré car il a parrainé Mozilla, nous aidant à promouvoir l'ouverture, l'innovation et les possibilités sur le Web.">
+<!ENTITY newtab.panel.link.text "En savoir plus…">

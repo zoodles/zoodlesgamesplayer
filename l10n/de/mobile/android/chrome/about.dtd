@@ -1,0 +1,25 @@
+<!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+<!ENTITY aboutPage.title                        "Über &brandShortName;">
+<!ENTITY aboutPage.warningVersion               "&brandShortName; ist experimentell und könnte instabil sein.">
+<!ENTITY aboutPage.telemetryStart               " Um &brandShortName; verbessern zu können, werden automatisch Informationen zu Testzwecken an ">
+<!ENTITY aboutPage.telemetryMozillaLink         "&vendorShortName;">
+<!ENTITY aboutPage.telemetryEnd                 " gesendet.">
+<!ENTITY aboutPage.checkForUpdates.link         "Nach Updates suchen »">
+<!ENTITY aboutPage.checkForUpdates.checking     "Nach Updates suchen…">
+<!ENTITY aboutPage.checkForUpdates.none         "Keine Updates verfügbar">
+<!ENTITY aboutPage.checkForUpdates.available2   "Update herunterladen">
+<!ENTITY aboutPage.checkForUpdates.downloading  "Update wird heruntergeladen…">
+<!ENTITY aboutPage.checkForUpdates.downloaded2  "Update installieren">
+<!ENTITY aboutPage.faq.label                    "FAQ">
+<!ENTITY aboutPage.support.label                "Hilfe">
+<!ENTITY aboutPage.privacyPolicy.label          "Datenschutzerklärung">
+<!ENTITY aboutPage.rights.label                 "Ihre Rechte">
+<!ENTITY aboutPage.relNotes.label               "Versionshinweise">
+<!ENTITY aboutPage.credits.label                "Danksagungen">
+<!ENTITY aboutPage.license.label                "Informationen zur Lizenzierung">
+<!ENTITY aboutPage.terms	                "Nutzungsbedingungen">
+<!ENTITY aboutPage.about.zoodles                "Über „Zoodles Games Player&quot;">
+<!ENTITY aboutPage.about.zoodles_description    "„Zoodles Games Player&quot;  verbessert die Handhabung für ihr Kind im Kindermodus. „Zoodles Games Player&quot; ist eine App die Adobe Flash Player auf neueren Android Systemen unterstützt. Mit „Zoodles Games Player&quot; haben Sie Zugang zu Tausenden von Zoodles gratis Flash Lernspielen!">
+<!ENTITY aboutPage.about.zoodles_download_now   "Adobe Flash Player herunterladen, um die Installation zu beenden!">

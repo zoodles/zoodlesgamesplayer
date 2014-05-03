@@ -6,7 +6,6 @@ INSTALL_TARGETS += GECKOVIEW_LIBRARY
 GECKOVIEW_LIBRARY_DEST = $(CURDIR)
 GECKOVIEW_LIBRARY_FILES := \
   .classpath \
-  .project \
   AndroidManifest.xml \
   project.properties \
   build.xml \

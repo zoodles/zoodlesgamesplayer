@@ -1,0 +1,34 @@
+<!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+
+<!ENTITY restorepage.tabtitle       "Gjenopprett programøkt">
+
+<!-- LOCALIZATION NOTE: The title is intended to be apologetic and disarming, expressing dismay
+     and regret that we are unable to restore the session for the user -->
+<!ENTITY restorepage.errorTitle     "Dette er pinlig.">
+<!ENTITY restorepage.problemDesc    "&brandShortName; klarer ikke å gjenopprette vinduer og faner. Dette skyldes vanligvis en nylig åpnet nettside.">
+<!ENTITY restorepage.tryThis        "Du kan forsøke å enten:">
+<!ENTITY restorepage.restoreSome    "Fjerne en eller flere faner som du tror kan ha forårsaket problemet">
+<!ENTITY restorepage.startNew       "Starte en helt ny programøkt">
+
+<!ENTITY restorepage.tryagainButton "Gjenopprett">
+<!ENTITY restorepage.restore.access "G">
+<!ENTITY restorepage.closeButton    "Lukk">
+<!ENTITY restorepage.close.access   "L">
+
+<!ENTITY restorepage.restoreHeader  "Gjenopprett">
+<!ENTITY restorepage.listHeader     "Vinduer og faner">
+<!-- LOCALIZATION NOTE: &#37;S will be replaced with a number. -->
+<!ENTITY restorepage.windowLabel    "Vindu &#37;S">
+
+
+<!-- LOCALIZATION NOTE: The following 'welcomeback' strings are for about:welcomeback,
+     not for about:sessionstore -->
+<!ENTITY welcomeback.tabtitle       "Velkommen tilbake!">
+
+<!-- LOCALIZATION NOTE: The title is intended to be welcoming and congratulatory,
+     expressing joy that the user has successfully migrated their stuff and hope
+     that now they have a better experience.  -->
+<!ENTITY welcomeback.pageTitle      "Velkommen tilbake!">
+<!ENTITY welcomeback.pageInfo       "&brandShortName; har tilbakestilt profilen din. Nedenfor er en liste over vinduer og faner du hadde åpne; du kan gjenopprette de, eller starte med blanke ark.">

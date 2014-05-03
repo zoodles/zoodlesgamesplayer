@@ -1,0 +1,20 @@
+<!ENTITY inspectorHTMLEdit.label       "Editar como HTML">
+<!ENTITY inspectorHTMLEdit.accesskey   "E">
+
+<!ENTITY inspectorHTMLCopyInner.label       "Copiar inner HTML">
+<!ENTITY inspectorHTMLCopyInner.accesskey   "I">
+
+<!ENTITY inspectorHTMLCopyOuter.label       "Copiar outer HTML">
+<!ENTITY inspectorHTMLCopyOuter.accesskey   "O">
+
+<!ENTITY inspectorCopyUniqueSelector.label       "Copiar seletor único">
+<!ENTITY inspectorCopyUniqueSelector.accesskey   "i">
+
+<!ENTITY inspectorHTMLDelete.label          "Eliminar nó">
+<!ENTITY inspectorHTMLDelete.accesskey      "n">
+
+<!ENTITY inspector.selectButton.tooltip     "Selecione o elemento com o rato">
+
+<!ENTITY inspectorSearchHTML.label          "Procurar HTML">
+<!ENTITY inspectorSearchHTML.key            "P">
+<!ENTITY inspectorCopyImageDataUri.label       "Copiar URL de dados da imagem">
