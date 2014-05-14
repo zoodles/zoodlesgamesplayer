@@ -4002,7 +4002,7 @@ BUILD_CTYPES=1
 MOZ_USE_NATIVE_POPUP_WINDOWS=
 MOZ_ANDROID_HISTORY=
 MOZ_WEBSMS_BACKEND=
-MOZ_ANDROID_BEAM=
+MOZ_ANDROID_BEAM=0
 MOZ_ANDROID_SYNTHAPKS=
 ACCESSIBILITY=1
 MOZ_TIME_MANAGER=
@@ -4991,12 +4991,7 @@ if test -n "$MOZ_WEBSMS_BACKEND"; then
     AC_DEFINE(MOZ_WEBSMS_BACKEND)
 fi
 
-dnl ========================================================
-dnl = Enable NFC permission on Android
-dnl ========================================================
-if test -n "$MOZ_ANDROID_BEAM"; then
-    AC_DEFINE(MOZ_ANDROID_BEAM)
-fi
+
 
 dnl ========================================================
 dnl = Synthesized Webapp APKs on Android
