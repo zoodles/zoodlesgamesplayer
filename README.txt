@@ -30,4 +30,6 @@ testing, may be buggy. Firefox nightlies, for example, can be found at:
 Building and Packaging
 ./mach build && pushd obj-arm-linux-androideabi/mobile/android/locales && for loc in $(cat ../../../../mobile/android/locales/maemo-locales); do LOCALE_MERGEDIR=$PWD/merge-$loc make merge-$loc LOCALE_MERGEDIR=$PWD/merge-$loc; make LOCALE_MERGEDIR=$PWD/merge-$loc chrome-$loc LOCALE_MERGEDIR=$PWD/merge-$loc; done && popd && ./mach package
 
-
+Versioning Apk
+You only need to update MOZ_APP_VERSION in mobile/android/branding/official
+Version code is auto generated
