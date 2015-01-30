@@ -25,7 +25,7 @@ public:
     typedef gfxCharacterMap* KeyType;
     typedef const gfxCharacterMap* KeyTypePointer;
 
-    CharMapHashKey(const gfxCharacterMap *aCharMap) :
+    explicit CharMapHashKey(const gfxCharacterMap *aCharMap) :
         mCharMap(const_cast<gfxCharacterMap*>(aCharMap))
     {
         MOZ_COUNT_CTOR(CharMapHashKey);
@@ -82,6 +82,8 @@ struct FontListSizes {
     uint32_t mCharMapsSize; // memory used for cmap coverage info
 };
 
+class gfxUserFontSet;
+
 class gfxPlatformFontList : public gfxFontInfoLoader
 {
 public:
@@ -112,22 +114,19 @@ public:
                       const nsACString& aGenericFamily,
                       nsTArray<nsString>& aListOfFonts);
 
-    virtual bool ResolveFontName(const nsAString& aFontName,
-                                   nsAString& aResolvedFontName);
-
-    void UpdateFontList() { InitFontList(); }
+    void UpdateFontList();
 
     void ClearPrefFonts() { mPrefFonts.Clear(); }
 
     virtual void GetFontFamilyList(nsTArray<nsRefPtr<gfxFontFamily> >& aFamilyArray);
 
-    virtual gfxFontEntry*
-    SystemFindFontForChar(const uint32_t aCh,
+    gfxFontEntry*
+    SystemFindFontForChar(uint32_t aCh, uint32_t aNextCh,
                           int32_t aRunScript,
                           const gfxFontStyle* aStyle);
 
-    // TODO: make this virtual, for lazily adding to the font list
-    virtual gfxFontFamily* FindFamily(const nsAString& aFamily);
+    virtual gfxFontFamily* FindFamily(const nsAString& aFamily,
+                                      bool aUseSystemFonts = false);
 
     gfxFontEntry* FindFontForFamily(const nsAString& aFamily, const gfxFontStyle* aStyle, bool& aNeedsBold);
 
@@ -150,13 +149,18 @@ public:
     virtual gfxFontFamily* GetDefaultFont(const gfxFontStyle* aStyle) = 0;
 
     // look up a font by name on the host platform
-    virtual gfxFontEntry* LookupLocalFont(const gfxProxyFontEntry *aProxyEntry,
-                                          const nsAString& aFontName) = 0;
+    virtual gfxFontEntry* LookupLocalFont(const nsAString& aFontName,
+                                          uint16_t aWeight,
+                                          int16_t aStretch,
+                                          bool aItalic) = 0;
 
     // create a new platform font from downloaded data (@font-face)
     // this method is responsible to ensure aFontData is NS_Free()'d
-    virtual gfxFontEntry* MakePlatformFont(const gfxProxyFontEntry *aProxyEntry,
-                                           const uint8_t *aFontData,
+    virtual gfxFontEntry* MakePlatformFont(const nsAString& aFontName,
+                                           uint16_t aWeight,
+                                           int16_t aStretch,
+                                           bool aItalic,
+                                           const uint8_t* aFontData,
                                            uint32_t aLength) = 0;
 
     // get the standard family name on the platform for a given font name
@@ -178,15 +182,27 @@ public:
     // remove the cmap from the shared cmap set
     void RemoveCmap(const gfxCharacterMap *aCharMap);
 
+    // keep track of userfont sets to notify when global fontlist changes occur
+    void AddUserFontSet(gfxUserFontSet *aUserFontSet) {
+        mUserFontSetList.PutEntry(aUserFontSet);
+    }
+
+    void RemoveUserFontSet(gfxUserFontSet *aUserFontSet) {
+        mUserFontSetList.RemoveEntry(aUserFontSet);
+    }
+
+    static const gfxFontEntry::ScriptRange sComplexScriptRanges[];
+
 protected:
     class MemoryReporter MOZ_FINAL : public nsIMemoryReporter
     {
+        ~MemoryReporter() {}
     public:
         NS_DECL_ISUPPORTS
         NS_DECL_NSIMEMORYREPORTER
     };
 
-    gfxPlatformFontList(bool aNeedFullnamePostscriptNames = true);
+    explicit gfxPlatformFontList(bool aNeedFullnamePostscriptNames = true);
 
     static gfxPlatformFontList *sPlatformFontList;
 
@@ -195,7 +211,7 @@ protected:
                                                void* userArg);
 
     // returns default font for a given character, null otherwise
-    gfxFontEntry* CommonFontFallback(const uint32_t aCh,
+    gfxFontEntry* CommonFontFallback(uint32_t aCh, uint32_t aNextCh,
                                      int32_t aRunScript,
                                      const gfxFontStyle* aMatchStyle,
                                      gfxFontFamily** aMatchedFamily);
@@ -214,28 +230,42 @@ protected:
     // verifies that a family contains a non-zero font count
     gfxFontFamily* CheckFamily(gfxFontFamily *aFamily);
 
-    // separate initialization for reading in name tables, since this is expensive
+    // initialize localized family names
     void InitOtherFamilyNames();
 
-    static PLDHashOperator InitOtherFamilyNamesProc(nsStringHashKey::KeyType aKey,
-                                                    nsRefPtr<gfxFontFamily>& aFamilyEntry,
-                                                    void* userArg);
+    static PLDHashOperator
+    InitOtherFamilyNamesProc(nsStringHashKey::KeyType aKey,
+                             nsRefPtr<gfxFontFamily>& aFamilyEntry,
+                             void* userArg);
 
-    // read in all fullname/Postscript names for all font faces
-    void InitFaceNameLists();
+    // search through font families, looking for a given name, initializing
+    // facename lists along the way. first checks all families with names
+    // close to face name, then searchs all families if not found.
+    gfxFontEntry* SearchFamiliesForFaceName(const nsAString& aFaceName);
 
-    static PLDHashOperator InitFaceNameListsProc(nsStringHashKey::KeyType aKey,
-                                                 nsRefPtr<gfxFontFamily>& aFamilyEntry,
-                                                 void* userArg);
+    static PLDHashOperator
+    ReadFaceNamesProc(nsStringHashKey::KeyType aKey,
+                      nsRefPtr<gfxFontFamily>& aFamilyEntry,
+                      void* userArg);
+
+    // helper method for finding fullname/postscript names in facename lists
+    gfxFontEntry* FindFaceName(const nsAString& aFaceName);
+
+    // look up a font by name, for cases where platform font list
+    // maintains explicit mappings of fullname/psname ==> font
+    virtual gfxFontEntry* LookupInFaceNameLists(const nsAString& aFontName);
+
+    static PLDHashOperator LookupMissedFaceNamesProc(nsStringHashKey *aKey,
+                                                     void *aUserArg);
+
+    static PLDHashOperator LookupMissedOtherNamesProc(nsStringHashKey *aKey,
+                                                      void *aUserArg);
 
     // commonly used fonts for which the name table should be loaded at startup
     virtual void PreloadNamesList();
 
     // load the bad underline blacklist from pref.
     void LoadBadUnderlineList();
-
-    // explicitly set fixed-pitch flag for all faces
-    void SetFixedPitch(const nsAString& aFamilyName);
 
     void GenerateFontListKey(const nsAString& aKeyName, nsAString& aResult);
 
@@ -254,6 +284,9 @@ protected:
     // read the loader initialization prefs, and start it
     void GetPrefsAndStartLoader();
 
+    // for font list changes that affect all documents
+    void ForceGlobalReflow();
+
     // used by memory reporter to accumulate sizes of family names in the hash
     static size_t
     SizeOfFamilyNameEntryExcludingThis(const nsAString&               aKey,
@@ -264,6 +297,11 @@ protected:
     // canonical family name ==> family entry (unique, one name per family entry)
     nsRefPtrHashtable<nsStringHashKey, gfxFontFamily> mFontFamilies;
 
+#if defined(XP_MACOSX)
+    // hidden system fonts used within UI elements
+    nsRefPtrHashtable<nsStringHashKey, gfxFontFamily> mSystemFontFamilies;
+#endif
+
     // other family name ==> family entry (not unique, can have multiple names per
     // family entry, only names *other* than the canonical names are stored here)
     nsRefPtrHashtable<nsStringHashKey, gfxFontFamily> mOtherFamilyNames;
@@ -272,16 +310,22 @@ protected:
     bool mOtherFamilyNamesInitialized;
 
     // flag set after fullname and Postcript name lists are populated
-    bool mFaceNamesInitialized;
+    bool mFaceNameListsInitialized;
 
     struct ExtraNames {
-      ExtraNames() : mFullnames(100), mPostscriptNames(100) {}
+      ExtraNames() : mFullnames(64), mPostscriptNames(64) {}
       // fullname ==> font entry (unique, one name per font entry)
       nsRefPtrHashtable<nsStringHashKey, gfxFontEntry> mFullnames;
       // Postscript name ==> font entry (unique, one name per font entry)
       nsRefPtrHashtable<nsStringHashKey, gfxFontEntry> mPostscriptNames;
     };
     nsAutoPtr<ExtraNames> mExtraNames;
+
+    // face names missed when face name loading takes a long time
+    nsAutoPtr<nsTHashtable<nsStringHashKey> > mFaceNamesMissed;
+
+    // localized family names missed when face name loading takes a long time
+    nsAutoPtr<nsTHashtable<nsStringHashKey> > mOtherNamesMissed;
 
     // cached pref font lists
     // maps list of family names ==> array of family entries, one per lang group
@@ -305,6 +349,8 @@ protected:
     uint32_t mStartIndex;
     uint32_t mIncrement;
     uint32_t mNumFamilies;
+
+    nsTHashtable<nsPtrHashKey<gfxUserFontSet> > mUserFontSetList;
 };
 
 #endif /* GFXPLATFORMFONTLIST_H_ */

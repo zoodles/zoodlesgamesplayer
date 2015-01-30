@@ -3,10 +3,7 @@
 <?xml-stylesheet href="/tests/SimpleTest/test.css" type="text/css"?>
 
 <window title="Popup Reflow Tests"
-  xmlns:html="http://www.w3.org/1999/xhtml"
   xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul">
-
-  <title>Popup Reflow Tests</title>
 
   <panel id="testPanel"
          type="arrow"
@@ -29,6 +26,13 @@ let panel, anchor, arrow;
 let observer = {
   reflows: [],
   reflow: function (start, end) {
+    // Ignore reflows triggered by native code
+    // (Reflows from native code only have an empty stack after the first frame)
+    var path = (new Error().stack).split("\n").slice(1).join("");
+    if (path === "") {
+      return;
+    }
+
     this.reflows.push(new Error().stack);
   },
 

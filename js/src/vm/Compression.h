@@ -7,8 +7,6 @@
 #ifndef vm_Compression_h
 #define vm_Compression_h
 
-#ifdef USE_ZLIB
-
 #include <zlib.h>
 
 #include "jstypes.h"
@@ -23,6 +21,7 @@ class Compressor
     const unsigned char *inp;
     size_t inplen;
     size_t outbytes;
+    bool initialized;
 
   public:
     enum Status {
@@ -50,5 +49,4 @@ bool DecompressString(const unsigned char *inp, size_t inplen,
 
 } /* namespace js */
 
-#endif /* USE_ZLIB */
 #endif /* vm_Compression_h */

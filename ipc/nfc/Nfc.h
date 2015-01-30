@@ -9,31 +9,37 @@
 #ifndef mozilla_ipc_Nfc_h
 #define mozilla_ipc_Nfc_h 1
 
-#include <mozilla/dom/workers/Workers.h>
-#include <mozilla/ipc/UnixSocket.h>
+#include <mozilla/ipc/StreamSocket.h>
 
 namespace mozilla {
 namespace ipc {
 
-class NfcConsumer : public mozilla::ipc::UnixSocketConsumer
+class NfcSocketListener
 {
 public:
-  virtual ~NfcConsumer() { }
+  virtual void ReceiveSocketData(nsAutoPtr<UnixSocketRawData>& aData) = 0;
+};
 
-  static nsresult Register(mozilla::dom::workers::WorkerCrossThreadDispatcher* aDispatcher);
-  static void Shutdown();
+class NfcConsumer MOZ_FINAL : public mozilla::ipc::StreamSocket
+{
+public:
+  NfcConsumer(NfcSocketListener* aListener);
+
+  void Shutdown();
+  bool PostToNfcDaemon(const uint8_t* aData, size_t aSize);
+
+  ConnectionOrientedSocketIO* GetIO() MOZ_OVERRIDE;
 
 private:
-  NfcConsumer(mozilla::dom::workers::WorkerCrossThreadDispatcher* aDispatcher);
+  void ReceiveSocketData(
+    nsAutoPtr<UnixSocketRawData>& aData) MOZ_OVERRIDE;
 
-  virtual void ReceiveSocketData(nsAutoPtr<UnixSocketRawData>& aMessage);
-
-  virtual void OnConnectSuccess();
-  virtual void OnConnectError();
-  virtual void OnDisconnect();
+  void OnConnectSuccess() MOZ_OVERRIDE;
+  void OnConnectError() MOZ_OVERRIDE;
+  void OnDisconnect() MOZ_OVERRIDE;
 
 private:
-  nsRefPtr<mozilla::dom::workers::WorkerCrossThreadDispatcher> mDispatcher;
+  NfcSocketListener* mListener;
   nsCString mAddress;
   bool mShutdown;
 };

@@ -2,9 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-"use strict";
-
 #ifndef MERGED_COMPARTMENT
+
+"use strict";
 
 this.EXPORTED_SYMBOLS = ["HealthReporter"];
 
@@ -48,7 +48,6 @@ const TELEMETRY_JSON_PAYLOAD_SERIALIZE = "HEALTHREPORT_JSON_PAYLOAD_SERIALIZE_MS
 const TELEMETRY_PAYLOAD_SIZE_UNCOMPRESSED = "HEALTHREPORT_PAYLOAD_UNCOMPRESSED_BYTES";
 const TELEMETRY_PAYLOAD_SIZE_COMPRESSED = "HEALTHREPORT_PAYLOAD_COMPRESSED_BYTES";
 const TELEMETRY_UPLOAD = "HEALTHREPORT_UPLOAD_MS";
-const TELEMETRY_SHUTDOWN_DELAY = "HEALTHREPORT_SHUTDOWN_DELAY_MS";
 const TELEMETRY_COLLECT_CONSTANT = "HEALTHREPORT_COLLECT_CONSTANT_DATA_MS";
 const TELEMETRY_COLLECT_DAILY = "HEALTHREPORT_COLLECT_DAILY_MS";
 const TELEMETRY_SHUTDOWN = "HEALTHREPORT_SHUTDOWN_MS";
@@ -60,11 +59,19 @@ const TELEMETRY_COLLECT_CHECKPOINT = "HEALTHREPORT_POST_COLLECT_CHECKPOINT_MS";
  *
  * Instances are not meant to be created outside of a HealthReporter instance.
  *
- * Please note that remote IDs are treated as a queue. When a new remote ID is
- * added, it goes at the back of the queue. When we look for the current ID, we
- * pop the ID at the front of the queue. This helps ensure that all IDs on the
- * server are eventually deleted. This should eventually become irrelevant once
- * the server supports multiple ID deletion.
+ * There are two types of IDs associated with clients.
+ *
+ * Since the beginning of FHR, there has existed a per-upload ID: a UUID is
+ * generated at upload time and associated with the state before upload starts.
+ * That same upload includes a request to delete all other upload IDs known by
+ * the client.
+ *
+ * Per-upload IDs had the unintended side-effect of creating "orphaned"
+ * records/upload IDs on the server. So, a stable client identifer has been
+ * introduced. This client identifier is generated when it's missing and sent
+ * as part of every upload.
+ *
+ * There is a high chance we may remove upload IDs in the future.
  */
 function HealthReporterState(reporter) {
   this._reporter = reporter;
@@ -89,6 +96,20 @@ function HealthReporterState(reporter) {
 }
 
 HealthReporterState.prototype = Object.freeze({
+  /**
+   * Persistent string identifier associated with this client.
+   */
+  get clientID() {
+    return this._s.clientID;
+  },
+
+  /**
+   * The version associated with the client ID.
+   */
+  get clientIDVersion() {
+    return this._s.clientIDVersion;
+  },
+
   get lastPingDate() {
     return new Date(this._s.lastPingTime);
   },
@@ -106,31 +127,37 @@ HealthReporterState.prototype = Object.freeze({
   },
 
   init: function () {
-    return Task.spawn(function init() {
-      try {
-        OS.File.makeDir(this._stateDir);
-      } catch (ex if ex instanceof OS.FileError) {
-        if (!ex.becauseExists) {
-          throw ex;
-        }
-      }
+    return Task.spawn(function* init() {
+      yield OS.File.makeDir(this._stateDir);
+
+      let drs = Cc["@mozilla.org/datareporting/service;1"]
+                  .getService(Ci.nsISupports)
+                  .wrappedJSObject;
+      let drsClientID = yield drs.getClientID();
 
       let resetObjectState = function () {
         this._s = {
+          // The payload version. This is bumped whenever there is a
+          // backwards-incompatible change.
           v: 1,
+          // The persistent client identifier.
+          clientID: drsClientID,
+          // Denotes the mechanism used to generate the client identifier.
+          // 1: Random UUID.
+          clientIDVersion: 1,
+          // Upload IDs that might be on the server.
           remoteIDs: [],
+          // When we last performed an uploaded.
           lastPingTime: 0,
+          // Tracks whether we removed an outdated payload.
           removedOutdatedLastpayload: false,
         };
       }.bind(this);
 
       try {
         this._s = yield CommonUtils.readJSON(this._filename);
-      } catch (ex if ex instanceof OS.File.Error) {
-        if (!ex.becauseNoSuchFile) {
-          throw ex;
-        }
-
+      } catch (ex if ex instanceof OS.File.Error &&
+               ex.becauseNoSuchFile) {
         this._log.warn("Saved state file does not exist.");
         resetObjectState();
       } catch (ex) {
@@ -153,6 +180,8 @@ HealthReporterState.prototype = Object.freeze({
         // We explicitly don't save here in the hopes an application re-upgrade
         // comes along and fixes us.
       }
+
+      this._s.clientID = drsClientID;
 
       // Always look for preferences. This ensures that downgrades followed
       // by reupgrades don't result in excessive data loss.
@@ -214,6 +243,21 @@ HealthReporterState.prototype = Object.freeze({
     return this.removeRemoteIDs(ids);
   },
 
+  /**
+   * Reset the client ID to something else.
+   * Returns a promise that is resolved when completed.
+   */
+  resetClientID: Task.async(function* () {
+    let drs = Cc["@mozilla.org/datareporting/service;1"]
+                .getService(Ci.nsISupports)
+                .wrappedJSObject;
+    yield drs.resetClientID();
+    this._s.clientID = yield drs.getClientID();
+    this._log.info("Reset client id to " + this._s.clientID + ".");
+
+    yield this.save();
+  }),
+
   _migratePrefs: function () {
     let prefs = this._reporter._prefs;
 
@@ -241,7 +285,7 @@ HealthReporterState.prototype = Object.freeze({
       yield this.save();
       prefs.reset(["lastSubmitID", "lastPingTime"]);
     } else {
-      this._log.warn("No prefs data found.");
+      this._log.debug("No prefs data found.");
     }
   },
 });
@@ -282,7 +326,8 @@ function AbstractHealthReporter(branch, policy, sessionRecorder) {
   this._shutdownRequested = false;
   this._shutdownInitiated = false;
   this._shutdownComplete = false;
-  this._shutdownCompleteCallback = null;
+  this._deferredShutdown = Promise.defer();
+  this._promiseShutdown = this._deferredShutdown.promise;
 
   this._errors = [];
 
@@ -292,6 +337,13 @@ function AbstractHealthReporter(branch, policy, sessionRecorder) {
   let hasFirstRun = this._prefs.get("service.firstRun", false);
   this._initHistogram = hasFirstRun ? TELEMETRY_INIT : TELEMETRY_INIT_FIRSTRUN;
   this._dbOpenHistogram = hasFirstRun ? TELEMETRY_DB_OPEN : TELEMETRY_DB_OPEN_FIRSTRUN;
+
+  // This is set to the name for the provider that we are currently initializing,
+  // shutting down or collecting data from, if any.
+  // This is used for AsyncShutdownTimeout diagnostics.
+  this._currentProviderInShutdown = null;
+  this._currentProviderInInit = null;
+  this._currentProviderInCollect = null;
 }
 
 AbstractHealthReporter.prototype = Object.freeze({
@@ -319,12 +371,81 @@ AbstractHealthReporter.prototype = Object.freeze({
 
     this._initializeStarted = true;
 
-    TelemetryStopwatch.start(this._initHistogram, this);
+    return Task.spawn(function*() {
+      TelemetryStopwatch.start(this._initHistogram, this);
 
-    this._initializeState().then(this._onStateInitialized.bind(this),
-                                 this._onInitError.bind(this));
+      try {
+        yield this._state.init();
 
-    return this.onInit();
+        if (!this._state._s.removedOutdatedLastpayload) {
+          yield this._deleteOldLastPayload();
+          this._state._s.removedOutdatedLastpayload = true;
+          // Normally we should save this to a file but it directly conflicts with
+          // the "application re-upgrade" decision in HealthReporterState::init()
+          // which specifically does not save the state to a file.
+        }
+      } catch (ex) {
+        this._log.error("Error deleting last payload: " +
+                        CommonUtils.exceptionStr(ex));
+      }
+
+      // As soon as we have could have storage, we need to register cleanup or
+      // else bad things happen on shutdown.
+      Services.obs.addObserver(this, "quit-application", false);
+
+      // The database needs to be shut down by the end of shutdown
+      // phase profileBeforeChange.
+      Metrics.Storage.shutdown.addBlocker("FHR: Flushing storage shutdown",
+        () => {
+          // Workaround bug 1017706
+          // Apparently, in some cases, quit-application is not triggered
+          // (or is triggered after profile-before-change), so we need to
+          // make sure that `_initiateShutdown()` is triggered at least
+          // once.
+          this._initiateShutdown();
+          return this._promiseShutdown;
+        },
+        () => ({
+            shutdownInitiated: this._shutdownInitiated,
+            initialized: this._initialized,
+            shutdownRequested: this._shutdownRequested,
+            initializeHadError: this._initializeHadError,
+            providerManagerInProgress: this._providerManagerInProgress,
+            storageInProgress: this._storageInProgress,
+            hasProviderManager: !!this._providerManager,
+            hasStorage: !!this._storage,
+            shutdownComplete: this._shutdownComplete,
+            currentProviderInShutdown: this._currentProviderInShutdown,
+            currentProviderInInit: this._currentProviderInInit,
+            currentProviderInCollect: this._currentProviderInCollect,
+          }));
+
+      try {
+        this._storageInProgress = true;
+        TelemetryStopwatch.start(this._dbOpenHistogram, this);
+        let storage = yield Metrics.Storage(this._dbName);
+        TelemetryStopwatch.finish(this._dbOpenHistogram, this);
+        yield this._onStorageCreated();
+
+        delete this._dbOpenHistogram;
+        this._log.info("Storage initialized.");
+        this._storage = storage;
+        this._storageInProgress = false;
+
+        if (this._shutdownRequested) {
+          this._initiateShutdown();
+          return null;
+        }
+
+        yield this._initializeProviderManager();
+        yield this._onProviderManagerInitialized();
+        this._initializedDeferred.resolve();
+        return this.onInit();
+      } catch (ex) {
+        yield this._onInitError(ex);
+        this._initializedDeferred.reject(ex);
+      }
+    }.bind(this));
   },
 
   //----------------------------------------------------
@@ -342,41 +463,10 @@ AbstractHealthReporter.prototype = Object.freeze({
     this._recordError("Error during initialization", error);
     this._initializeHadError = true;
     this._initiateShutdown();
-    this._initializedDeferred.reject(error);
+    return Promise.reject(error);
 
     // FUTURE consider poisoning prototype's functions so calls fail with a
     // useful error message.
-  },
-
-  _initializeState: function () {
-    return Promise.resolve();
-  },
-
-  _onStateInitialized: function () {
-    return Task.spawn(function onStateInitialized () {
-      try {
-        if (!this._state._s.removedOutdatedLastpayload) {
-          yield this._deleteOldLastPayload();
-          this._state._s.removedOutdatedLastpayload = true;
-          // Normally we should save this to a file but it directly conflicts with
-          //  the "application re-upgrade" decision in HealthReporterState::init()
-          //  which specifically does not save the state to a file.
-        }
-      } catch (ex) {
-        this._log.error("Error deleting last payload: " +
-                        CommonUtils.exceptionStr(ex));
-      }
-      // As soon as we have could storage, we need to register cleanup or
-      // else bad things happen on shutdown.
-      Services.obs.addObserver(this, "quit-application", false);
-      Services.obs.addObserver(this, "profile-before-change", false);
-
-      this._storageInProgress = true;
-      TelemetryStopwatch.start(this._dbOpenHistogram, this);
-
-      Metrics.Storage(this._dbName).then(this._onStorageCreated.bind(this),
-                                         this._onInitError.bind(this));
-    }.bind(this));
   },
 
 
@@ -401,25 +491,7 @@ AbstractHealthReporter.prototype = Object.freeze({
     }.bind(this));
   },
 
-  // Called when storage has been opened.
-  _onStorageCreated: function (storage) {
-    TelemetryStopwatch.finish(this._dbOpenHistogram, this);
-    delete this._dbOpenHistogram;
-    this._log.info("Storage initialized.");
-    this._storage = storage;
-    this._storageInProgress = false;
-
-    if (this._shutdownRequested) {
-      this._initiateShutdown();
-      return;
-    }
-
-    Task.spawn(this._initializeProviderManager.bind(this))
-        .then(this._onProviderManagerInitialized.bind(this),
-              this._onInitError.bind(this));
-  },
-
-  _initializeProviderManager: function () {
+  _initializeProviderManager: Task.async(function* _initializeProviderManager() {
     if (this._collector) {
       throw new Error("Provider manager has already been initialized.");
     }
@@ -433,10 +505,12 @@ AbstractHealthReporter.prototype = Object.freeze({
     let catString = this._prefs.get("service.providerCategories") || "";
     if (catString.length) {
       for (let category of catString.split(",")) {
-        yield this._providerManager.registerProvidersFromCategoryManager(category);
+        yield this._providerManager.registerProvidersFromCategoryManager(category,
+                     providerName => this._currentProviderInInit = providerName);
       }
+      this._currentProviderInInit = null;
     }
-  },
+  }),
 
   _onProviderManagerInitialized: function () {
     TelemetryStopwatch.finish(this._initHistogram, this);
@@ -484,7 +558,6 @@ AbstractHealthReporter.prototype = Object.freeze({
 
     // Clean up caches and reduce memory usage.
     this._storage.compact();
-    this._initializedDeferred.resolve(this);
   },
 
   // nsIObserver to handle shutdown.
@@ -493,11 +566,6 @@ AbstractHealthReporter.prototype = Object.freeze({
       case "quit-application":
         Services.obs.removeObserver(this, "quit-application");
         this._initiateShutdown();
-        break;
-
-      case "profile-before-change":
-        Services.obs.removeObserver(this, "profile-before-change");
-        this._waitForShutdown();
         break;
 
       case "idle-daily":
@@ -521,7 +589,7 @@ AbstractHealthReporter.prototype = Object.freeze({
     if (this._initializeHadError) {
       this._log.warn("Initialization had error. Shutting down immediately.");
     } else {
-      if (this._providerManagerInProcess) {
+      if (this._providerManagerInProgress) {
         this._log.warn("Provider manager is in progress of initializing. " +
                        "Waiting to finish.");
         return;
@@ -550,80 +618,63 @@ AbstractHealthReporter.prototype = Object.freeze({
       Services.obs.removeObserver(this, "idle-daily");
     } catch (ex) { }
 
-    if (this._providerManager) {
-      let onShutdown = this._onProviderManagerShutdown.bind(this);
-      Task.spawn(this._shutdownProviderManager.bind(this))
-          .then(onShutdown, onShutdown);
-      return;
-    }
-
-    this._log.warn("Don't have provider manager. Proceeding to storage shutdown.");
-    this._shutdownStorage();
-  },
-
-  _shutdownProviderManager: function () {
-    this._log.info("Shutting down provider manager.");
-    for (let provider of this._providerManager.providers) {
+    Task.spawn(function*() {
       try {
-        yield provider.shutdown();
-      } catch (ex) {
-        this._log.warn("Error when shutting down provider: " +
-                       CommonUtils.exceptionStr(ex));
+        if (this._providerManager) {
+          this._log.info("Shutting down provider manager.");
+          for (let provider of this._providerManager.providers) {
+            try {
+              this._log.info("Shutting down provider: " + provider.name);
+              this._currentProviderInShutdown = provider.name;
+              yield provider.shutdown();
+            } catch (ex) {
+              this._log.warn("Error when shutting down provider: " +
+                             CommonUtils.exceptionStr(ex));
+            }
+          }
+          this._log.info("Provider manager shut down.");
+          this._providerManager = null;
+          this._currentProviderInShutdown = null;
+          this._onProviderManagerShutdown();
+        }
+        if (this._storage) {
+          this._log.info("Shutting down storage.");
+          try {
+            yield this._storage.close();
+            yield this._onStorageClose();
+          } catch (error) {
+            this._log.warn("Error when closing storage: " +
+                           CommonUtils.exceptionStr(error));
+          }
+          this._storage = null;
+        }
+
+        this._log.warn("Shutdown complete.");
+        this._shutdownComplete = true;
+      } finally {
+        this._deferredShutdown.resolve();
+        TelemetryStopwatch.finish(TELEMETRY_SHUTDOWN, this);
       }
-    }
+    }.bind(this));
   },
 
-  _onProviderManagerShutdown: function () {
-    this._log.info("Provider manager shut down.");
-    this._providerManager = null;
-    this._shutdownStorage();
+  onInit: function() {
+    return this._initializedDeferred.promise;
   },
 
-  _shutdownStorage: function () {
-    if (!this._storage) {
-      this._onShutdownComplete();
-    }
-
-    this._log.info("Shutting down storage.");
-    let onClose = this._onStorageClose.bind(this);
-    this._storage.close().then(onClose, onClose);
+  _onStorageCreated: function() {
+    // Do nothing.
+    // This method provides a hook point for the test suite.
   },
 
-  _onStorageClose: function (error) {
-    this._log.info("Storage has been closed.");
-
-    if (error) {
-      this._log.warn("Error when closing storage: " +
-                     CommonUtils.exceptionStr(error));
-    }
-
-    this._storage = null;
-    this._onShutdownComplete();
+  _onStorageClose: function() {
+    // Do nothing.
+    // This method provides a hook point for the test suite.
   },
 
-  _onShutdownComplete: function () {
-    this._log.warn("Shutdown complete.");
-    this._shutdownComplete = true;
-    TelemetryStopwatch.finish(TELEMETRY_SHUTDOWN, this);
-
-    if (this._shutdownCompleteCallback) {
-      this._shutdownCompleteCallback();
-    }
-  },
-
-  _waitForShutdown: function () {
-    if (this._shutdownComplete) {
-      return;
-    }
-
-    TelemetryStopwatch.start(TELEMETRY_SHUTDOWN_DELAY, this);
-    try {
-      this._shutdownCompleteCallback = Async.makeSpinningCallback();
-      this._shutdownCompleteCallback.wait();
-      this._shutdownCompleteCallback = null;
-    } finally {
-      TelemetryStopwatch.finish(TELEMETRY_SHUTDOWN_DELAY, this);
-    }
+  _onProviderManagerShutdown: function() {
+    // Do nothing.
+    // This method provides a hook point for the test suite.
   },
 
   /**
@@ -633,22 +684,7 @@ AbstractHealthReporter.prototype = Object.freeze({
    */
   _shutdown: function () {
     this._initiateShutdown();
-    this._waitForShutdown();
-  },
-
-  /**
-   * Return a promise that is resolved once the service has been initialized.
-   */
-  onInit: function () {
-    if (this._initializeHadError) {
-      throw new Error("Service failed to initialize.");
-    }
-
-    if (this._initialized) {
-      return CommonUtils.laterTickResolvingPromise(this);
-    }
-
-    return this._initializedDeferred.promise;
+    return this._promiseShutdown;
   },
 
   _performDailyMaintenance: function () {
@@ -760,7 +796,8 @@ AbstractHealthReporter.prototype = Object.freeze({
 
       try {
         TelemetryStopwatch.start(TELEMETRY_COLLECT_CONSTANT, this);
-        yield this._providerManager.collectConstantData();
+        yield this._providerManager.collectConstantData(name => this._currentProviderInCollect = name);
+        this._currentProviderInCollect = null;
         TelemetryStopwatch.finish(TELEMETRY_COLLECT_CONSTANT, this);
       } catch (ex) {
         TelemetryStopwatch.cancel(TELEMETRY_COLLECT_CONSTANT, this);
@@ -780,7 +817,8 @@ AbstractHealthReporter.prototype = Object.freeze({
         try {
           TelemetryStopwatch.start(TELEMETRY_COLLECT_DAILY, this);
           this._lastDailyDate = new Date();
-          yield this._providerManager.collectDailyData();
+          yield this._providerManager.collectDailyData(name => this._currentProviderInCollect = name);
+          this._currentProviderInCollect = null;
           TelemetryStopwatch.finish(TELEMETRY_COLLECT_DAILY, this);
         } catch (ex) {
           TelemetryStopwatch.cancel(TELEMETRY_COLLECT_DAILY, this);
@@ -897,6 +935,8 @@ AbstractHealthReporter.prototype = Object.freeze({
 
     let o = {
       version: 2,
+      clientID: this._state.clientID,
+      clientIDVersion: this._state.clientIDVersion,
       thisPingDate: pingDateString,
       geckoAppInfo: this.obtainAppInfo(this._log),
       data: {last: {}, days: {}},
@@ -1224,8 +1264,8 @@ this.HealthReporter.prototype = Object.freeze({
    * Whether this instance will upload data to a server.
    */
   get willUploadData() {
-    return this._policy.dataSubmissionPolicyAccepted &&
-           this._policy.healthReportUploadEnabled;
+    return  this._policy.userNotifiedOfCurrentPolicy &&
+            this._policy.healthReportUploadEnabled;
   },
 
   /**
@@ -1278,10 +1318,6 @@ this.HealthReporter.prototype = Object.freeze({
     return this._policy.deleteRemoteData(reason);
   },
 
-  _initializeState: function() {
-    return this._state.init();
-  },
-
   /**
    * Override default handler to incur an upload describing the error.
    */
@@ -1289,8 +1325,8 @@ this.HealthReporter.prototype = Object.freeze({
     // Need to capture this before we call the parent else it's always
     // set.
     let inShutdown = this._shutdownRequested;
-
     let result;
+
     try {
       result = AbstractHealthReporter.prototype._onInitError.call(this, error);
     } catch (ex) {
@@ -1303,8 +1339,8 @@ this.HealthReporter.prototype = Object.freeze({
     // startup errors is important. And, they should not occur with much
     // frequency in the wild. So, it shouldn't be too big of a deal.
     if (!inShutdown &&
-        this._policy.ensureNotifyResponse(new Date()) &&
-        this._policy.healthReportUploadEnabled) {
+        this._policy.healthReportUploadEnabled &&
+        this._policy.ensureUserNotified()) {
       // We don't care about what happens to this request. It's best
       // effort.
       let request = {
@@ -1331,7 +1367,12 @@ this.HealthReporter.prototype = Object.freeze({
         // The built-in provider may not be initialized if this instance failed
         // to initialize fully.
         if (hrProvider && !isDelete) {
-          hrProvider.recordEvent("uploadTransportFailure", date);
+          try {
+            hrProvider.recordEvent("uploadTransportFailure", date);
+          } catch (ex) {
+            this._log.error("Error recording upload transport failure: " +
+                            CommonUtils.exceptionStr(ex));
+          }
         }
 
         request.onSubmissionFailureSoft("Network transport error.");
@@ -1340,7 +1381,12 @@ this.HealthReporter.prototype = Object.freeze({
 
       if (!result.serverSuccess) {
         if (hrProvider && !isDelete) {
-          hrProvider.recordEvent("uploadServerFailure", date);
+          try {
+            hrProvider.recordEvent("uploadServerFailure", date);
+          } catch (ex) {
+            this._log.error("Error recording server failure: " +
+                            CommonUtils.exceptionStr(ex));
+          }
         }
 
         request.onSubmissionFailureHard("Server failure.");
@@ -1348,7 +1394,12 @@ this.HealthReporter.prototype = Object.freeze({
       }
 
       if (hrProvider && !isDelete) {
-        hrProvider.recordEvent("uploadSuccess", date);
+        try {
+          hrProvider.recordEvent("uploadSuccess", date);
+        } catch (ex) {
+          this._log.error("Error recording upload success: " +
+                          CommonUtils.exceptionStr(ex));
+        }
       }
 
       if (isDelete) {
@@ -1413,7 +1464,12 @@ this.HealthReporter.prototype = Object.freeze({
         if (hrProvider) {
           let event = lastID ? "continuationUploadAttempt"
                              : "firstDocumentUploadAttempt";
-          hrProvider.recordEvent(event, now);
+          try {
+            hrProvider.recordEvent(event, now);
+          } catch (ex) {
+            this._log.error("Error when recording upload attempt: " +
+                            CommonUtils.exceptionStr(ex));
+          }
         }
 
         TelemetryStopwatch.start(TELEMETRY_UPLOAD, this);
@@ -1429,7 +1485,12 @@ this.HealthReporter.prototype = Object.freeze({
         } catch (ex) {
           TelemetryStopwatch.cancel(TELEMETRY_UPLOAD, this);
           if (hrProvider) {
-            hrProvider.recordEvent("uploadClientFailure", now);
+            try {
+              hrProvider.recordEvent("uploadClientFailure", now);
+            } catch (ex) {
+              this._log.error("Error when recording client failure: " +
+                              CommonUtils.exceptionStr(ex));
+            }
           }
           throw ex;
         }
@@ -1457,9 +1518,23 @@ this.HealthReporter.prototype = Object.freeze({
     this._log.warn("Deleting remote data.");
     let client = new BagheeraClient(this.serverURI);
 
-    return client.deleteDocument(this.serverNamespace, this.lastSubmitID)
-                 .then(this._onBagheeraResult.bind(this, request, true, this._now()),
-                       this._onSubmitDataRequestFailure.bind(this));
+    return Task.spawn(function* doDelete() {
+      try {
+        let result = yield client.deleteDocument(this.serverNamespace,
+                                                 this.lastSubmitID);
+        yield this._onBagheeraResult(request, true, this._now(), result);
+      } catch (ex) {
+        this._log.error("Error processing request to delete data: " +
+                        CommonUtils.exceptionStr(error));
+      } finally {
+        // If we don't have any remote documents left, nuke the ID.
+        // This is done for privacy reasons. Why preserve the ID if we
+        // don't need to?
+        if (!this.haveRemoteData()) {
+          yield this._state.resetClientID();
+        }
+      }
+    }.bind(this));
   },
 });
 

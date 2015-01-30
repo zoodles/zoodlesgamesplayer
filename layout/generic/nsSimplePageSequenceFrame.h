@@ -58,16 +58,17 @@ public:
 class nsSimplePageSequenceFrame : public nsContainerFrame,
                                   public nsIPageSequenceFrame {
 public:
-  friend nsIFrame* NS_NewSimplePageSequenceFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
+  friend nsSimplePageSequenceFrame* NS_NewSimplePageSequenceFrame(nsIPresShell* aPresShell,
+                                                                  nsStyleContext* aContext);
 
   NS_DECL_QUERYFRAME
   NS_DECL_FRAMEARENA_HELPERS
 
   // nsIFrame
-  virtual nsresult  Reflow(nsPresContext*      aPresContext,
-                           nsHTMLReflowMetrics& aDesiredSize,
-                           const nsHTMLReflowState& aMaxSize,
-                           nsReflowStatus&      aStatus) MOZ_OVERRIDE;
+  virtual void Reflow(nsPresContext*      aPresContext,
+                      nsHTMLReflowMetrics& aDesiredSize,
+                      const nsHTMLReflowState& aMaxSize,
+                      nsReflowStatus&      aStatus) MOZ_OVERRIDE;
 
   virtual void BuildDisplayList(nsDisplayListBuilder*   aBuilder,
                                 const nsRect&           aDirtyRect,
@@ -113,7 +114,7 @@ public:
 #endif
 
 protected:
-  nsSimplePageSequenceFrame(nsStyleContext* aContext);
+  explicit nsSimplePageSequenceFrame(nsStyleContext* aContext);
   virtual ~nsSimplePageSequenceFrame();
 
   void SetPageNumberFormat(const char* aPropName, const char* aDefPropVal, bool aPageNumOnly);
@@ -127,6 +128,13 @@ protected:
   void SetDesiredSize(nsHTMLReflowMetrics& aDesiredSize,
                       const nsHTMLReflowState& aReflowState,
                       nscoord aWidth, nscoord aHeight);
+
+  // Helper function to compute the offset needed to center a child
+  // page-frame's margin-box inside our content-box.
+  nscoord ComputeCenteringMargin(nscoord aContainerContentBoxWidth,
+                                 nscoord aChildPaddingBoxWidth,
+                                 const nsMargin& aChildPhysicalMargin);
+
 
   void DetermineWhetherToPrintPage();
   nsIFrame* GetCurrentPageFrame();

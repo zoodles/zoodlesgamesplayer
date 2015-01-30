@@ -12,52 +12,64 @@
 #include <string.h>
 #include "cubeb/cubeb.h"
 #include "cubeb-internal.h"
+#include <stdio.h>
 
 #ifdef DISABLE_LIBPULSE_DLOPEN
 #define WRAP(x) x
 #else
 #define WRAP(x) cubeb_##x
-#define MAKE_TYPEDEF(x) static typeof(x) * cubeb_##x
-MAKE_TYPEDEF(pa_channel_map_init_auto);
-MAKE_TYPEDEF(pa_context_connect);
-MAKE_TYPEDEF(pa_context_disconnect);
-MAKE_TYPEDEF(pa_context_drain);
-MAKE_TYPEDEF(pa_context_get_state);
-MAKE_TYPEDEF(pa_context_new);
-MAKE_TYPEDEF(pa_context_rttime_new);
-MAKE_TYPEDEF(pa_context_set_state_callback);
-MAKE_TYPEDEF(pa_context_unref);
-MAKE_TYPEDEF(pa_context_get_sink_info_by_name);
-MAKE_TYPEDEF(pa_context_get_server_info);
-MAKE_TYPEDEF(pa_frame_size);
-MAKE_TYPEDEF(pa_operation_get_state);
-MAKE_TYPEDEF(pa_operation_unref);
-MAKE_TYPEDEF(pa_rtclock_now);
-MAKE_TYPEDEF(pa_stream_begin_write);
-MAKE_TYPEDEF(pa_stream_cancel_write);
-MAKE_TYPEDEF(pa_stream_connect_playback);
-MAKE_TYPEDEF(pa_stream_cork);
-MAKE_TYPEDEF(pa_stream_disconnect);
-MAKE_TYPEDEF(pa_stream_get_latency);
-MAKE_TYPEDEF(pa_stream_get_state);
-MAKE_TYPEDEF(pa_stream_get_time);
-MAKE_TYPEDEF(pa_stream_new);
-MAKE_TYPEDEF(pa_stream_set_state_callback);
-MAKE_TYPEDEF(pa_stream_set_write_callback);
-MAKE_TYPEDEF(pa_stream_unref);
-MAKE_TYPEDEF(pa_stream_update_timing_info);
-MAKE_TYPEDEF(pa_stream_write);
-MAKE_TYPEDEF(pa_threaded_mainloop_free);
-MAKE_TYPEDEF(pa_threaded_mainloop_get_api);
-MAKE_TYPEDEF(pa_threaded_mainloop_lock);
-MAKE_TYPEDEF(pa_threaded_mainloop_in_thread);
-MAKE_TYPEDEF(pa_threaded_mainloop_new);
-MAKE_TYPEDEF(pa_threaded_mainloop_signal);
-MAKE_TYPEDEF(pa_threaded_mainloop_start);
-MAKE_TYPEDEF(pa_threaded_mainloop_stop);
-MAKE_TYPEDEF(pa_threaded_mainloop_unlock);
-MAKE_TYPEDEF(pa_threaded_mainloop_wait);
-MAKE_TYPEDEF(pa_usec_to_bytes);
+#define LIBPULSE_API_VISIT(X)                   \
+  X(pa_channel_map_can_balance)                 \
+  X(pa_channel_map_init_auto)                   \
+  X(pa_context_connect)                         \
+  X(pa_context_disconnect)                      \
+  X(pa_context_drain)                           \
+  X(pa_context_get_server_info)                 \
+  X(pa_context_get_sink_info_by_name)           \
+  X(pa_context_get_state)                       \
+  X(pa_context_new)                             \
+  X(pa_context_rttime_new)                      \
+  X(pa_context_set_sink_input_volume)           \
+  X(pa_context_set_state_callback)              \
+  X(pa_context_unref)                           \
+  X(pa_cvolume_set)                             \
+  X(pa_cvolume_set_balance)                     \
+  X(pa_frame_size)                              \
+  X(pa_operation_get_state)                     \
+  X(pa_operation_unref)                         \
+  X(pa_rtclock_now)                             \
+  X(pa_stream_begin_write)                      \
+  X(pa_stream_cancel_write)                     \
+  X(pa_stream_connect_playback)                 \
+  X(pa_stream_cork)                             \
+  X(pa_stream_disconnect)                       \
+  X(pa_stream_get_channel_map)                  \
+  X(pa_stream_get_index)                        \
+  X(pa_stream_get_latency)                      \
+  X(pa_stream_get_sample_spec)                  \
+  X(pa_stream_get_state)                        \
+  X(pa_stream_get_time)                         \
+  X(pa_stream_new)                              \
+  X(pa_stream_set_state_callback)               \
+  X(pa_stream_set_write_callback)               \
+  X(pa_stream_unref)                            \
+  X(pa_stream_update_timing_info)               \
+  X(pa_stream_write)                            \
+  X(pa_sw_volume_from_linear)                   \
+  X(pa_threaded_mainloop_free)                  \
+  X(pa_threaded_mainloop_get_api)               \
+  X(pa_threaded_mainloop_in_thread)             \
+  X(pa_threaded_mainloop_lock)                  \
+  X(pa_threaded_mainloop_new)                   \
+  X(pa_threaded_mainloop_signal)                \
+  X(pa_threaded_mainloop_start)                 \
+  X(pa_threaded_mainloop_stop)                  \
+  X(pa_threaded_mainloop_unlock)                \
+  X(pa_threaded_mainloop_wait)                  \
+  X(pa_usec_to_bytes)                           \
+
+#define MAKE_TYPEDEF(x) static typeof(x) * cubeb_##x;
+LIBPULSE_API_VISIT(MAKE_TYPEDEF);
 #undef MAKE_TYPEDEF
 #endif
 
@@ -69,6 +81,7 @@ struct cubeb {
   pa_threaded_mainloop * mainloop;
   pa_context * context;
   pa_sink_info * default_sink_info;
+  char * context_name;
   int error;
 };
 
@@ -81,7 +94,10 @@ struct cubeb_stream {
   pa_time_event * drain_timer;
   pa_sample_spec sample_spec;
   int shutdown;
+  float volume;
 };
+
+const float PULSE_NO_GAIN = -1.0;
 
 enum cork_state {
   UNCORK = 0,
@@ -93,7 +109,7 @@ static void
 sink_info_callback(pa_context * context, const pa_sink_info * info, int eol, void * u)
 {
   cubeb * ctx = u;
-   if (!eol) {
+  if (!eol) {
     ctx->default_sink_info = malloc(sizeof(pa_sink_info));
     memcpy(ctx->default_sink_info, info, sizeof(pa_sink_info));
   }
@@ -186,6 +202,23 @@ stream_request_callback(pa_stream * s, size_t nbytes, void * u)
       return;
     }
 
+    if (stm->volume != PULSE_NO_GAIN) {
+      uint32_t samples =  size * stm->sample_spec.channels / frame_size ;
+
+      if (stm->sample_spec.format == PA_SAMPLE_S16LE ||
+          stm->sample_spec.format == PA_SAMPLE_S16LE) {
+        short * b = buffer;
+        for (uint32_t i = 0; i < samples; i++) {
+          b[i] *= stm->volume;
+        }
+      } else {
+        float * b = buffer;
+        for (uint32_t i = 0; i < samples; i++) {
+          b[i] *= stm->volume;
+        }
+      }
+    }
+
     r = WRAP(pa_stream_write)(s, buffer, got * frame_size, NULL, 0, PA_SEEK_RELATIVE);
     assert(r == 0);
 
@@ -243,10 +276,12 @@ operation_wait(cubeb * ctx, pa_stream * stream, pa_operation * o)
 {
   while (WRAP(pa_operation_get_state)(o) == PA_OPERATION_RUNNING) {
     WRAP(pa_threaded_mainloop_wait)(ctx->mainloop);
-    if (!PA_CONTEXT_IS_GOOD(WRAP(pa_context_get_state)(ctx->context)))
+    if (!PA_CONTEXT_IS_GOOD(WRAP(pa_context_get_state)(ctx->context))) {
       return -1;
-    if (stream && !PA_STREAM_IS_GOOD(WRAP(pa_stream_get_state)(stream)))
+    }
+    if (stream && !PA_STREAM_IS_GOOD(WRAP(pa_stream_get_state)(stream))) {
       return -1;
+    }
   }
   return 0;
 }
@@ -270,7 +305,37 @@ stream_cork(cubeb_stream * stm, enum cork_state state)
   }
 }
 
+static void pulse_context_destroy(cubeb * ctx);
 static void pulse_destroy(cubeb * ctx);
+
+static int
+pulse_context_init(cubeb * ctx)
+{
+  if (ctx->context) {
+    assert(ctx->error == 1);
+    pulse_context_destroy(ctx);
+  }
+
+  ctx->context = WRAP(pa_context_new)(WRAP(pa_threaded_mainloop_get_api)(ctx->mainloop),
+                                      ctx->context_name);
+  WRAP(pa_context_set_state_callback)(ctx->context, context_state_callback, ctx);
+
+  WRAP(pa_threaded_mainloop_lock)(ctx->mainloop);
+  WRAP(pa_context_connect)(ctx->context, NULL, 0, NULL);
+
+  if (wait_until_context_ready(ctx) != 0) {
+    WRAP(pa_threaded_mainloop_unlock)(ctx->mainloop);
+    pulse_context_destroy(ctx);
+    ctx->context = NULL;
+    return -1;
+  }
+
+  WRAP(pa_threaded_mainloop_unlock)(ctx->mainloop);
+
+  ctx->error = 0;
+
+  return 0;
+}
 
 /*static*/ int
 pulse_init(cubeb ** context, char const * context_name)
@@ -286,53 +351,15 @@ pulse_init(cubeb ** context, char const * context_name)
     return CUBEB_ERROR;
   }
 
-#define LOAD(x) do { \
-    cubeb_##x = dlsym(libpulse, #x); \
-    if (!cubeb_##x) { \
-      dlclose(libpulse); \
-      return CUBEB_ERROR; \
-    } \
-  } while(0)
-  LOAD(pa_channel_map_init_auto);
-  LOAD(pa_context_connect);
-  LOAD(pa_context_disconnect);
-  LOAD(pa_context_drain);
-  LOAD(pa_context_get_state);
-  LOAD(pa_context_new);
-  LOAD(pa_context_rttime_new);
-  LOAD(pa_context_set_state_callback);
-  LOAD(pa_context_get_sink_info_by_name);
-  LOAD(pa_context_get_server_info);
-  LOAD(pa_context_unref);
-  LOAD(pa_frame_size);
-  LOAD(pa_operation_get_state);
-  LOAD(pa_operation_unref);
-  LOAD(pa_rtclock_now);
-  LOAD(pa_stream_begin_write);
-  LOAD(pa_stream_cancel_write);
-  LOAD(pa_stream_connect_playback);
-  LOAD(pa_stream_cork);
-  LOAD(pa_stream_disconnect);
-  LOAD(pa_stream_get_latency);
-  LOAD(pa_stream_get_state);
-  LOAD(pa_stream_get_time);
-  LOAD(pa_stream_new);
-  LOAD(pa_stream_set_state_callback);
-  LOAD(pa_stream_set_write_callback);
-  LOAD(pa_stream_unref);
-  LOAD(pa_stream_update_timing_info);
-  LOAD(pa_stream_write);
-  LOAD(pa_threaded_mainloop_free);
-  LOAD(pa_threaded_mainloop_get_api);
-  LOAD(pa_threaded_mainloop_lock);
-  LOAD(pa_threaded_mainloop_in_thread);
-  LOAD(pa_threaded_mainloop_new);
-  LOAD(pa_threaded_mainloop_signal);
-  LOAD(pa_threaded_mainloop_start);
-  LOAD(pa_threaded_mainloop_stop);
-  LOAD(pa_threaded_mainloop_unlock);
-  LOAD(pa_threaded_mainloop_wait);
-  LOAD(pa_usec_to_bytes);
+#define LOAD(x) {                               \
+    cubeb_##x = dlsym(libpulse, #x);            \
+    if (!cubeb_##x) {                           \
+      dlclose(libpulse);                        \
+      return CUBEB_ERROR;                       \
+    }                                           \
+  }
+
+  LIBPULSE_API_VISIT(LOAD);
 #undef LOAD
 #endif
 
@@ -343,20 +370,17 @@ pulse_init(cubeb ** context, char const * context_name)
   ctx->libpulse = libpulse;
 
   ctx->mainloop = WRAP(pa_threaded_mainloop_new)();
-  ctx->context = WRAP(pa_context_new)(WRAP(pa_threaded_mainloop_get_api)(ctx->mainloop), context_name);
   ctx->default_sink_info = NULL;
 
-  WRAP(pa_context_set_state_callback)(ctx->context, context_state_callback, ctx);
   WRAP(pa_threaded_mainloop_start)(ctx->mainloop);
 
-  WRAP(pa_threaded_mainloop_lock)(ctx->mainloop);
-  WRAP(pa_context_connect)(ctx->context, NULL, 0, NULL);
-
-  if (wait_until_context_ready(ctx) != 0) {
-    WRAP(pa_threaded_mainloop_unlock)(ctx->mainloop);
+  ctx->context_name = context_name ? strdup(context_name) : NULL;
+  if (pulse_context_init(ctx) != 0) {
     pulse_destroy(ctx);
     return CUBEB_ERROR;
   }
+
+  WRAP(pa_threaded_mainloop_lock)(ctx->mainloop);
   WRAP(pa_context_get_server_info)(ctx->context, server_info_callback, ctx);
   WRAP(pa_threaded_mainloop_unlock)(ctx->mainloop);
 
@@ -376,9 +400,11 @@ pulse_get_max_channel_count(cubeb * ctx, uint32_t * max_channels)
 {
   assert(ctx && max_channels);
 
+  WRAP(pa_threaded_mainloop_lock)(ctx->mainloop);
   while (!ctx->default_sink_info) {
     WRAP(pa_threaded_mainloop_wait)(ctx->mainloop);
   }
+  WRAP(pa_threaded_mainloop_unlock)(ctx->mainloop);
 
   *max_channels = ctx->default_sink_info->channel_map.channels;
 
@@ -388,6 +414,8 @@ pulse_get_max_channel_count(cubeb * ctx, uint32_t * max_channels)
 static int
 pulse_get_preferred_sample_rate(cubeb * ctx, uint32_t * rate)
 {
+  assert(ctx && rate);
+
   WRAP(pa_threaded_mainloop_lock)(ctx->mainloop);
   while (!ctx->default_sink_info) {
     WRAP(pa_threaded_mainloop_wait)(ctx->mainloop);
@@ -409,21 +437,30 @@ pulse_get_min_latency(cubeb * ctx, cubeb_stream_params params, uint32_t * latenc
 }
 
 static void
-pulse_destroy(cubeb * ctx)
+pulse_context_destroy(cubeb * ctx)
 {
   pa_operation * o;
 
+  WRAP(pa_threaded_mainloop_lock)(ctx->mainloop);
+  o = WRAP(pa_context_drain)(ctx->context, context_notify_callback, ctx);
+  if (o) {
+    operation_wait(ctx, NULL, o);
+    WRAP(pa_operation_unref)(o);
+  }
+  WRAP(pa_context_set_state_callback)(ctx->context, NULL, NULL);
+  WRAP(pa_context_disconnect)(ctx->context);
+  WRAP(pa_context_unref)(ctx->context);
+  WRAP(pa_threaded_mainloop_unlock)(ctx->mainloop);
+}
+
+static void
+pulse_destroy(cubeb * ctx)
+{
+  if (ctx->context_name) {
+    free(ctx->context_name);
+  }
   if (ctx->context) {
-    WRAP(pa_threaded_mainloop_lock)(ctx->mainloop);
-    o = WRAP(pa_context_drain)(ctx->context, context_notify_callback, ctx);
-    if (o) {
-      operation_wait(ctx, NULL, o);
-      WRAP(pa_operation_unref)(o);
-    }
-    WRAP(pa_context_set_state_callback)(ctx->context, NULL, NULL);
-    WRAP(pa_context_disconnect)(ctx->context);
-    WRAP(pa_context_unref)(ctx->context);
-    WRAP(pa_threaded_mainloop_unlock)(ctx->mainloop);
+    pulse_context_destroy(ctx);
   }
 
   if (ctx->mainloop) {
@@ -475,6 +512,11 @@ pulse_stream_init(cubeb * context, cubeb_stream ** stream, char const * stream_n
     return CUBEB_ERROR_INVALID_FORMAT;
   }
 
+  // If the connection failed for some reason, try to reconnect
+  if (context->error == 1 && pulse_context_init(context) != 0) {
+    return CUBEB_ERROR;
+  }
+
   ss.rate = stream_params.rate;
   ss.channels = stream_params.channels;
 
@@ -488,6 +530,7 @@ pulse_stream_init(cubeb * context, cubeb_stream ** stream, char const * stream_n
   stm->user_ptr = user_ptr;
 
   stm->sample_spec = ss;
+  stm->volume = PULSE_NO_GAIN;
 
   battr.maxlength = -1;
   battr.tlength = WRAP(pa_usec_to_bytes)(latency * PA_USEC_PER_MSEC, &stm->sample_spec);
@@ -504,9 +547,9 @@ pulse_stream_init(cubeb * context, cubeb_stream ** stream, char const * stream_n
   WRAP(pa_stream_set_state_callback)(stm->stream, stream_state_callback, stm);
   WRAP(pa_stream_set_write_callback)(stm->stream, stream_request_callback, stm);
   WRAP(pa_stream_connect_playback)(stm->stream, NULL, &battr,
-                             PA_STREAM_AUTO_TIMING_UPDATE | PA_STREAM_INTERPOLATE_TIMING |
-                             PA_STREAM_START_CORKED,
-                             NULL, NULL);
+                                   PA_STREAM_AUTO_TIMING_UPDATE | PA_STREAM_INTERPOLATE_TIMING |
+                                   PA_STREAM_START_CORKED,
+                                   NULL, NULL);
 
   r = wait_until_stream_ready(stm);
   if (r == 0) {
@@ -613,6 +656,71 @@ pulse_stream_get_latency(cubeb_stream * stm, uint32_t * latency)
   return CUBEB_OK;
 }
 
+void volume_success(pa_context *c, int success, void *userdata)
+{
+  cubeb_stream * stream = userdata;
+  assert(success);
+  WRAP(pa_threaded_mainloop_signal)(stream->context->mainloop, 0);
+}
+
+int
+pulse_stream_set_volume(cubeb_stream * stm, float volume)
+{
+  uint32_t index;
+  pa_operation * op;
+  pa_volume_t vol;
+  pa_cvolume cvol;
+  const pa_sample_spec * ss;
+
+  WRAP(pa_threaded_mainloop_lock)(stm->context->mainloop);
+
+  while (!stm->context->default_sink_info) {
+    WRAP(pa_threaded_mainloop_wait)(stm->context->mainloop);
+  }
+
+  /* if the pulse daemon is configured to use flat volumes,
+   * apply our own gain instead of changing the input volume on the sink. */
+  if (stm->context->default_sink_info->flags & PA_SINK_FLAT_VOLUME) {
+    stm->volume = volume;
+  } else {
+    ss = WRAP(pa_stream_get_sample_spec)(stm->stream);
+
+    vol = WRAP(pa_sw_volume_from_linear)(volume);
+    WRAP(pa_cvolume_set)(&cvol, ss->channels, vol);
+
+    index = WRAP(pa_stream_get_index)(stm->stream);
+
+    op = WRAP(pa_context_set_sink_input_volume)(stm->context->context,
+                                                index, &cvol, volume_success,
+                                                stm);
+    if (op) {
+      operation_wait(stm->context, stm->stream, op);
+      WRAP(pa_operation_unref)(op);
+    }
+  }
+
+  WRAP(pa_threaded_mainloop_unlock)(stm->context->mainloop);
+
+  return CUBEB_OK;
+}
+
+int
+pulse_stream_set_panning(cubeb_stream * stream, float panning)
+{
+  const pa_channel_map * map;
+  pa_cvolume vol;
+
+  map = WRAP(pa_stream_get_channel_map)(stream->stream);
+
+  if (!WRAP(pa_channel_map_can_balance)(map)) {
+    return CUBEB_ERROR;
+  }
+
+  WRAP(pa_cvolume_set_balance)(&vol, map, panning);
+
+  return CUBEB_OK;
+}
+
 static struct cubeb_ops const pulse_ops = {
   .init = pulse_init,
   .get_backend_id = pulse_get_backend_id,
@@ -625,5 +733,10 @@ static struct cubeb_ops const pulse_ops = {
   .stream_start = pulse_stream_start,
   .stream_stop = pulse_stream_stop,
   .stream_get_position = pulse_stream_get_position,
-  .stream_get_latency = pulse_stream_get_latency
+  .stream_get_latency = pulse_stream_get_latency,
+  .stream_set_volume = pulse_stream_set_volume,
+  .stream_set_panning = pulse_stream_set_panning,
+  .stream_get_current_device = NULL,
+  .stream_device_destroy = NULL,
+  .stream_register_device_changed_callback = NULL
 };

@@ -2,10 +2,9 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-import json
+from ..reader import LogHandler
 
-
-class BaseFormatter(object):
+class BaseFormatter(LogHandler):
     """Base class for implementing non-trivial formatters.
 
     Subclasses are expected to provide a method for each action type they
@@ -18,22 +17,3 @@ class BaseFormatter(object):
               #For simplicity in the example pretend the id is always a string
               return data["test"]
     """
-    def __init__(self):
-        pass
-
-    def __call__(self, data):
-        if hasattr(self, data["action"]):
-            handler = getattr(self, data["action"])
-            return handler(data)
-
-
-def format_file(input_file, handler):
-    while True:
-        line = input_file.readline()
-        if not line:
-            break
-        try:
-            data = json.loads(line.strip())
-            formatter(data)
-        except:
-            pass

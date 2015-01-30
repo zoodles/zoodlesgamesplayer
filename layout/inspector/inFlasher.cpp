@@ -11,7 +11,6 @@
 #include "nsIFrame.h"
 #include "nsIWidget.h"
 #include "nsReadableUtils.h"
-#include "nsRenderingContext.h"
 #include "nsIDOMWindow.h"
 #include "nsIContent.h"
 
@@ -30,7 +29,7 @@ inFlasher::~inFlasher()
 {
 }
 
-NS_IMPL_ISUPPORTS1(inFlasher, inIFlasher)
+NS_IMPL_ISUPPORTS(inFlasher, inIFlasher)
 
 ///////////////////////////////////////////////////////////////////////////////
 // inIFlasher
@@ -103,49 +102,12 @@ inFlasher::SetInvert(bool aInvert)
 NS_IMETHODIMP
 inFlasher::RepaintElement(nsIDOMElement* aElement)
 {
-  NS_ENSURE_ARG_POINTER(aElement);
-  nsIFrame* frame = inLayoutUtils::GetFrameFor(aElement);
-  if (!frame) return NS_OK;
-
-  frame->InvalidateFrame();
-
   return NS_OK;
 }
 
 NS_IMETHODIMP
 inFlasher::DrawElementOutline(nsIDOMElement* aElement)
 {
-  NS_ENSURE_ARG_POINTER(aElement);
-  nsCOMPtr<nsIDOMWindow> window = inLayoutUtils::GetWindowFor(aElement);
-  if (!window) return NS_OK;
-  nsCOMPtr<nsIPresShell> presShell = inLayoutUtils::GetPresShellFor(window);
-  if (!presShell) return NS_OK;
-
-  nsIFrame* frame = inLayoutUtils::GetFrameFor(aElement);
-
-  bool isFirstFrame = true;
-
-  while (frame) {
-    nsPoint offset;
-    nsIWidget* widget = frame->GetNearestWidget(offset);
-    if (widget) {
-      nsRefPtr<nsRenderingContext> rcontext = new nsRenderingContext();
-      rcontext->Init(frame->PresContext()->DeviceContext(),
-                     widget->GetThebesSurface());
-
-      nsRect rect(offset, frame->GetSize());
-      if (mInvert) {
-        rcontext->InvertRect(rect);
-      }
-
-      bool isLastFrame = frame->GetNextContinuation() == nullptr;
-      DrawOutline(rect.x, rect.y, rect.width, rect.height, rcontext,
-                  isFirstFrame, isLastFrame);
-      isFirstFrame = false;
-    }
-    frame = frame->GetNextContinuation();
-  }
-
   return NS_OK;
 }
 
@@ -170,37 +132,4 @@ inFlasher::ScrollElementIntoView(nsIDOMElement *aElement)
                                    nsIPresShell::SCROLL_OVERFLOW_HIDDEN);
 
   return NS_OK;
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// inFlasher
-
-void
-inFlasher::DrawOutline(nscoord aX, nscoord aY, nscoord aWidth, nscoord aHeight,
-                       nsRenderingContext* aRenderContext,
-                       bool aDrawBegin, bool aDrawEnd)
-{
-  aRenderContext->SetColor(mColor);
-
-  DrawLine(aX, aY, aWidth, DIR_HORIZONTAL, BOUND_OUTER, aRenderContext);
-  if (aDrawBegin) {
-    DrawLine(aX, aY, aHeight, DIR_VERTICAL, BOUND_OUTER, aRenderContext);
-  }
-  DrawLine(aX, aY+aHeight, aWidth, DIR_HORIZONTAL, BOUND_INNER, aRenderContext);
-  if (aDrawEnd) {
-    DrawLine(aX+aWidth, aY, aHeight, DIR_VERTICAL, BOUND_INNER, aRenderContext);
-  }
-}
-
-void
-inFlasher::DrawLine(nscoord aX, nscoord aY, nscoord aLength,
-                    bool aDir, bool aBounds,
-                    nsRenderingContext* aRenderContext)
-{
-  nscoord thickTwips = nsPresContext::CSSPixelsToAppUnits(mThickness);
-  if (aDir) { // horizontal
-    aRenderContext->FillRect(aX, aY+(aBounds?0:-thickTwips), aLength, thickTwips);
-  } else { // vertical
-    aRenderContext->FillRect(aX+(aBounds?0:-thickTwips), aY, thickTwips, aLength);
-  }
 }

@@ -10,8 +10,8 @@
 namespace mozilla {
 namespace dom {
 
-NS_IMPL_CYCLE_COLLECTION_INHERITED_1(DOMCursor, DOMRequest,
-                                     mCallback)
+NS_IMPL_CYCLE_COLLECTION_INHERITED(DOMCursor, DOMRequest,
+                                   mCallback)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(DOMCursor)
   NS_INTERFACE_MAP_ENTRY(nsIDOMDOMCursor)
@@ -33,7 +33,7 @@ DOMCursor::Reset()
   MOZ_ASSERT(!mFinished);
 
   // Reset the request state so we can FireSuccess() again.
-  mResult = JSVAL_VOID;
+  mResult.setUndefined();
   mDone = false;
 }
 
@@ -66,7 +66,7 @@ DOMCursor::Continue(ErrorResult& aRv)
   MOZ_ASSERT(mCallback, "If you're creating your own cursor class with no callback, you should override Continue()");
 
   // We need to have a result here because we must be in a 'success' state.
-  if (mResult == JSVAL_VOID) {
+  if (mResult.isUndefined()) {
     aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
     return;
   }
@@ -76,9 +76,9 @@ DOMCursor::Continue(ErrorResult& aRv)
 }
 
 /* virtual */ JSObject*
-DOMCursor::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+DOMCursor::WrapObject(JSContext* aCx)
 {
-  return DOMCursorBinding::Wrap(aCx, aScope, this);
+  return DOMCursorBinding::Wrap(aCx, this);
 }
 
 } // namespace dom

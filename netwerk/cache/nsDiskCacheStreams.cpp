@@ -42,12 +42,12 @@ public:
                             const char *          buffer,
                             uint32_t              endOfStream);
 
-    virtual ~nsDiskCacheInputStream();
-    
     NS_DECL_THREADSAFE_ISUPPORTS
     NS_DECL_NSIINPUTSTREAM
 
 private:
+    virtual ~nsDiskCacheInputStream();
+
     nsDiskCacheStreamIO *           mStreamIO;  // backpointer to parent
     PRFileDesc *                    mFD;
     const char *                    mBuffer;
@@ -57,7 +57,7 @@ private:
 };
 
 
-NS_IMPL_ISUPPORTS1(nsDiskCacheInputStream, nsIInputStream)
+NS_IMPL_ISUPPORTS(nsDiskCacheInputStream, nsIInputStream)
 
 
 nsDiskCacheInputStream::nsDiskCacheInputStream( nsDiskCacheStreamIO * parent,
@@ -190,7 +190,7 @@ nsDiskCacheInputStream::IsNonBlocking(bool * nonBlocking)
 /******************************************************************************
  *  nsDiskCacheStreamIO
  *****************************************************************************/
-NS_IMPL_ISUPPORTS1(nsDiskCacheStreamIO, nsIOutputStream)
+NS_IMPL_ISUPPORTS(nsDiskCacheStreamIO, nsIOutputStream)
 
 nsDiskCacheStreamIO::nsDiskCacheStreamIO(nsDiskCacheBinding *   binding)
     : mBinding(binding)

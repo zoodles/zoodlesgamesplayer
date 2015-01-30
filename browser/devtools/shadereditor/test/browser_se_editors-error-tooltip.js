@@ -1,13 +1,20 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
+///////////////////
+//
+// Whitelisting this test.
+// As part of bug 1077403, the leaking uncaught rejection should be fixed. 
+//
+thisTestLeaksUncaughtRejectionsAndShouldBeFixed("Error: Shader Editor is still waiting for a WebGL context to be created.");
+
 /**
  * Tests if error tooltips can be opened from the editor's gutter when there's
  * a shader compilation error.
  */
 
 function ifWebGLSupported() {
-  let [target, debuggee, panel] = yield initShaderEditor(SIMPLE_CANVAS_URL);
+  let { target, panel } = yield initShaderEditor(SIMPLE_CANVAS_URL);
   let { gFront, EVENTS, ShadersEditorsView } = panel.panelWin;
 
   reload(target);
@@ -22,12 +29,12 @@ function ifWebGLSupported() {
   vsEditor.replaceText("vec3", { line: 7, ch: 22 }, { line: 7, ch: 26 });
   yield once(panel.panelWin, EVENTS.SHADER_COMPILED);
 
-  // Synthesizing 'mouseenter' events doesn't work, hack around this by
+  // Synthesizing 'mouseover' events doesn't work, hack around this by
   // manually calling the event listener with the expected arguments.
   let editorDocument = vsEditor.container.contentDocument;
   let marker = editorDocument.querySelector(".error");
   let parsed = ShadersEditorsView._errors.vs[0].messages;
-  ShadersEditorsView._onMarkerMouseEnter(7, marker, parsed);
+  ShadersEditorsView._onMarkerMouseOver(7, marker, parsed);
 
   let tooltip = marker._markerErrorsTooltip;
   ok(tooltip, "A tooltip was created successfully.");

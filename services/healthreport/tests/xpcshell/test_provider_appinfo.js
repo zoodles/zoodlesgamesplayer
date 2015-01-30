@@ -3,16 +3,29 @@
 
 "use strict";
 
-const {interfaces: Ci, results: Cr, utils: Cu} = Components;
+const {interfaces: Ci, results: Cr, utils: Cu, classes: Cc} = Components;
 
 Cu.import("resource://gre/modules/Metrics.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/services/healthreport/providers.jsm");
 Cu.import("resource://testing-common/services/healthreport/utils.jsm");
+Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+
+XPCOMUtils.defineLazyGetter(this, "gDatareportingService",
+  () => Cc["@mozilla.org/datareporting/service;1"]
+          .getService(Ci.nsISupports)
+          .wrappedJSObject);
 
 
 function run_test() {
+  do_get_profile();
+
+  // Send the needed startup notifications to the datareporting service
+  // to ensure that it has been initialized.
+  gDatareportingService.observe(null, "app-startup", null);
+  gDatareportingService.observe(null, "profile-after-change", null);
+
   run_next_test();
 }
 
@@ -159,15 +172,9 @@ add_task(function test_record_telemetry() {
   let storage = yield Metrics.Storage("record_telemetry");
   let provider;
 
-  // We set both prefs, so we don't have to fight the preprocessor.
-  function setTelemetry(bool) {
-    Services.prefs.setBoolPref("toolkit.telemetry.enabled", bool);
-    Services.prefs.setBoolPref("toolkit.telemetry.enabledPreRelease", bool);
-  }
-
   let now = new Date();
 
-  setTelemetry(true);
+  Services.prefs.setBoolPref("toolkit.telemetry.enabled", true);
   provider = new AppInfoProvider();
   yield provider.init(storage);
   yield provider.collectConstantData();
@@ -178,7 +185,7 @@ add_task(function test_record_telemetry() {
   do_check_eq(1, d.isTelemetryEnabled);
   yield provider.shutdown();
 
-  setTelemetry(false);
+  Services.prefs.setBoolPref("toolkit.telemetry.enabled", false);
   provider = new AppInfoProvider();
   yield provider.init(storage);
   yield provider.collectConstantData();
@@ -269,6 +276,6 @@ add_task(function test_healthreporter_integration () {
       do_check_true("org.mozilla.appInfo.versions" in measurements);
     }
   } finally {
-    reporter._shutdown();
+    yield reporter._shutdown();
   }
 });

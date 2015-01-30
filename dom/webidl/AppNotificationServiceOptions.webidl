@@ -10,7 +10,10 @@ dictionary AppNotificationServiceOptions {
   boolean textClickable = false;
   DOMString manifestURL = "";
   DOMString id = "";
+  DOMString dbId = "";
   DOMString dir = "";
   DOMString lang = "";
   DOMString tag = "";
+  DOMString data = "";
+  NotificationBehavior mozbehavior = null;
 };

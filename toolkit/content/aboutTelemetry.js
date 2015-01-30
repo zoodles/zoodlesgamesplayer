@@ -22,11 +22,7 @@ const brandBundle = Services.strings.createBundle(
 const MAX_BAR_HEIGHT = 18;
 const MAX_BAR_CHARS = 25;
 const PREF_TELEMETRY_SERVER_OWNER = "toolkit.telemetry.server_owner";
-#ifdef MOZ_TELEMETRY_ON_BY_DEFAULT
-const PREF_TELEMETRY_ENABLED = "toolkit.telemetry.enabledPreRelease";
-#else
 const PREF_TELEMETRY_ENABLED = "toolkit.telemetry.enabled";
-#endif
 const PREF_DEBUG_SLOW_SQL = "toolkit.telemetry.debugSlowSql";
 const PREF_SYMBOL_SERVER_URI = "profiler.symbolicationUrl";
 const DEFAULT_SYMBOL_SERVER_URI = "http://symbolapi.mozilla.org";
@@ -110,6 +106,48 @@ let observer = {
       toggleElement.innerHTML = this.enableTelemetry;
     }
   }
+};
+
+let GeneralData = {
+  /**
+   * Renders the general data
+   */
+  render: function() {
+    setHasData("general-data-section", true);
+
+    let table = document.createElement("table");
+
+    let caption = document.createElement("caption");
+    caption.appendChild(document.createTextNode("General data\n"));
+    table.appendChild(caption);
+
+    let headings = document.createElement("tr");
+    this.appendColumn(headings, "th", bundle.GetStringFromName("generalDataHeadingName") + "\t");
+    this.appendColumn(headings, "th", bundle.GetStringFromName("generalDataHeadingValue") + "\t");
+    table.appendChild(headings);
+
+    let row = document.createElement("tr");
+    this.appendColumn(row, "td", "Client ID\t");
+    this.appendColumn(row, "td", TelemetryPing.clientID + "\t");
+    table.appendChild(row);
+
+    let dataDiv = document.getElementById("general-data");
+    dataDiv.appendChild(table);
+  },
+
+  /**
+   * Helper function for appending a column to the data table.
+   *
+   * @param aRowElement Parent row element
+   * @param aColType Column's tag name
+   * @param aColText Column contents
+   */
+  appendColumn: function(aRowElement, aColType, aColText) {
+    let colElement = document.createElement(aColType);
+    let colTextElement = document.createTextNode(aColText);
+    colElement.appendChild(colTextElement);
+    aRowElement.appendChild(colElement);
+  },
 };
 
 let SlowSQL = {
@@ -447,7 +485,8 @@ let ThreadHangStats = {
       let hangDiv = Histogram.render(
         div, hangName, hang.histogram, {exponential: true});
       let stackDiv = document.createElement("div");
-      hang.stack.forEach((frame) => {
+      let stack = hang.nativeStack || hang.stack;
+      stack.forEach((frame) => {
         stackDiv.appendChild(document.createTextNode(frame));
         // Leave an extra <br> at the end of the stack listing
         stackDiv.appendChild(document.createElement("br"));
@@ -528,7 +567,7 @@ let Histogram = {
    * @return Unpacked histogram representation
    */
   unpack: function Histogram_unpack(aHgram) {
-    let sample_count = aHgram.counts.reduceRight(function (a, b) a + b);
+    let sample_count = aHgram.counts.reduceRight((a, b) => a + b);
     let buckets = [0, 1];
     if (aHgram.histogram_type != Telemetry.HISTOGRAM_BOOLEAN) {
       buckets = aHgram.ranges;
@@ -791,6 +830,26 @@ let KeyValueTable = {
   }
 };
 
+let KeyedHistogram = {
+  render: function(parent, id, keyedHistogram) {
+    let outerDiv = document.createElement("div");
+    outerDiv.className = "keyed-histogram";
+    outerDiv.id = id;
+
+    let divTitle = document.createElement("div");
+    divTitle.className = "keyed-histogram-title";
+    divTitle.appendChild(document.createTextNode(id));
+    outerDiv.appendChild(divTitle);
+
+    for (let [name, hgram] of Iterator(keyedHistogram)) {
+      Histogram.render(outerDiv, name, hgram);
+    }
+
+    parent.appendChild(outerDiv);
+    return outerDiv;
+  },
+};
+
 let AddonDetails = {
   tableIDTitle: bundle.GetStringFromName("addonTableID"),
   tableDetailsTitle: bundle.GetStringFromName("addonTableDetails"),
@@ -905,7 +964,6 @@ function setupListeners() {
       LateWritesSingleton.renderLateWrites(ping.lateWrites);
   }, false);
 
-
   // Clicking on the section name will toggle its state
   let sectionHeaders = document.getElementsByClassName("section-name");
   for (let sectionHeader of sectionHeaders) {
@@ -919,7 +977,6 @@ function setupListeners() {
   }
 }
 
-
 function onLoad() {
   window.removeEventListener("load", onLoad);
 
@@ -928,6 +985,9 @@ function onLoad() {
 
   // Set up event listeners
   setupListeners();
+
+  // Show general data.
+  GeneralData.render();
 
   // Show slow SQL stats
   SlowSQL.render();
@@ -953,6 +1013,17 @@ function onLoad() {
     }
 
     setHasData("histograms-section", true);
+  }
+
+  // Show keyed histogram data
+  let keyedHistograms = Telemetry.keyedHistogramSnapshots;
+  if (Object.keys(keyedHistograms).length) {
+    let keyedDiv = document.getElementById("keyed-histograms");
+    for (let [id, keyed] of Iterator(keyedHistograms)) {
+      KeyedHistogram.render(keyedDiv, id, keyed);
+    }
+
+    setHasData("keyed-histograms-section", true);
   }
 
   // Show addon histogram data

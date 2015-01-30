@@ -76,7 +76,6 @@ public:
   };
 
   nsPrintEngine();
-  ~nsPrintEngine();
 
   void Destroy();
   void DestroyPrintingData();
@@ -213,6 +212,7 @@ public:
   }
 
 protected:
+  ~nsPrintEngine();
 
   nsresult CommonPrint(bool aIsPrintPreview, nsIPrintSettings* aPrintSettings,
                        nsIWebProgressListener* aWebProgressListener,
@@ -307,7 +307,7 @@ protected:
   nsresult InitPrintDocConstruction(bool aHandleError);
   void FirePrintPreviewUpdateEvent();
 private:
-  nsPrintEngine& operator=(const nsPrintEngine& aOther) MOZ_DELETE;
+  nsPrintEngine& operator=(const nsPrintEngine& aOther) = delete;
 };
 
 #endif /* nsPrintEngine_h___ */

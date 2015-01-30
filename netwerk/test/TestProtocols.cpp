@@ -15,7 +15,6 @@
 #include "TestCommon.h"
 #include <algorithm>
 
-#define FORCE_PR_LOG
 #include <stdio.h>
 #ifdef WIN32 
 #include <windows.h>
@@ -49,9 +48,9 @@
 #include "nsIPropertyBag2.h"
 #include "nsIWritablePropertyBag2.h"
 #include "nsITimedChannel.h"
-#include "nsChannelProperties.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/unused.h"
+#include "nsIScriptSecurityManager.h"
 
 #include "nsISimpleEnumerator.h"
 #include "nsStringAPI.h"
@@ -166,14 +165,14 @@ void PrintTimingInformation(nsITimedChannel* channel) {
 
 class HeaderVisitor : public nsIHttpHeaderVisitor
 {
+  virtual ~HeaderVisitor() {}
 public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIHTTPHEADERVISITOR
 
   HeaderVisitor() { }
-  virtual ~HeaderVisitor() {}
 };
-NS_IMPL_ISUPPORTS1(HeaderVisitor, nsIHttpHeaderVisitor)
+NS_IMPL_ISUPPORTS(HeaderVisitor, nsIHttpHeaderVisitor)
 
 NS_IMETHODIMP
 HeaderVisitor::VisitHeader(const nsACString &header, const nsACString &value)
@@ -190,10 +189,11 @@ HeaderVisitor::VisitHeader(const nsACString &header, const nsACString &value)
 
 class URLLoadInfo : public nsISupports
 {
+  virtual ~URLLoadInfo();
+
 public:
 
-  URLLoadInfo(const char* aUrl);
-  virtual ~URLLoadInfo();
+  explicit URLLoadInfo(const char* aUrl);
 
   // ISupports interface...
   NS_DECL_THREADSAFE_ISUPPORTS
@@ -224,12 +224,13 @@ NS_IMPL_ISUPPORTS0(URLLoadInfo)
 
 class TestChannelEventSink : public nsIChannelEventSink
 {
+  virtual ~TestChannelEventSink();
+
 public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSICHANNELEVENTSINK
 
   TestChannelEventSink();
-  virtual ~TestChannelEventSink();
 };
 
 TestChannelEventSink::TestChannelEventSink()
@@ -241,7 +242,7 @@ TestChannelEventSink::~TestChannelEventSink()
 }
 
 
-NS_IMPL_ISUPPORTS1(TestChannelEventSink, nsIChannelEventSink)
+NS_IMPL_ISUPPORTS(TestChannelEventSink, nsIChannelEventSink)
 
 NS_IMETHODIMP
 TestChannelEventSink::AsyncOnChannelRedirect(nsIChannel *channel,
@@ -261,15 +262,16 @@ TestChannelEventSink::AsyncOnChannelRedirect(nsIChannel *channel,
 
 class TestAuthPrompt : public nsIAuthPrompt
 {
+  virtual ~TestAuthPrompt();
+
 public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIAUTHPROMPT
 
   TestAuthPrompt();
-  virtual ~TestAuthPrompt();
 };
 
-NS_IMPL_ISUPPORTS1(TestAuthPrompt, nsIAuthPrompt)
+NS_IMPL_ISUPPORTS(TestAuthPrompt, nsIAuthPrompt)
 
 TestAuthPrompt::TestAuthPrompt()
 {
@@ -352,10 +354,11 @@ TestAuthPrompt::PromptPassword(const char16_t *dialogTitle,
 
 class InputTestConsumer : public nsIStreamListener
 {
+  virtual ~InputTestConsumer();
+
 public:
 
   InputTestConsumer();
-  virtual ~InputTestConsumer();
 
   NS_DECL_ISUPPORTS
   NS_DECL_NSIREQUESTOBSERVER
@@ -370,7 +373,7 @@ InputTestConsumer::~InputTestConsumer()
 {
 }
 
-NS_IMPL_ISUPPORTS2(InputTestConsumer, nsIStreamListener, nsIRequestObserver)
+NS_IMPL_ISUPPORTS(InputTestConsumer, nsIStreamListener, nsIRequestObserver)
 
 NS_IMETHODIMP
 InputTestConsumer::OnStartRequest(nsIRequest *request, nsISupports* context)
@@ -561,13 +564,16 @@ InputTestConsumer::OnStopRequest(nsIRequest *request, nsISupports* context,
 //-----------------------------------------------------------------------------
 
 class NotificationCallbacks MOZ_FINAL : public nsIInterfaceRequestor {
+
+    ~NotificationCallbacks() {}
+
 public:
     NS_DECL_ISUPPORTS
 
     NotificationCallbacks() {
     }
 
-    NS_IMETHOD GetInterface(const nsIID& iid, void* *result) {
+    NS_IMETHOD GetInterface(const nsIID& iid, void* *result) MOZ_OVERRIDE {
         nsresult rv = NS_ERROR_FAILURE;
 
         if (iid.Equals(NS_GET_IID(nsIChannelEventSink))) {
@@ -595,7 +601,7 @@ public:
     }
 };
 
-NS_IMPL_ISUPPORTS1(NotificationCallbacks, nsIInterfaceRequestor)
+NS_IMPL_ISUPPORTS(NotificationCallbacks, nsIInterfaceRequestor)
 
 //-----------------------------------------------------------------------------
 // helpers...
@@ -623,13 +629,27 @@ nsresult StartLoadingURL(const char* aUrlString)
         }
         NS_ADDREF(callbacks);
 
+        nsCOMPtr<nsIScriptSecurityManager> secman =
+          do_GetService(NS_SCRIPTSECURITYMANAGER_CONTRACTID, &rv);
+        NS_ENSURE_SUCCESS(rv, rv);
+           nsCOMPtr<nsIPrincipal> systemPrincipal;
+        rv = secman->GetSystemPrincipal(getter_AddRefs(systemPrincipal));
+        NS_ENSURE_SUCCESS(rv, rv);
+
         // Async reading thru the calls of the event sink interface
-        rv = NS_NewChannel(getter_AddRefs(pChannel), pURL, pService,
-                           nullptr,     // loadGroup
-                           callbacks); // notificationCallbacks
+        rv = NS_NewChannel(getter_AddRefs(pChannel),
+                           pURL,
+                           systemPrincipal,
+                           nsILoadInfo::SEC_NORMAL,
+                           nsIContentPolicy::TYPE_OTHER,
+                           nullptr,  // loadGroup
+                           callbacks,
+                           nsIRequest::LOAD_NORMAL,
+                           pService);
+
         NS_RELEASE(callbacks);
         if (NS_FAILED(rv)) {
-            LOG(("ERROR: NS_OpenURI failed for %s [rv=%x]\n", aUrlString, rv));
+            LOG(("ERROR: NS_NewChannel failed for %s [rv=%x]\n", aUrlString, rv));
             return rv;
         }
 

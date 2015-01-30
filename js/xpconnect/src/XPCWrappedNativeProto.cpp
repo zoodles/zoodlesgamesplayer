@@ -1,13 +1,12 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- *
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* vim: set ts=8 sts=4 et sw=4 tw=99: */
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* Shared proto object for XPCWrappedNative. */
 
 #include "xpcprivate.h"
-#include "nsCxPusher.h"
 #include "pratom.h"
 
 using namespace mozilla;
@@ -141,6 +140,13 @@ XPCWrappedNativeProto::JSProtoObjectFinalized(js::FreeOp *fop, JSObject *obj)
     GetRuntime()->GetDyingWrappedNativeProtoMap()->Add(this);
 
     mJSProtoObject.finalize(js::CastToJSFreeOp(fop)->runtime());
+}
+
+void
+XPCWrappedNativeProto::JSProtoObjectMoved(JSObject *obj, const JSObject *old)
+{
+    MOZ_ASSERT(mJSProtoObject == old);
+    mJSProtoObject.init(obj); // Update without triggering barriers.
 }
 
 void

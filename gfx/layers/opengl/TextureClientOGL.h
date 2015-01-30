@@ -7,104 +7,119 @@
 #define MOZILLA_GFX_TEXTURECLIENTOGL_H
 
 #include "GLContextTypes.h"             // for SharedTextureHandle, etc
+#include "GLImages.h"
 #include "gfxTypes.h"
 #include "mozilla/Attributes.h"         // for MOZ_OVERRIDE
 #include "mozilla/gfx/Point.h"          // for IntSize
 #include "mozilla/layers/CompositorTypes.h"
 #include "mozilla/layers/LayersSurfaces.h"  // for SurfaceDescriptor
-#include "mozilla/layers/TextureClient.h"  // for DeprecatedTextureClient, etc
+#include "mozilla/layers/TextureClient.h"  // for TextureClient, etc
+#include "AndroidSurfaceTexture.h"
 
 namespace mozilla {
-namespace gfx {
-class SurfaceStream;
-}
-}
 
-namespace mozilla {
 namespace layers {
 
 class CompositableForwarder;
 
-/**
- * A TextureClient implementation to share TextureMemory that is already
- * on the GPU, for the OpenGL backend.
- */
-class SharedTextureClientOGL : public TextureClient
+class EGLImageTextureClient : public TextureClient
 {
 public:
-  SharedTextureClientOGL(TextureFlags aFlags);
+  EGLImageTextureClient(ISurfaceAllocator* aAllocator,
+                        TextureFlags aFlags,
+                        EGLImageImage* aImage,
+                        gfx::IntSize aSize);
 
-  ~SharedTextureClientOGL();
+  virtual bool IsAllocated() const MOZ_OVERRIDE { return true; }
 
-  virtual bool IsAllocated() const MOZ_OVERRIDE;
+  virtual bool HasInternalBuffer() const MOZ_OVERRIDE { return false; }
+
+  virtual gfx::IntSize GetSize() const MOZ_OVERRIDE { return mSize; }
 
   virtual bool ToSurfaceDescriptor(SurfaceDescriptor& aOutDescriptor) MOZ_OVERRIDE;
 
+  // Useless functions.
   virtual bool Lock(OpenMode mode) MOZ_OVERRIDE;
 
   virtual void Unlock() MOZ_OVERRIDE;
 
   virtual bool IsLocked() const MOZ_OVERRIDE { return mIsLocked; }
 
-  virtual bool HasInternalBuffer() const MOZ_OVERRIDE { return false; }
-
-  void InitWith(gl::SharedTextureHandle aHandle,
-                gfx::IntSize aSize,
-                gl::SharedTextureShareType aShareType,
-                bool aInverted = false);
-
-  virtual gfx::IntSize GetSize() const { return mSize; }
-
-  virtual TextureClientData* DropTextureData() MOZ_OVERRIDE
+  virtual gfx::SurfaceFormat GetFormat() const MOZ_OVERRIDE
   {
-    // XXX - right now the code paths using this are managing the shared texture
-    // data, although they should use a TextureClientData for this to ensure that
-    // the destruction sequence is race-free.
-    MarkInvalid();
+    return gfx::SurfaceFormat::UNKNOWN;
+  }
+
+  virtual TemporaryRef<TextureClient>
+  CreateSimilar(TextureFlags aFlags = TextureFlags::DEFAULT,
+                TextureAllocationFlags aAllocFlags = ALLOC_DEFAULT) const MOZ_OVERRIDE
+  {
     return nullptr;
   }
 
+  virtual bool AllocateForSurface(gfx::IntSize aSize, TextureAllocationFlags aFlags) MOZ_OVERRIDE
+  {
+    return false;
+  }
+
 protected:
-  gl::SharedTextureHandle mHandle;
-  gfx::IntSize mSize;
-  gl::SharedTextureShareType mShareType;
-  bool mInverted;
+  RefPtr<EGLImageImage> mImage;
+  const gfx::IntSize mSize;
   bool mIsLocked;
 };
 
-/**
- * A TextureClient implementation to share SurfaceStream.
- */
-class StreamTextureClientOGL : public TextureClient
+#ifdef MOZ_WIDGET_ANDROID
+
+class SurfaceTextureClient : public TextureClient
 {
 public:
-  StreamTextureClientOGL(TextureFlags aFlags);
+  SurfaceTextureClient(ISurfaceAllocator* aAllocator,
+                       TextureFlags aFlags,
+                       gl::AndroidSurfaceTexture* aSurfTex,
+                       gfx::IntSize aSize,
+                       gl::OriginPos aOriginPos);
 
-  ~StreamTextureClientOGL();
+  ~SurfaceTextureClient();
 
-  virtual bool IsAllocated() const MOZ_OVERRIDE;
+  virtual bool IsAllocated() const MOZ_OVERRIDE { return true; }
 
+  virtual bool HasInternalBuffer() const MOZ_OVERRIDE { return false; }
+
+  virtual gfx::IntSize GetSize() const { return mSize; }
+
+  virtual bool ToSurfaceDescriptor(SurfaceDescriptor& aOutDescriptor) MOZ_OVERRIDE;
+
+  // Useless functions.
   virtual bool Lock(OpenMode mode) MOZ_OVERRIDE;
 
   virtual void Unlock() MOZ_OVERRIDE;
 
   virtual bool IsLocked() const MOZ_OVERRIDE { return mIsLocked; }
 
-  virtual bool ToSurfaceDescriptor(SurfaceDescriptor& aOutDescriptor) MOZ_OVERRIDE;
+  virtual gfx::SurfaceFormat GetFormat() const MOZ_OVERRIDE
+  {
+    return gfx::SurfaceFormat::UNKNOWN;
+  }
 
-  virtual TextureClientData* DropTextureData() MOZ_OVERRIDE { return nullptr; }
+  virtual TemporaryRef<TextureClient>
+  CreateSimilar(TextureFlags aFlags = TextureFlags::DEFAULT,
+                TextureAllocationFlags aAllocFlags = ALLOC_DEFAULT) const MOZ_OVERRIDE
+  {
+    return nullptr;
+  }
 
-  virtual bool HasInternalBuffer() const MOZ_OVERRIDE { return false; }
-
-  void InitWith(gfx::SurfaceStream* aStream);
-
-  virtual gfx::IntSize GetSize() const { return gfx::IntSize(); }
+  virtual bool AllocateForSurface(gfx::IntSize aSize, TextureAllocationFlags aFlags) MOZ_OVERRIDE
+  {
+    return false;
+  }
 
 protected:
+  const RefPtr<gl::AndroidSurfaceTexture> mSurfTex;
+  const gfx::IntSize mSize;
   bool mIsLocked;
-  RefPtr<gfx::SurfaceStream> mStream;
-  RefPtr<gl::GLContext> mGL;
 };
+
+#endif // MOZ_WIDGET_ANDROID
 
 } // namespace
 } // namespace

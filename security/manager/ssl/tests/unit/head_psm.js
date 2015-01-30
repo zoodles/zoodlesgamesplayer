@@ -18,8 +18,17 @@ let gIsWindows = ("@mozilla.org/windows-registry-key;1" in Cc);
 const isDebugBuild = Cc["@mozilla.org/xpcom/debug;1"]
                        .getService(Ci.nsIDebug2).isDebugBuild;
 
+// The test EV roots are only enabled in debug builds as a security measure.
+//
+// Bug 1008316: B2G doesn't have EV enabled, so EV is not expected even in debug
+// builds.
+const gEVExpected = isDebugBuild && !("@mozilla.org/b2g-process-global;1" in Cc);
+
+const SSS_STATE_FILE_NAME = "SiteSecurityServiceState.txt";
+
 const SEC_ERROR_BASE = Ci.nsINSSErrorsService.NSS_SEC_ERROR_BASE;
 const SSL_ERROR_BASE = Ci.nsINSSErrorsService.NSS_SSL_ERROR_BASE;
+const MOZILLA_PKIX_ERROR_BASE = Ci.nsINSSErrorsService.MOZILLA_PKIX_ERROR_BASE;
 
 // Sort in numerical order
 const SEC_ERROR_INVALID_ARGS                            = SEC_ERROR_BASE +   5; // -8187
@@ -34,11 +43,14 @@ const SEC_ERROR_EXPIRED_ISSUER_CERTIFICATE              = SEC_ERROR_BASE +  30; 
 const SEC_ERROR_EXTENSION_VALUE_INVALID                 = SEC_ERROR_BASE +  34; // -8158
 const SEC_ERROR_EXTENSION_NOT_FOUND                     = SEC_ERROR_BASE +  35; // -8157
 const SEC_ERROR_CA_CERT_INVALID                         = SEC_ERROR_BASE +  36;
+const SEC_ERROR_INVALID_KEY                             = SEC_ERROR_BASE +  40; // -8152
+const SEC_ERROR_UNKNOWN_CRITICAL_EXTENSION              = SEC_ERROR_BASE +  41;
 const SEC_ERROR_INADEQUATE_KEY_USAGE                    = SEC_ERROR_BASE +  90; // -8102
 const SEC_ERROR_INADEQUATE_CERT_TYPE                    = SEC_ERROR_BASE +  91; // -8101
 const SEC_ERROR_CERT_NOT_IN_NAME_SPACE                  = SEC_ERROR_BASE + 112; // -8080
+const SEC_ERROR_CERT_BAD_ACCESS_LOCATION                = SEC_ERROR_BASE + 117; // -8075
 const SEC_ERROR_OCSP_MALFORMED_REQUEST                  = SEC_ERROR_BASE + 120;
-const SEC_ERROR_OCSP_SERVER_ERROR                       = SEC_ERROR_BASE + 121;
+const SEC_ERROR_OCSP_SERVER_ERROR                       = SEC_ERROR_BASE + 121; // -8071
 const SEC_ERROR_OCSP_TRY_SERVER_LATER                   = SEC_ERROR_BASE + 122;
 const SEC_ERROR_OCSP_REQUEST_NEEDS_SIG                  = SEC_ERROR_BASE + 123;
 const SEC_ERROR_OCSP_UNAUTHORIZED_REQUEST               = SEC_ERROR_BASE + 124;
@@ -46,12 +58,20 @@ const SEC_ERROR_OCSP_UNKNOWN_CERT                       = SEC_ERROR_BASE + 126; 
 const SEC_ERROR_OCSP_MALFORMED_RESPONSE                 = SEC_ERROR_BASE + 129;
 const SEC_ERROR_OCSP_UNAUTHORIZED_RESPONSE              = SEC_ERROR_BASE + 130;
 const SEC_ERROR_OCSP_OLD_RESPONSE                       = SEC_ERROR_BASE + 132;
+const SEC_ERROR_UNSUPPORTED_ELLIPTIC_CURVE              = SEC_ERROR_BASE + 141; // -8051
 const SEC_ERROR_OCSP_INVALID_SIGNING_CERT               = SEC_ERROR_BASE + 144;
 const SEC_ERROR_POLICY_VALIDATION_FAILED                = SEC_ERROR_BASE + 160; // -8032
 const SEC_ERROR_OCSP_BAD_SIGNATURE                      = SEC_ERROR_BASE + 157;
 const SEC_ERROR_CERT_SIGNATURE_ALGORITHM_DISABLED       = SEC_ERROR_BASE + 176;
+const SEC_ERROR_APPLICATION_CALLBACK_ERROR              = SEC_ERROR_BASE + 178;
 
 const SSL_ERROR_BAD_CERT_DOMAIN                         = SSL_ERROR_BASE +  12;
+const SSL_ERROR_BAD_CERT_ALERT                          = SSL_ERROR_BASE +  17;
+
+const MOZILLA_PKIX_ERROR_KEY_PINNING_FAILURE            = MOZILLA_PKIX_ERROR_BASE +   0;
+const MOZILLA_PKIX_ERROR_CA_CERT_USED_AS_END_ENTITY     = MOZILLA_PKIX_ERROR_BASE +   1;
+const MOZILLA_PKIX_ERROR_INADEQUATE_KEY_SIZE            = MOZILLA_PKIX_ERROR_BASE +   2; // -16382
+const MOZILLA_PKIX_ERROR_V1_CERT_USED_AS_CA             = MOZILLA_PKIX_ERROR_BASE +   3;
 
 // Supported Certificate Usages
 const certificateUsageSSLClient              = 0x0001;
@@ -100,6 +120,19 @@ function getXPCOMStatusFromNSS(statusNSS) {
   return nssErrorsService.getXPCOMFromNSSError(statusNSS);
 }
 
+function checkCertErrorGeneric(certdb, cert, expectedError, usage) {
+  let hasEVPolicy = {};
+  let verifiedChain = {};
+  let error = certdb.verifyCertNow(cert, usage, NO_FLAGS, verifiedChain,
+                                   hasEVPolicy);
+  // expected error == -1 is a special marker for any error is OK
+  if (expectedError != -1 ) {
+    do_check_eq(error, expectedError);
+  } else {
+    do_check_neq (error, 0);
+  }
+}
+
 function _getLibraryFunctionWithNoArguments(functionName, libraryName) {
   // Open the NSS library. copied from services/crypto/modules/WeaveCrypto.js
   let path = ctypes.libraryName(libraryName);
@@ -111,7 +144,7 @@ function _getLibraryFunctionWithNoArguments(functionName, libraryName) {
   } catch(e) {
     // In case opening the library without a full path fails,
     // try again with a full path.
-    let file = Services.dirsvc.get("GreD", Ci.nsILocalFile);
+    let file = Services.dirsvc.get("GreBinD", Ci.nsILocalFile);
     file.append(path);
     nsslib = ctypes.open(file.path);
   }
@@ -182,7 +215,8 @@ function run_test() {
   add_connection_test("<test-name-1>.example.com",
                       getXPCOMStatusFromNSS(SEC_ERROR_xxx),
                       function() { ... },
-                      function(aTransportSecurityInfo) { ... });
+                      function(aTransportSecurityInfo) { ... },
+                      function(aTransport) { ... });
   [...]
   add_connection_test("<test-name-n>.example.com", Cr.NS_OK);
 
@@ -203,8 +237,11 @@ function add_tls_server_setup(serverBinName) {
 // called before the connection is attempted.
 // aWithSecurityInfo is a callback function that takes an
 // nsITransportSecurityInfo, which is called after the TLS handshake succeeds.
+// aAfterStreamOpen is a callback function that is called with the
+// nsISocketTransport once the output stream is ready.
 function add_connection_test(aHost, aExpectedResult,
-                             aBeforeConnect, aWithSecurityInfo) {
+                             aBeforeConnect, aWithSecurityInfo,
+                             aAfterStreamOpen) {
   const REMOTE_PORT = 8443;
 
   function Connection(aHost) {
@@ -248,6 +285,9 @@ function add_connection_test(aHost, aExpectedResult,
 
     // nsIOutputStreamCallback
     onOutputStreamReady: function(aStream) {
+      if (aAfterStreamOpen) {
+        aAfterStreamOpen(this.transport);
+      }
       let sslSocketControl = this.transport.securityInfo
                                .QueryInterface(Ci.nsISSLSocketControl);
       sslSocketControl.proxyStartSSL();
@@ -278,6 +318,7 @@ function add_connection_test(aHost, aExpectedResult,
       aBeforeConnect();
     }
     connectTo(aHost).then(function(conn) {
+      do_print("handling " + aHost);
       do_check_eq(conn.result, aExpectedResult);
       if (aWithSecurityInfo) {
         aWithSecurityInfo(conn.transport.securityInfo
@@ -304,6 +345,11 @@ function _getBinaryUtil(binaryUtilName) {
     utilBin.append("bin");
     utilBin.append(binaryUtilName + (gIsWindows ? ".exe" : ""));
   }
+  // But maybe we're on Android or B2G, where binaries are in /data/local/xpcb.
+  if (!utilBin.exists()) {
+    utilBin.initWithPath("/data/local/xpcb/");
+    utilBin.append(binaryUtilName);
+  }
   do_check_true(utilBin.exists());
   return utilBin;
 }
@@ -322,9 +368,11 @@ function _setupTLSServerTest(serverBinName)
                            .getService(Ci.nsIProperties);
   let envSvc = Cc["@mozilla.org/process/environment;1"]
                  .getService(Ci.nsIEnvironment);
-  let greDir = directoryService.get("GreD", Ci.nsIFile);
-  envSvc.set("DYLD_LIBRARY_PATH", greDir.path);
-  envSvc.set("LD_LIBRARY_PATH", greDir.path);
+  let greBinDir = directoryService.get("GreBinD", Ci.nsIFile);
+  envSvc.set("DYLD_LIBRARY_PATH", greBinDir.path);
+  // Android libraries are in /data/local/xpcb, but "GreBinD" does not return
+  // this path on Android, so hard code it here.
+  envSvc.set("LD_LIBRARY_PATH", greBinDir.path + ":/data/local/xpcb");
   envSvc.set("MOZ_TLS_SERVER_DEBUG_LEVEL", "3");
   envSvc.set("MOZ_TLS_SERVER_CALLBACK_PORT", CALLBACK_PORT);
 
@@ -347,7 +395,8 @@ function _setupTLSServerTest(serverBinName)
   let certDir = directoryService.get("CurWorkD", Ci.nsILocalFile);
   certDir.append("tlsserver");
   do_check_true(certDir.exists());
-  process.run(false, [certDir.path], 1);
+  // Using "sql:" causes the SQL DB to be used so we can run tests on Android.
+  process.run(false, [ "sql:" + certDir.path ], 1);
 
   do_register_cleanup(function() {
     process.kill();
@@ -368,7 +417,8 @@ function generateOCSPResponses(ocspRespArray, nssDBlocation)
     let argArray = new Array();
     let ocspFilepre = do_get_file(i.toString() + ".ocsp", true);
     let filename = ocspFilepre.path;
-    argArray.push(nssDBlocation);
+    // Using "sql:" causes the SQL DB to be used so we can run tests on Android.
+    argArray.push("sql:" + nssDBlocation);
     argArray.push(ocspRespArray[i][0]); // ocsRespType;
     argArray.push(ocspRespArray[i][1]); // nick;
     argArray.push(ocspRespArray[i][2]); // extranickname
@@ -385,4 +435,121 @@ function generateOCSPResponses(ocspRespArray, nssDBlocation)
     ocspFile.remove(false);
   }
   return retArray;
+}
+
+// Starts and returns an http responder that will cause a test failure if it is
+// queried. The server identities are given by a non-empty array
+// serverIdentities.
+function getFailingHttpServer(serverPort, serverIdentities) {
+  let httpServer = new HttpServer();
+  httpServer.registerPrefixHandler("/", function(request, response) {
+    do_check_true(false);
+  });
+  httpServer.identity.setPrimary("http", serverIdentities.shift(), serverPort);
+  serverIdentities.forEach(function(identity) {
+    httpServer.identity.add("http", identity, serverPort);
+  });
+  httpServer.start(serverPort);
+  return httpServer;
+}
+
+// Starts an http OCSP responder that serves good OCSP responses and
+// returns an object with a method stop that should be called to stop
+// the http server.
+// NB: Because generating OCSP responses inside the HTTP request
+// handler can cause timeouts, the expected responses are pre-generated
+// all at once before starting the server. This means that their producedAt
+// times will all be the same. If a test depends on this not being the case,
+// perhaps calling startOCSPResponder twice (at different times) will be
+// necessary.
+//
+// serverPort is the port of the http OCSP responder
+// identity is the http hostname that will answer the OCSP requests
+// invalidIdentities is an array of identities that if used an
+//   will cause a test failure
+// nssDBlocaion is the location of the NSS database from where the OCSP
+//   responses will be generated (assumes appropiate keys are present)
+// expectedCertNames is an array of nicks of the certs to be responsed
+// expectedBasePaths is an optional array that is used to indicate
+//   what is the expected base path of the OCSP request.
+function startOCSPResponder(serverPort, identity, invalidIdentities,
+                            nssDBLocation, expectedCertNames,
+                            expectedBasePaths, expectedMethods,
+                            expectedResponseTypes) {
+  let ocspResponseGenerationArgs = expectedCertNames.map(
+    function(expectedNick) {
+      let responseType = "good";
+      if (expectedResponseTypes && expectedResponseTypes.length >= 1) {
+        responseType = expectedResponseTypes.shift();
+      }
+      return [responseType, expectedNick, "unused"];
+    }
+  );
+  let ocspResponses = generateOCSPResponses(ocspResponseGenerationArgs,
+                                            nssDBLocation);
+  let httpServer = new HttpServer();
+  httpServer.registerPrefixHandler("/",
+    function handleServerCallback(aRequest, aResponse) {
+      invalidIdentities.forEach(function(identity) {
+        do_check_neq(aRequest.host, identity)
+      });
+      do_print("got request for: " + aRequest.path);
+      let basePath = aRequest.path.slice(1).split("/")[0];
+      if (expectedBasePaths.length >= 1) {
+        do_check_eq(basePath, expectedBasePaths.shift());
+      }
+      do_check_true(expectedCertNames.length >= 1);
+      if (expectedMethods && expectedMethods.length >= 1) {
+        do_check_eq(aRequest.method, expectedMethods.shift());
+      }
+      aResponse.setStatusLine(aRequest.httpVersion, 200, "OK");
+      aResponse.setHeader("Content-Type", "application/ocsp-response");
+      aResponse.write(ocspResponses.shift());
+    });
+  httpServer.identity.setPrimary("http", identity, serverPort);
+  invalidIdentities.forEach(function(identity) {
+    httpServer.identity.add("http", identity, serverPort);
+  });
+  httpServer.start(serverPort);
+  return {
+    stop: function(callback) {
+      // make sure we consumed each expected response
+      do_check_eq(ocspResponses.length, 0);
+      if (expectedMethods) {
+        do_check_eq(expectedMethods.length, 0);
+      }
+      if (expectedBasePaths) {
+        do_check_eq(expectedBasePaths.length, 0);
+      }
+      if (expectedResponseTypes) {
+        do_check_eq(expectedResponseTypes.length, 0);
+      }
+      httpServer.stop(callback);
+    }
+  };
+}
+
+// A prototype for a fake, error-free sslstatus
+let FakeSSLStatus = function(certificate) {
+  this.serverCert = certificate;
+};
+
+FakeSSLStatus.prototype = {
+  serverCert: null,
+  cipherName: null,
+  keyLength: 2048,
+  isDomainMismatch: false,
+  isNotValidAtThisTime: false,
+  isUntrusted: false,
+  isExtendedValidation: false,
+  getInterface: function(aIID) {
+    return this.QueryInterface(aIID);
+  },
+  QueryInterface: function(aIID) {
+    if (aIID.equals(Ci.nsISSLStatus) ||
+        aIID.equals(Ci.nsISupports)) {
+      return this;
+    }
+    throw Components.results.NS_ERROR_NO_INTERFACE;
+  },
 }

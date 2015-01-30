@@ -6,55 +6,52 @@
 package org.mozilla.gecko.toolbar;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.List;
 
-import org.json.JSONObject;
+import org.mozilla.gecko.AppConstants.Versions;
 import org.mozilla.gecko.BrowserApp;
 import org.mozilla.gecko.GeckoAppShell;
-import org.mozilla.gecko.GeckoApplication;
-import org.mozilla.gecko.GeckoProfile;
-import org.mozilla.gecko.LightweightTheme;
+import org.mozilla.gecko.NewTabletUI;
 import org.mozilla.gecko.R;
 import org.mozilla.gecko.Tab;
 import org.mozilla.gecko.Tabs;
+import org.mozilla.gecko.Telemetry;
+import org.mozilla.gecko.TelemetryContract;
 import org.mozilla.gecko.animation.PropertyAnimator;
 import org.mozilla.gecko.animation.PropertyAnimator.PropertyAnimationListener;
 import org.mozilla.gecko.animation.ViewHelper;
+import org.mozilla.gecko.lwt.LightweightTheme;
+import org.mozilla.gecko.lwt.LightweightThemeDrawable;
 import org.mozilla.gecko.menu.GeckoMenu;
 import org.mozilla.gecko.menu.MenuPopup;
+import org.mozilla.gecko.tabs.TabHistoryController;
 import org.mozilla.gecko.toolbar.ToolbarDisplayLayout.OnStopListener;
 import org.mozilla.gecko.toolbar.ToolbarDisplayLayout.OnTitleChangeListener;
 import org.mozilla.gecko.toolbar.ToolbarDisplayLayout.UpdateFlags;
 import org.mozilla.gecko.util.Clipboard;
-import org.mozilla.gecko.util.GeckoEventListener;
 import org.mozilla.gecko.util.HardwareUtils;
 import org.mozilla.gecko.util.MenuUtils;
-import org.mozilla.gecko.widget.GeckoImageButton;
-import org.mozilla.gecko.widget.GeckoImageView;
-import org.mozilla.gecko.widget.GeckoRelativeLayout;
+import org.mozilla.gecko.widget.ThemedImageButton;
+import org.mozilla.gecko.widget.ThemedImageView;
+import org.mozilla.gecko.widget.ThemedRelativeLayout;
 
 import android.content.Context;
 import android.content.res.Resources;
+import android.graphics.Canvas;
+import android.graphics.Paint;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.StateListDrawable;
-import android.os.Build;
 import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.view.ContextMenu;
-import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.MenuInflater;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.animation.AccelerateInterpolator;
-import android.view.animation.Interpolator;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
-import android.widget.ImageButton;
-import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.PopupWindow;
 
@@ -75,11 +72,12 @@ import android.widget.PopupWindow;
 * as a set of listeners to allow {@code BrowserToolbar} users to react
 * to state changes accordingly.
 */
-public class BrowserToolbar extends GeckoRelativeLayout
-                            implements Tabs.OnTabsChangedListener,
-                                       GeckoMenu.ActionItemBarPresenter,
-                                       GeckoEventListener {
+public abstract class BrowserToolbar extends ThemedRelativeLayout
+                                     implements Tabs.OnTabsChangedListener,
+                                                GeckoMenu.ActionItemBarPresenter {
     private static final String LOGTAG = "GeckoToolbar";
+
+    private static final int LIGHTWEIGHT_THEME_INVERT_ALPHA = 34; // 255 - alpha = invert_alpha
 
     public interface OnActivateListener {
         public void onActivate();
@@ -105,133 +103,139 @@ public class BrowserToolbar extends GeckoRelativeLayout
         public void onStopEditing();
     }
 
-    private enum UIMode {
+    protected enum UIMode {
         EDIT,
         DISPLAY
     }
 
-    enum ForwardButtonAnimation {
-        SHOW,
-        HIDE
+    private final boolean isNewTablet;
+
+    protected final ToolbarDisplayLayout urlDisplayLayout;
+    protected final ToolbarEditLayout urlEditLayout;
+    protected final View urlBarEntry;
+    protected boolean isSwitchingTabs;
+    protected final ThemedImageButton tabsButton;
+
+    private ToolbarProgressView progressBar;
+    protected final TabCounter tabsCounter;
+    protected final ThemedImageButton menuButton;
+    protected final ThemedImageView menuIcon;
+    private MenuPopup menuPopup;
+    protected final List<View> focusOrder;
+
+    protected final ThemedImageView editCancel;
+
+    private OnActivateListener activateListener;
+    private OnFocusChangeListener focusChangeListener;
+    private OnStartEditingListener startEditingListener;
+    private OnStopEditingListener stopEditingListener;
+
+    protected final BrowserApp activity;
+    protected boolean hasSoftMenuButton;
+
+    protected UIMode uiMode;
+    protected TabHistoryController tabHistoryController;
+
+    private final Paint shadowPaint;
+    private final int shadowSize;
+
+    private final ToolbarPrefs prefs;
+
+    public abstract boolean isAnimating();
+
+    protected abstract boolean isTabsButtonOffscreen();
+
+    protected abstract void updateNavigationButtons(Tab tab);
+
+    protected abstract void triggerStartEditingTransition(PropertyAnimator animator);
+    protected abstract void triggerStopEditingTransition();
+    public abstract void triggerTabsPanelTransition(PropertyAnimator animator, boolean areTabsShown);
+
+    /**
+     * Returns a Drawable overlaid with the theme's bitmap.
+     */
+    protected Drawable getLWTDefaultStateSetDrawable() {
+        return getTheme().getDrawable(this);
     }
 
-    private ToolbarDisplayLayout mUrlDisplayLayout;
-    private ToolbarEditLayout mUrlEditLayout;
-    private View mUrlBarEntry;
-    private ImageView mUrlBarRightEdge;
-    private boolean mSwitchingTabs;
-    private ShapedButton mTabs;
-    private ImageButton mBack;
-    private ImageButton mForward;
-
-    private ToolbarProgressView mProgressBar;
-    private TabCounter mTabsCounter;
-    private GeckoImageButton mMenu;
-    private GeckoImageView mMenuIcon;
-    private LinearLayout mActionItemBar;
-    private MenuPopup mMenuPopup;
-    private List<View> mFocusOrder;
-
-    private OnActivateListener mActivateListener;
-    private OnCommitListener mCommitListener;
-    private OnDismissListener mDismissListener;
-    private OnFilterListener mFilterListener;
-    private OnFocusChangeListener mFocusChangeListener;
-    private OnStartEditingListener mStartEditingListener;
-    private OnStopEditingListener mStopEditingListener;
-
-    final private BrowserApp mActivity;
-    private boolean mHasSoftMenuButton;
-
-    private UIMode mUIMode;
-    private boolean mAnimatingEntry;
-
-    private int mUrlBarViewOffset;
-    private int mDefaultForwardMargin;
-
-    private static final Interpolator sButtonsInterpolator = new AccelerateInterpolator();
-
-    private static final int FORWARD_ANIMATION_DURATION = 450;
-
-    private final LightweightTheme mTheme;
-
-    public BrowserToolbar(Context context) {
-        this(context, null);
+    public static BrowserToolbar create(final Context context, final AttributeSet attrs) {
+        final BrowserToolbar toolbar;
+        if (NewTabletUI.isEnabled(context)) {
+            toolbar = new BrowserToolbarNewTablet(context, attrs);
+        } else if (HardwareUtils.isTablet()) {
+            toolbar = new BrowserToolbarTablet(context, attrs);
+        } else if (Versions.preHC) {
+            toolbar = new BrowserToolbarPreHC(context, attrs);
+        } else {
+            toolbar = new BrowserToolbarPhone(context, attrs);
+        }
+        return toolbar;
     }
 
-    public BrowserToolbar(Context context, AttributeSet attrs) {
+    protected BrowserToolbar(final Context context, final AttributeSet attrs) {
         super(context, attrs);
-        mTheme = ((GeckoApplication) context.getApplicationContext()).getLightweightTheme();
+        setWillNotDraw(false);
+
+        isNewTablet = NewTabletUI.isEnabled(context);
 
         // BrowserToolbar is attached to BrowserApp only.
-        mActivity = (BrowserApp) context;
+        activity = (BrowserApp) context;
 
         // Inflate the content.
-        LayoutInflater.from(context).inflate(R.layout.browser_toolbar, this);
+        // TODO: Remove the branch when new tablet becomes old tablet.
+        if (!isNewTablet) {
+            LayoutInflater.from(context).inflate(R.layout.browser_toolbar, this);
+        } else {
+            LayoutInflater.from(context).inflate(R.layout.new_tablet_browser_toolbar, this);
+        }
 
         Tabs.registerOnTabsChangedListener(this);
-        mSwitchingTabs = true;
-        mAnimatingEntry = false;
+        isSwitchingTabs = true;
 
-        registerEventListener("Reader:Click");
-        registerEventListener("Reader:LongClick");
+        urlDisplayLayout = (ToolbarDisplayLayout) findViewById(R.id.display_layout);
+        urlBarEntry = findViewById(R.id.url_bar_entry);
+        urlEditLayout = (ToolbarEditLayout) findViewById(R.id.edit_layout);
 
-        mAnimatingEntry = false;
+        tabsButton = (ThemedImageButton) findViewById(R.id.tabs);
+        tabsCounter = (TabCounter) findViewById(R.id.tabs_counter);
+        if (Versions.feature11Plus) {
+            tabsCounter.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
+        }
+
+        menuButton = (ThemedImageButton) findViewById(R.id.menu);
+        menuIcon = (ThemedImageView) findViewById(R.id.menu_icon);
+        hasSoftMenuButton = !HardwareUtils.hasMenuButton();
+
+        editCancel = (ThemedImageView) findViewById(R.id.edit_cancel);
+
+        // The focusOrder List should be filled by sub-classes.
+        focusOrder = new ArrayList<View>();
 
         final Resources res = getResources();
-        mUrlBarViewOffset = res.getDimensionPixelSize(R.dimen.url_bar_offset_left);
-        mDefaultForwardMargin = res.getDimensionPixelSize(R.dimen.forward_default_offset);
-        mUrlDisplayLayout = (ToolbarDisplayLayout) findViewById(R.id.display_layout);
-        mUrlBarEntry = findViewById(R.id.url_bar_entry);
-        mUrlEditLayout = (ToolbarEditLayout) findViewById(R.id.edit_layout);
+        shadowSize = res.getDimensionPixelSize(R.dimen.browser_toolbar_shadow_size);
 
-        // This will clip the right edge's image at 60% of its width
-        mUrlBarRightEdge = (ImageView) findViewById(R.id.url_bar_right_edge);
-        if (mUrlBarRightEdge != null) {
-            mUrlBarRightEdge.getDrawable().setLevel(6000);
-        }
-
-        mTabs = (ShapedButton) findViewById(R.id.tabs);
-        mTabsCounter = (TabCounter) findViewById(R.id.tabs_counter);
-        if (Build.VERSION.SDK_INT >= 11) {
-            mTabsCounter.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
-        }
-
-        mBack = (ImageButton) findViewById(R.id.back);
-        setButtonEnabled(mBack, false);
-        mForward = (ImageButton) findViewById(R.id.forward);
-        setButtonEnabled(mForward, false);
-
-        mMenu = (GeckoImageButton) findViewById(R.id.menu);
-        mMenuIcon = (GeckoImageView) findViewById(R.id.menu_icon);
-        mActionItemBar = (LinearLayout) findViewById(R.id.menu_items);
-        mHasSoftMenuButton = !HardwareUtils.hasMenuButton();
-
-        // We use different layouts on phones and tablets, so adjust the focus
-        // order appropriately.
-        mFocusOrder = new ArrayList<View>();
-        if (HardwareUtils.isTablet()) {
-            mFocusOrder.addAll(Arrays.asList(mTabs, mBack, mForward, this));
-            mFocusOrder.addAll(mUrlDisplayLayout.getFocusOrder());
-            mFocusOrder.addAll(Arrays.asList(mActionItemBar, mMenu));
-        } else {
-            mFocusOrder.add(this);
-            mFocusOrder.addAll(mUrlDisplayLayout.getFocusOrder());
-            mFocusOrder.addAll(Arrays.asList(mTabs, mMenu));
-        }
+        shadowPaint = new Paint();
+        shadowPaint.setColor(res.getColor(R.color.url_bar_shadow));
+        shadowPaint.setStrokeWidth(0.0f);
 
         setUIMode(UIMode.DISPLAY);
+
+        prefs = new ToolbarPrefs();
+        urlDisplayLayout.setToolbarPrefs(prefs);
+        urlEditLayout.setToolbarPrefs(prefs);
     }
 
     @Override
     public void onAttachedToWindow() {
         super.onAttachedToWindow();
 
+        prefs.open();
+
         setOnClickListener(new Button.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (mActivateListener != null) {
-                    mActivateListener.onActivate();
+                if (activateListener != null) {
+                    activateListener.onActivate();
                 }
             }
         });
@@ -247,7 +251,7 @@ public class BrowserToolbar extends GeckoRelativeLayout
                 // NOTE: Use MenuUtils.safeSetVisible because some actions might
                 // be on the Page menu
 
-                MenuInflater inflater = mActivity.getMenuInflater();
+                MenuInflater inflater = activity.getMenuInflater();
                 inflater.inflate(R.menu.titlebar_contextmenu, menu);
 
                 String clipboard = Clipboard.getText();
@@ -262,7 +266,6 @@ public class BrowserToolbar extends GeckoRelativeLayout
                     if (url == null) {
                         menu.findItem(R.id.copyurl).setVisible(false);
                         menu.findItem(R.id.add_to_launcher).setVisible(false);
-                        MenuUtils.safeSetVisible(menu, R.id.share, false);
                     }
 
                     MenuUtils.safeSetVisible(menu, R.id.subscribe, tab.hasFeeds());
@@ -271,16 +274,13 @@ public class BrowserToolbar extends GeckoRelativeLayout
                     // if there is no tab, remove anything tab dependent
                     menu.findItem(R.id.copyurl).setVisible(false);
                     menu.findItem(R.id.add_to_launcher).setVisible(false);
-                    MenuUtils.safeSetVisible(menu, R.id.share, false);
                     MenuUtils.safeSetVisible(menu, R.id.subscribe, false);
                     MenuUtils.safeSetVisible(menu, R.id.add_search_engine, false);
                 }
-
-                MenuUtils.safeSetVisible(menu, R.id.share, !GeckoProfile.get(getContext()).inGuestMode());
             }
         });
 
-        mUrlDisplayLayout.setOnStopListener(new OnStopListener() {
+        urlDisplayLayout.setOnStopListener(new OnStopListener() {
             @Override
             public Tab onStop() {
                 final Tab tab = Tabs.getInstance().getSelectedTab();
@@ -293,14 +293,14 @@ public class BrowserToolbar extends GeckoRelativeLayout
             }
         });
 
-        mUrlDisplayLayout.setOnTitleChangeListener(new OnTitleChangeListener() {
+        urlDisplayLayout.setOnTitleChangeListener(new OnTitleChangeListener() {
             @Override
             public void onTitleChange(CharSequence title) {
                 final String contentDescription;
                 if (title != null) {
                     contentDescription = title.toString();
                 } else {
-                    contentDescription = mActivity.getString(R.string.url_bar_default_text);
+                    contentDescription = activity.getString(R.string.url_bar_default_text);
                 }
 
                 // The title and content description should
@@ -309,114 +309,101 @@ public class BrowserToolbar extends GeckoRelativeLayout
             }
         });
 
-        mUrlEditLayout.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+        urlEditLayout.setOnFocusChangeListener(new View.OnFocusChangeListener() {
             @Override
             public void onFocusChange(View v, boolean hasFocus) {
+                // This will select the url bar when entering editing mode.
                 setSelected(hasFocus);
-                if (mFocusChangeListener != null) {
-                    mFocusChangeListener.onFocusChange(v, hasFocus);
+                if (focusChangeListener != null) {
+                    focusChangeListener.onFocusChange(v, hasFocus);
                 }
             }
         });
 
-        mTabs.setOnClickListener(new Button.OnClickListener() {
+        tabsButton.setOnClickListener(new Button.OnClickListener() {
             @Override
             public void onClick(View v) {
+                // Clear focus so a back press with the tabs
+                // panel open does not go to the editing field.
+                urlEditLayout.clearFocus();
+
                 toggleTabs();
             }
         });
-        mTabs.setImageLevel(0);
+        tabsButton.setImageLevel(0);
 
-        mBack.setOnClickListener(new Button.OnClickListener() {
+        editCancel.setOnClickListener(new OnClickListener() {
             @Override
-            public void onClick(View view) {
-                Tabs.getInstance().getSelectedTab().doBack();
-            }
-        });
-        mBack.setOnLongClickListener(new Button.OnLongClickListener() {
-            @Override
-            public boolean onLongClick(View view) {
-                return Tabs.getInstance().getSelectedTab().showBackHistory();
-            }
-        });
-
-        mForward.setOnClickListener(new Button.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                Tabs.getInstance().getSelectedTab().doForward();
-            }
-        });
-        mForward.setOnLongClickListener(new Button.OnLongClickListener() {
-            @Override
-            public boolean onLongClick(View view) {
-                return Tabs.getInstance().getSelectedTab().showForwardHistory();
+            public void onClick(View v) {
+                // If we exit editing mode during the animation,
+                // we're put into an inconsistent state (bug 1017276).
+                if (!isAnimating()) {
+                    Telemetry.sendUIEvent(TelemetryContract.Event.CANCEL,
+                                          TelemetryContract.Method.ACTIONBAR,
+                                          getResources().getResourceEntryName(editCancel.getId()));
+                    cancelEdit();
+                }
             }
         });
 
-        if (mHasSoftMenuButton) {
-            mMenu.setVisibility(View.VISIBLE);
-            mMenuIcon.setVisibility(View.VISIBLE);
+        if (hasSoftMenuButton) {
+            menuButton.setVisibility(View.VISIBLE);
+            menuIcon.setVisibility(View.VISIBLE);
 
-            mMenu.setOnClickListener(new Button.OnClickListener() {
+            menuButton.setOnClickListener(new Button.OnClickListener() {
                 @Override
                 public void onClick(View view) {
-                    mActivity.openOptionsMenu();
+                    // Drop the soft keyboard.
+                    urlEditLayout.clearFocus();
+                    activity.openOptionsMenu();
                 }
             });
         }
     }
 
+    @Override
+    public void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+
+        prefs.close();
+    }
+
+    @Override
+    public void draw(Canvas canvas) {
+        super.draw(canvas);
+
+        final int height = getHeight();
+        canvas.drawRect(0, height - shadowSize, getWidth(), height, shadowPaint);
+    }
+
     public void setProgressBar(ToolbarProgressView progressBar) {
-        mProgressBar = progressBar;
+        this.progressBar = progressBar;
+    }
+
+    public void setTabHistoryController(TabHistoryController tabHistoryController) {
+        this.tabHistoryController = tabHistoryController;
     }
 
     public void refresh() {
-        mUrlDisplayLayout.dismissSiteIdentityPopup();
+        urlDisplayLayout.dismissSiteIdentityPopup();
     }
 
     public boolean onBackPressed() {
-        if (isEditing()) {
-            stopEditing();
+        // If we exit editing mode during the animation,
+        // we're put into an inconsistent state (bug 1017276).
+        if (isEditing() && !isAnimating()) {
+            Telemetry.sendUIEvent(TelemetryContract.Event.CANCEL,
+                                  TelemetryContract.Method.BACK);
+            cancelEdit();
             return true;
         }
 
-        return mUrlDisplayLayout.dismissSiteIdentityPopup();
-    }
-
-    public boolean onKey(int keyCode, KeyEvent event) {
-        if (event.getAction() != KeyEvent.ACTION_DOWN) {
-            return false;
-        }
-
-        // Galaxy Note sends key events for the stylus that are outside of the
-        // valid keyCode range (see bug 758427)
-        if (keyCode > KeyEvent.getMaxKeyCode()) {
-            return true;
-        }
-
-        // This method is called only if the key event was not handled
-        // by any of the views, which usually means the edit box lost focus
-        if (keyCode == KeyEvent.KEYCODE_BACK ||
-            keyCode == KeyEvent.KEYCODE_MENU ||
-            keyCode == KeyEvent.KEYCODE_DPAD_UP ||
-            keyCode == KeyEvent.KEYCODE_DPAD_DOWN ||
-            keyCode == KeyEvent.KEYCODE_DPAD_LEFT ||
-            keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ||
-            keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
-            keyCode == KeyEvent.KEYCODE_DEL ||
-            keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
-            keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
-            return false;
-        } else if (isEditing()) {
-            return mUrlEditLayout.onKey(keyCode, event);
-        }
-
-        return false;
+        return urlDisplayLayout.dismissSiteIdentityPopup();
     }
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
-        // If the motion event has occured below the toolbar (due to the scroll
+        // If the motion event has occurred below the toolbar (due to the scroll
         // offset), let it pass through to the page.
         if (event != null && event.getY() > getHeight() + ViewHelper.getTranslationY(this)) {
             return false;
@@ -435,10 +422,22 @@ public class BrowserToolbar extends GeckoRelativeLayout
             post(new Runnable() {
                 @Override
                 public void run() {
-                    mActivity.refreshToolbarHeight();
+                    activity.refreshToolbarHeight();
                 }
             });
         }
+    }
+
+    public void saveTabEditingState(final TabEditingState editingState) {
+        urlEditLayout.saveTabEditingState(editingState);
+    }
+
+    public void restoreTabEditingState(final TabEditingState editingState) {
+        if (!isEditing()) {
+            throw new IllegalStateException("Expected to be editing");
+        }
+
+        urlEditLayout.restoreTabEditingState(editingState);
     }
 
     @Override
@@ -459,9 +458,9 @@ public class BrowserToolbar extends GeckoRelativeLayout
             case RESTORED:
                 // TabCount fixup after OOM
             case SELECTED:
-                mUrlDisplayLayout.dismissSiteIdentityPopup();
+                urlDisplayLayout.dismissSiteIdentityPopup();
                 updateTabCount(tabs.getDisplayCount());
-                mSwitchingTabs = true;
+                isSwitchingTabs = true;
                 break;
         }
 
@@ -479,8 +478,8 @@ public class BrowserToolbar extends GeckoRelativeLayout
                 case LOADED:
                 case STOP:
                     flags.add(UpdateFlags.PROGRESS);
-                    if (mProgressBar.getVisibility() == View.VISIBLE) {
-                        mProgressBar.animateProgress(tab.getLoadProgress());
+                    if (progressBar.getVisibility() == View.VISIBLE) {
+                        progressBar.animateProgress(tab.getLoadProgress());
                     }
                     break;
 
@@ -499,8 +498,7 @@ public class BrowserToolbar extends GeckoRelativeLayout
                 case START:
                 case CLOSED:
                 case ADDED:
-                    updateBackButton(tab);
-                    updateForwardButton(tab);
+                    updateNavigationButtons(tab);
                     break;
 
                 case SELECTED:
@@ -516,8 +514,7 @@ public class BrowserToolbar extends GeckoRelativeLayout
                     flags.add(UpdateFlags.FAVICON);
                     flags.add(UpdateFlags.SITE_IDENTITY);
 
-                    updateBackButton(tab);
-                    updateForwardButton(tab);
+                    updateNavigationButtons(tab);
                     break;
 
                 case TITLE:
@@ -542,7 +539,7 @@ public class BrowserToolbar extends GeckoRelativeLayout
             case SELECTED:
             case LOAD_ERROR:
             case LOCATION_CHANGE:
-                mSwitchingTabs = false;
+                isSwitchingTabs = false;
         }
     }
 
@@ -553,119 +550,77 @@ public class BrowserToolbar extends GeckoRelativeLayout
 
     private void updateProgressVisibility(Tab selectedTab, int progress) {
         if (!isEditing() && selectedTab.getState() == Tab.STATE_LOADING) {
-            mProgressBar.setProgress(progress);
-            mProgressBar.setVisibility(View.VISIBLE);
+            progressBar.setProgress(progress);
+            progressBar.setVisibility(View.VISIBLE);
         } else {
-            mProgressBar.setVisibility(View.GONE);
+            progressBar.setVisibility(View.GONE);
         }
     }
 
-    public boolean isVisible() {
+    protected boolean isVisible() {
         return ViewHelper.getTranslationY(this) == 0;
     }
 
     @Override
     public void setNextFocusDownId(int nextId) {
         super.setNextFocusDownId(nextId);
-        mTabs.setNextFocusDownId(nextId);
-        mBack.setNextFocusDownId(nextId);
-        mForward.setNextFocusDownId(nextId);
-        mUrlDisplayLayout.setNextFocusDownId(nextId);
-        mMenu.setNextFocusDownId(nextId);
-    }
-
-    private int getUrlBarEntryTranslation() {
-        return getWidth() - mUrlBarEntry.getRight();
-    }
-
-    private int getUrlBarCurveTranslation() {
-        return getWidth() - mTabs.getLeft();
-    }
-
-    private boolean canDoBack(Tab tab) {
-        return (tab.canDoBack() && !isEditing());
-    }
-
-    private boolean canDoForward(Tab tab) {
-        return (tab.canDoForward() && !isEditing());
-    }
-
-    private void addTab() {
-        mActivity.addTab();
+        tabsButton.setNextFocusDownId(nextId);
+        urlDisplayLayout.setNextFocusDownId(nextId);
+        menuButton.setNextFocusDownId(nextId);
     }
 
     private void toggleTabs() {
-        if (mActivity.areTabsShown()) {
-            if (mActivity.hasTabsSideBar())
-                mActivity.hideTabs();
+        if (activity.areTabsShown()) {
+            if (activity.hasTabsSideBar())
+                activity.hideTabs();
         } else {
             // hide the virtual keyboard
             InputMethodManager imm =
-                    (InputMethodManager) mActivity.getSystemService(Context.INPUT_METHOD_SERVICE);
-            imm.hideSoftInputFromWindow(mTabs.getWindowToken(), 0);
+                    (InputMethodManager) activity.getSystemService(Context.INPUT_METHOD_SERVICE);
+            imm.hideSoftInputFromWindow(tabsButton.getWindowToken(), 0);
 
             Tab tab = Tabs.getInstance().getSelectedTab();
             if (tab != null) {
                 if (!tab.isPrivate())
-                    mActivity.showNormalTabs();
+                    activity.showNormalTabs();
                 else
-                    mActivity.showPrivateTabs();
+                    activity.showPrivateTabs();
             }
         }
     }
 
-    private void updateTabCountAndAnimate(int count) {
-        // Don't animate if the toolbar is hidden.
-        if (!isVisible()) {
-            updateTabCount(count);
-            return;
-        }
-
+    protected void updateTabCount(final int count) {
         // If toolbar is in edit mode on a phone, this means the entry is expanded
         // and the tabs button is translated offscreen. Don't trigger tabs counter
         // updates until the tabs button is back on screen.
         // See stopEditing()
-        if (!isEditing() || HardwareUtils.isTablet()) {
-            mTabsCounter.setCount(count);
-
-            mTabs.setContentDescription((count > 1) ?
-                                        mActivity.getString(R.string.num_tabs, count) :
-                                        mActivity.getString(R.string.one_tab));
-        }
-    }
-
-    private void updateTabCount(int count) {
-        // If toolbar is in edit mode on a phone, this means the entry is expanded
-        // and the tabs button is translated offscreen. Don't trigger tabs counter
-        // updates until the tabs button is back on screen.
-        // See stopEditing()
-        if (isEditing() && !HardwareUtils.isTablet()) {
+        if (isTabsButtonOffscreen()) {
             return;
         }
 
         // Set TabCounter based on visibility
-        if (isVisible() && ViewHelper.getAlpha(mTabsCounter) != 0 && !isEditing()) {
-            mTabsCounter.setCountWithAnimation(count);
+        if (isVisible() && ViewHelper.getAlpha(tabsCounter) != 0 && !isEditing()) {
+            tabsCounter.setCountWithAnimation(count);
         } else {
-            mTabsCounter.setCount(count);
+            tabsCounter.setCount(count);
         }
 
         // Update A11y information
-        mTabs.setContentDescription((count > 1) ?
-                                    mActivity.getString(R.string.num_tabs, count) :
-                                    mActivity.getString(R.string.one_tab));
+        tabsButton.setContentDescription((count > 1) ?
+                                         activity.getString(R.string.num_tabs, count) :
+                                         activity.getString(R.string.one_tab));
     }
 
     private void updateDisplayLayout(Tab tab, EnumSet<UpdateFlags> flags) {
-        if (mSwitchingTabs) {
+        if (isSwitchingTabs) {
             flags.add(UpdateFlags.DISABLE_ANIMATIONS);
         }
 
-        mUrlDisplayLayout.updateFromTab(tab, flags);
+        urlDisplayLayout.updateFromTab(tab, flags);
 
         if (flags.contains(UpdateFlags.TITLE)) {
             if (!isEditing()) {
-                mUrlEditLayout.setText(tab.getURL());
+                urlEditLayout.setText(tab.getURL());
             }
         }
 
@@ -675,13 +630,17 @@ public class BrowserToolbar extends GeckoRelativeLayout
     }
 
     private void updateFocusOrder() {
+        if (focusOrder.size() == 0) {
+            throw new IllegalStateException("Expected focusOrder to be initialized in subclass");
+        }
+
         View prevView = null;
 
         // If the element that has focus becomes disabled or invisible, focus
         // is given to the URL bar.
         boolean needsNewFocus = false;
 
-        for (View view : mFocusOrder) {
+        for (View view : focusOrder) {
             if (view.getVisibility() != View.VISIBLE || !view.isEnabled()) {
                 if (view.hasFocus()) {
                     needsNewFocus = true;
@@ -689,10 +648,11 @@ public class BrowserToolbar extends GeckoRelativeLayout
                 continue;
             }
 
-            if (view == mActionItemBar) {
-                final int childCount = mActionItemBar.getChildCount();
+            if (view.getId() == R.id.menu_items) {
+                final LinearLayout actionItemBar = (LinearLayout) view;
+                final int childCount = actionItemBar.getChildCount();
                 for (int child = 0; child < childCount; child++) {
-                    View childView = mActionItemBar.getChildAt(child);
+                    View childView = actionItemBar.getChildAt(child);
                     if (prevView != null) {
                         childView.setNextFocusLeftId(prevView.getId());
                         prevView.setNextFocusRightId(childView.getId());
@@ -718,195 +678,108 @@ public class BrowserToolbar extends GeckoRelativeLayout
             return;
         }
 
-        mUrlEditLayout.onEditSuggestion(suggestion);
+        urlEditLayout.onEditSuggestion(suggestion);
     }
 
     public void setTitle(CharSequence title) {
-        mUrlDisplayLayout.setTitle(title);
-    }
-
-    public void prepareTabsAnimation(PropertyAnimator animator, boolean tabsAreShown) {
-        if (!tabsAreShown) {
-            PropertyAnimator buttonsAnimator =
-                    new PropertyAnimator(animator.getDuration(), sButtonsInterpolator);
-
-            buttonsAnimator.attach(mTabsCounter,
-                                   PropertyAnimator.Property.ALPHA,
-                                   1.0f);
-
-            if (mHasSoftMenuButton && !HardwareUtils.isTablet()) {
-                buttonsAnimator.attach(mMenuIcon,
-                                       PropertyAnimator.Property.ALPHA,
-                                       1.0f);
-            }
-
-            buttonsAnimator.start();
-
-            return;
-        }
-
-        ViewHelper.setAlpha(mTabsCounter, 0.0f);
-
-        if (mHasSoftMenuButton && !HardwareUtils.isTablet()) {
-            ViewHelper.setAlpha(mMenuIcon, 0.0f);
-        }
-    }
-
-    public void finishTabsAnimation(boolean tabsAreShown) {
-        if (tabsAreShown) {
-            return;
-        }
-
-        PropertyAnimator animator = new PropertyAnimator(150);
-
-        animator.attach(mTabsCounter,
-                        PropertyAnimator.Property.ALPHA,
-                        1.0f);
-
-        if (mHasSoftMenuButton && !HardwareUtils.isTablet()) {
-            animator.attach(mMenuIcon,
-                            PropertyAnimator.Property.ALPHA,
-                            1.0f);
-        }
-
-        animator.start();
+        urlDisplayLayout.setTitle(title);
     }
 
     public void setOnActivateListener(OnActivateListener listener) {
-        mActivateListener = listener;
+        activateListener = listener;
     }
 
     public void setOnCommitListener(OnCommitListener listener) {
-        mCommitListener = listener;
-        mUrlEditLayout.setOnCommitListener(listener);
+        urlEditLayout.setOnCommitListener(listener);
     }
 
     public void setOnDismissListener(OnDismissListener listener) {
-        mDismissListener = listener;
-        mUrlEditLayout.setOnDismissListener(listener);
+        urlEditLayout.setOnDismissListener(listener);
     }
 
     public void setOnFilterListener(OnFilterListener listener) {
-        mFilterListener = listener;
-        mUrlEditLayout.setOnFilterListener(listener);
+        urlEditLayout.setOnFilterListener(listener);
     }
 
+    @Override
     public void setOnFocusChangeListener(OnFocusChangeListener listener) {
-        mFocusChangeListener = listener;
+        focusChangeListener = listener;
     }
 
     public void setOnStartEditingListener(OnStartEditingListener listener) {
-        mStartEditingListener = listener;
+        startEditingListener = listener;
     }
 
     public void setOnStopEditingListener(OnStopEditingListener listener) {
-        mStopEditingListener = listener;
+        stopEditingListener = listener;
     }
 
-    private void showUrlEditLayout() {
+    protected void showUrlEditLayout() {
         setUrlEditLayoutVisibility(true, null);
     }
 
-    private void showUrlEditLayout(PropertyAnimator animator) {
+    protected void showUrlEditLayout(final PropertyAnimator animator) {
         setUrlEditLayoutVisibility(true, animator);
     }
 
-    private void hideUrlEditLayout() {
+    protected void hideUrlEditLayout() {
         setUrlEditLayoutVisibility(false, null);
     }
 
-    private void hideUrlEditLayout(PropertyAnimator animator) {
+    protected void hideUrlEditLayout(final PropertyAnimator animator) {
         setUrlEditLayoutVisibility(false, animator);
     }
 
     private void setUrlEditLayoutVisibility(final boolean showEditLayout, PropertyAnimator animator) {
-        final View viewToShow = (showEditLayout ? mUrlEditLayout : mUrlDisplayLayout);
-        final View viewToHide = (showEditLayout ? mUrlDisplayLayout : mUrlEditLayout);
-
         if (showEditLayout) {
-            mUrlEditLayout.prepareShowAnimation(animator);
+            urlEditLayout.prepareShowAnimation(animator);
         }
 
         if (animator == null) {
+            final View viewToShow = (showEditLayout ? urlEditLayout : urlDisplayLayout);
+            final View viewToHide = (showEditLayout ? urlDisplayLayout : urlEditLayout);
+
             viewToHide.setVisibility(View.GONE);
             viewToShow.setVisibility(View.VISIBLE);
+
+            final int cancelVisibility = (showEditLayout ? View.VISIBLE : View.INVISIBLE);
+            setCancelVisibility(cancelVisibility);
             return;
         }
-
-        ViewHelper.setAlpha(viewToShow, 0.0f);
-        animator.attach(viewToShow,
-                        PropertyAnimator.Property.ALPHA,
-                        1.0f);
-
-        animator.attach(viewToHide,
-                        PropertyAnimator.Property.ALPHA,
-                        0.0f);
 
         animator.addPropertyAnimationListener(new PropertyAnimationListener() {
             @Override
             public void onPropertyAnimationStart() {
-                viewToShow.setVisibility(View.VISIBLE);
+                if (!showEditLayout) {
+                    urlEditLayout.setVisibility(View.GONE);
+                    urlDisplayLayout.setVisibility(View.VISIBLE);
+
+                    setCancelVisibility(View.INVISIBLE);
+                }
             }
 
             @Override
             public void onPropertyAnimationEnd() {
-                viewToHide.setVisibility(View.GONE);
-                ViewHelper.setAlpha(viewToHide, 1.0f);
+                if (showEditLayout) {
+                    urlDisplayLayout.setVisibility(View.GONE);
+                    urlEditLayout.setVisibility(View.VISIBLE);
+
+                    setCancelVisibility(View.VISIBLE);
+                }
             }
         });
     }
 
-    /**
-     * Disables and dims all toolbar elements which are not
-     * related to editing mode.
-     */
-    private void updateChildrenForEditing() {
-        // This is for the tablet UI only
-        if (!HardwareUtils.isTablet()) {
-            return;
-        }
-
-        // Disable toolbar elemens while in editing mode
-        final boolean enabled = !isEditing();
-
-        // This alpha value has to be in sync with the one used
-        // in setButtonEnabled().
-        final float alpha = (enabled ? 1.0f : 0.24f);
-
-        if (!enabled) {
-            mTabsCounter.onEnterEditingMode();
-        }
-
-        mTabs.setEnabled(enabled);
-        ViewHelper.setAlpha(mTabsCounter, alpha);
-        mMenu.setEnabled(enabled);
-        ViewHelper.setAlpha(mMenuIcon, alpha);
-
-        final int actionItemsCount = mActionItemBar.getChildCount();
-        for (int i = 0; i < actionItemsCount; i++) {
-            mActionItemBar.getChildAt(i).setEnabled(enabled);
-        }
-        ViewHelper.setAlpha(mActionItemBar, alpha);
-
-        final Tab tab = Tabs.getInstance().getSelectedTab();
-        if (tab != null) {
-            setButtonEnabled(mBack, canDoBack(tab));
-            setButtonEnabled(mForward, canDoForward(tab));
-
-            // Once the editing mode is finished, we have to ensure that the
-            // forward button slides away if necessary. This is because we might
-            // have only disabled it (without hiding it) when the toolbar entered
-            // editing mode.
-            if (!isEditing()) {
-                animateForwardButton(canDoForward(tab) ?
-                                     ForwardButtonAnimation.SHOW : ForwardButtonAnimation.HIDE);
-            }
+    private void setCancelVisibility(final int visibility) {
+        // TODO: Remove this check (and maybe method) when NewTablet's editing mode is implemented.
+        if (!isNewTablet) {
+            editCancel.setVisibility(visibility);
         }
     }
 
     private void setUIMode(final UIMode uiMode) {
-        mUIMode = uiMode;
-        mUrlEditLayout.setEnabled(uiMode == UIMode.EDIT);
+        this.uiMode = uiMode;
+        urlEditLayout.setEnabled(uiMode == UIMode.EDIT);
     }
 
     /**
@@ -914,7 +787,7 @@ public class BrowserToolbar extends GeckoRelativeLayout
      * tab button). Note that selection state is independent of editing mode.
      */
     public boolean isEditing() {
-        return (mUIMode == UIMode.EDIT);
+        return (uiMode == UIMode.EDIT);
     }
 
     public void startEditing(String url, PropertyAnimator animator) {
@@ -922,96 +795,17 @@ public class BrowserToolbar extends GeckoRelativeLayout
             return;
         }
 
-        mUrlEditLayout.setText(url != null ? url : "");
+        urlEditLayout.setText(url != null ? url : "");
 
         setUIMode(UIMode.EDIT);
-        updateChildrenForEditing();
 
         updateProgressVisibility();
 
-        if (mStartEditingListener != null) {
-            mStartEditingListener.onStartEditing();
+        if (startEditingListener != null) {
+            startEditingListener.onStartEditing();
         }
 
-        if (mUrlBarRightEdge != null) {
-            mUrlBarRightEdge.setVisibility(View.VISIBLE);
-        }
-
-        final int entryTranslation = getUrlBarEntryTranslation();
-        final int curveTranslation = getUrlBarCurveTranslation();
-
-        // This animation doesn't make much sense in a sidebar UI
-        if (HardwareUtils.isTablet() || Build.VERSION.SDK_INT < 11) {
-            showUrlEditLayout();
-
-            if (!HardwareUtils.isTablet()) {
-                if (mUrlBarRightEdge != null) {
-                    ViewHelper.setTranslationX(mUrlBarRightEdge, entryTranslation);
-                }
-
-                ViewHelper.setTranslationX(mTabs, curveTranslation);
-                ViewHelper.setTranslationX(mTabsCounter, curveTranslation);
-                ViewHelper.setTranslationX(mActionItemBar, curveTranslation);
-
-                if (mHasSoftMenuButton) {
-                    ViewHelper.setTranslationX(mMenu, curveTranslation);
-                    ViewHelper.setTranslationX(mMenuIcon, curveTranslation);
-                }
-            }
-
-            return;
-        }
-
-        if (mAnimatingEntry)
-            return;
-
-        // Highlight the toolbar from the start of the animation.
-        setSelected(true);
-
-        mUrlDisplayLayout.prepareStartEditingAnimation();
-
-        // Slide the right side elements of the toolbar
-
-        if (mUrlBarRightEdge != null) {
-            animator.attach(mUrlBarRightEdge,
-                            PropertyAnimator.Property.TRANSLATION_X,
-                            entryTranslation);
-        }
-
-        animator.attach(mTabs,
-                        PropertyAnimator.Property.TRANSLATION_X,
-                        curveTranslation);
-        animator.attach(mTabsCounter,
-                        PropertyAnimator.Property.TRANSLATION_X,
-                        curveTranslation);
-        animator.attach(mActionItemBar,
-                        PropertyAnimator.Property.TRANSLATION_X,
-                        curveTranslation);
-
-        if (mHasSoftMenuButton) {
-            animator.attach(mMenu,
-                            PropertyAnimator.Property.TRANSLATION_X,
-                            curveTranslation);
-
-            animator.attach(mMenuIcon,
-                            PropertyAnimator.Property.TRANSLATION_X,
-                            curveTranslation);
-        }
-
-        showUrlEditLayout(animator);
-
-        animator.addPropertyAnimationListener(new PropertyAnimator.PropertyAnimationListener() {
-            @Override
-            public void onPropertyAnimationStart() {
-            }
-
-            @Override
-            public void onPropertyAnimationEnd() {
-                mAnimatingEntry = false;
-            }
-        });
-
-        mAnimatingEntry = true;
+        triggerStartEditingTransition(animator);
     }
 
     /**
@@ -1020,6 +814,7 @@ public class BrowserToolbar extends GeckoRelativeLayout
      * @return the url that was entered
      */
     public String cancelEdit() {
+        Telemetry.stopUISession(TelemetryContract.Session.AWESOMESCREEN);
         return stopEditing();
     }
 
@@ -1037,247 +832,31 @@ public class BrowserToolbar extends GeckoRelativeLayout
     }
 
     private String stopEditing() {
-        final String url = mUrlEditLayout.getText();
+        final String url = urlEditLayout.getText();
         if (!isEditing()) {
             return url;
         }
         setUIMode(UIMode.DISPLAY);
 
-        updateChildrenForEditing();
-
-        if (mStopEditingListener != null) {
-            mStopEditingListener.onStopEditing();
+        if (stopEditingListener != null) {
+            stopEditingListener.onStopEditing();
         }
 
         updateProgressVisibility();
-
-        if (HardwareUtils.isTablet() || Build.VERSION.SDK_INT < 11) {
-            hideUrlEditLayout();
-
-            if (!HardwareUtils.isTablet()) {
-                updateTabCountAndAnimate(Tabs.getInstance().getDisplayCount());
-
-                if (mUrlBarRightEdge != null) {
-                    ViewHelper.setTranslationX(mUrlBarRightEdge, 0);
-                }
-
-                ViewHelper.setTranslationX(mTabs, 0);
-                ViewHelper.setTranslationX(mTabsCounter, 0);
-                ViewHelper.setTranslationX(mActionItemBar, 0);
-
-                if (mHasSoftMenuButton) {
-                    ViewHelper.setTranslationX(mMenu, 0);
-                    ViewHelper.setTranslationX(mMenuIcon, 0);
-                }
-            }
-
-            return url;
-        }
-
-        final PropertyAnimator contentAnimator = new PropertyAnimator(250);
-        contentAnimator.setUseHardwareLayer(false);
-
-        // Shrink the urlbar entry back to its original size
-
-        if (mUrlBarRightEdge != null) {
-            contentAnimator.attach(mUrlBarRightEdge,
-                                   PropertyAnimator.Property.TRANSLATION_X,
-                                   0);
-        }
-
-        contentAnimator.attach(mTabs,
-                               PropertyAnimator.Property.TRANSLATION_X,
-                               0);
-        contentAnimator.attach(mTabsCounter,
-                               PropertyAnimator.Property.TRANSLATION_X,
-                               0);
-        contentAnimator.attach(mActionItemBar,
-                               PropertyAnimator.Property.TRANSLATION_X,
-                               0);
-
-        if (mHasSoftMenuButton) {
-            contentAnimator.attach(mMenu,
-                                   PropertyAnimator.Property.TRANSLATION_X,
-                                   0);
-
-            contentAnimator.attach(mMenuIcon,
-                                   PropertyAnimator.Property.TRANSLATION_X,
-                                   0);
-        }
-
-        hideUrlEditLayout(contentAnimator);
-
-        contentAnimator.addPropertyAnimationListener(new PropertyAnimator.PropertyAnimationListener() {
-            @Override
-            public void onPropertyAnimationStart() {
-            }
-
-            @Override
-            public void onPropertyAnimationEnd() {
-                if (mUrlBarRightEdge != null) {
-                    mUrlBarRightEdge.setVisibility(View.INVISIBLE);
-                }
-
-                PropertyAnimator buttonsAnimator = new PropertyAnimator(300);
-                mUrlDisplayLayout.prepareStopEditingAnimation(buttonsAnimator);
-                buttonsAnimator.start();
-
-                mAnimatingEntry = false;
-
-                // Trigger animation to update the tabs counter once the
-                // tabs button is back on screen.
-                updateTabCountAndAnimate(Tabs.getInstance().getDisplayCount());
-            }
-        });
-
-        mAnimatingEntry = true;
-        contentAnimator.start();
+        triggerStopEditingTransition();
 
         return url;
-    }
-
-    public void setButtonEnabled(ImageButton button, boolean enabled) {
-        final Drawable drawable = button.getDrawable();
-        if (drawable != null) {
-            // This alpha value has to be in sync with the one used
-            // in updateChildrenForEditing().
-            drawable.setAlpha(enabled ? 255 : 61);
-        }
-
-        button.setEnabled(enabled);
-    }
-
-    public void updateBackButton(Tab tab) {
-        setButtonEnabled(mBack, canDoBack(tab));
-    }
-
-    private void animateForwardButton(final ForwardButtonAnimation animation) {
-        // If the forward button is not visible, we must be
-        // in the phone UI.
-        if (mForward.getVisibility() != View.VISIBLE) {
-            return;
-        }
-
-        final boolean showing = (animation == ForwardButtonAnimation.SHOW);
-
-        // if the forward button's margin is non-zero, this means it has already
-        // been animated to be visible¸ and vice-versa.
-        MarginLayoutParams fwdParams = (MarginLayoutParams) mForward.getLayoutParams();
-        if ((fwdParams.leftMargin > mDefaultForwardMargin && showing) ||
-            (fwdParams.leftMargin == mDefaultForwardMargin && !showing)) {
-            return;
-        }
-
-        // We want the forward button to show immediately when switching tabs
-        final PropertyAnimator forwardAnim =
-                new PropertyAnimator(mSwitchingTabs ? 10 : FORWARD_ANIMATION_DURATION);
-        final int width = mForward.getWidth() / 2;
-
-        forwardAnim.addPropertyAnimationListener(new PropertyAnimator.PropertyAnimationListener() {
-            @Override
-            public void onPropertyAnimationStart() {
-                if (!showing) {
-                    // Set the margin before the transition when hiding the forward button. We
-                    // have to do this so that the favicon isn't clipped during the transition
-                    MarginLayoutParams layoutParams =
-                        (MarginLayoutParams) mUrlDisplayLayout.getLayoutParams();
-                    layoutParams.leftMargin = 0;
-
-                    // Do the same on the URL edit container
-                    layoutParams = (MarginLayoutParams) mUrlEditLayout.getLayoutParams();
-                    layoutParams.leftMargin = 0;
-
-                    requestLayout();
-                    // Note, we already translated the favicon, site security, and text field
-                    // in prepareForwardAnimation, so they should appear to have not moved at
-                    // all at this point.
-                }
-            }
-
-            @Override
-            public void onPropertyAnimationEnd() {
-                if (showing) {
-                    MarginLayoutParams layoutParams =
-                        (MarginLayoutParams) mUrlDisplayLayout.getLayoutParams();
-                    layoutParams.leftMargin = mUrlBarViewOffset;
-
-                    layoutParams = (MarginLayoutParams) mUrlEditLayout.getLayoutParams();
-                    layoutParams.leftMargin = mUrlBarViewOffset;
-                }
-
-                mUrlDisplayLayout.finishForwardAnimation();
-
-                MarginLayoutParams layoutParams = (MarginLayoutParams) mForward.getLayoutParams();
-                layoutParams.leftMargin = mDefaultForwardMargin + (showing ? width : 0);
-                ViewHelper.setTranslationX(mForward, 0);
-
-                requestLayout();
-            }
-        });
-
-        prepareForwardAnimation(forwardAnim, animation, width);
-        forwardAnim.start();
-    }
-
-    public void updateForwardButton(Tab tab) {
-        final boolean enabled = canDoForward(tab);
-        if (mForward.isEnabled() == enabled)
-            return;
-
-        // Save the state on the forward button so that we can skip animations
-        // when there's nothing to change
-        setButtonEnabled(mForward, enabled);
-        animateForwardButton(enabled ? ForwardButtonAnimation.SHOW : ForwardButtonAnimation.HIDE);
-    }
-
-    private void prepareForwardAnimation(PropertyAnimator anim, ForwardButtonAnimation animation, int width) {
-        if (animation == ForwardButtonAnimation.HIDE) {
-            anim.attach(mForward,
-                      PropertyAnimator.Property.TRANSLATION_X,
-                      -width);
-            anim.attach(mForward,
-                      PropertyAnimator.Property.ALPHA,
-                      0);
-
-        } else {
-            anim.attach(mForward,
-                      PropertyAnimator.Property.TRANSLATION_X,
-                      width);
-            anim.attach(mForward,
-                      PropertyAnimator.Property.ALPHA,
-                      1);
-        }
-
-        mUrlDisplayLayout.prepareForwardAnimation(anim, animation, width);
-    }
-
-    @Override
-    public boolean addActionItem(View actionItem) {
-        mActionItemBar.addView(actionItem);
-        return true;
-    }
-
-    @Override
-    public void removeActionItem(View actionItem) {
-        mActionItemBar.removeView(actionItem);
     }
 
     @Override
     public void setPrivateMode(boolean isPrivate) {
         super.setPrivateMode(isPrivate);
 
-        mTabs.setPrivateMode(isPrivate);
-        mMenu.setPrivateMode(isPrivate);
-        mMenuIcon.setPrivateMode(isPrivate);
-        mUrlEditLayout.setPrivateMode(isPrivate);
-
-        if (mBack instanceof BackButton) {
-            ((BackButton) mBack).setPrivateMode(isPrivate);
-        }
-
-        if (mForward instanceof ForwardButton) {
-            ((ForwardButton) mForward).setPrivateMode(isPrivate);
-        }
+        tabsButton.setPrivateMode(isPrivate);
+        menuButton.setPrivateMode(isPrivate);
+        menuIcon.setPrivateMode(isPrivate);
+        editCancel.setPrivateMode(isPrivate);
+        urlEditLayout.setPrivateMode(isPrivate);
     }
 
     public void show() {
@@ -1289,90 +868,108 @@ public class BrowserToolbar extends GeckoRelativeLayout
     }
 
     public View getDoorHangerAnchor() {
-        return mUrlDisplayLayout.getDoorHangerAnchor();
+        return urlDisplayLayout.getDoorHangerAnchor();
     }
 
     public void onDestroy() {
         Tabs.unregisterOnTabsChangedListener(this);
-
-        unregisterEventListener("Reader:Click");
-        unregisterEventListener("Reader:LongClick");
     }
 
     public boolean openOptionsMenu() {
-        if (!mHasSoftMenuButton)
+        if (!hasSoftMenuButton) {
             return false;
+        }
 
         // Initialize the popup.
-        if (mMenuPopup == null) {
-            View panel = mActivity.getMenuPanel();
-            mMenuPopup = new MenuPopup(mActivity);
-            mMenuPopup.setPanelView(panel);
+        if (menuPopup == null) {
+            View panel = activity.getMenuPanel();
+            menuPopup = new MenuPopup(activity);
+            menuPopup.setPanelView(panel);
 
-            mMenuPopup.setOnDismissListener(new PopupWindow.OnDismissListener() {
+            menuPopup.setOnDismissListener(new PopupWindow.OnDismissListener() {
                 @Override
                 public void onDismiss() {
-                    mActivity.onOptionsMenuClosed(null);
+                    activity.onOptionsMenuClosed(null);
                 }
             });
         }
 
         GeckoAppShell.getGeckoInterface().invalidateOptionsMenu();
-        if (!mMenuPopup.isShowing())
-            mMenuPopup.showAsDropDown(mMenu);
+        if (!menuPopup.isShowing()) {
+            menuPopup.showAsDropDown(menuButton);
+        }
 
         return true;
     }
 
     public boolean closeOptionsMenu() {
-        if (!mHasSoftMenuButton)
+        if (!hasSoftMenuButton) {
             return false;
+        }
 
-        if (mMenuPopup != null && mMenuPopup.isShowing())
-            mMenuPopup.dismiss();
+        if (menuPopup != null && menuPopup.isShowing()) {
+            menuPopup.dismiss();
+        }
 
         return true;
     }
 
-    private void registerEventListener(String event) {
-        GeckoAppShell.getEventDispatcher().registerEventListener(event, this);
-    }
-
-    private void unregisterEventListener(String event) {
-        GeckoAppShell.getEventDispatcher().unregisterEventListener(event, this);
-    }
-
-    @Override
-    public void handleMessage(String event, JSONObject message) {
-        Log.d(LOGTAG, "handleMessage: " + event);
-        if (event.equals("Reader:Click")) {
-            Tab tab = Tabs.getInstance().getSelectedTab();
-            if (tab != null) {
-                tab.toggleReaderMode();
-            }
-        } else if (event.equals("Reader:LongClick")) {
-            Tab tab = Tabs.getInstance().getSelectedTab();
-            if (tab != null) {
-                tab.addToReadingList();
-            }
-        }
-    }
-
     @Override
     public void onLightweightThemeChanged() {
-        Drawable drawable = mTheme.getDrawable(this);
-        if (drawable == null)
+        final Drawable drawable = getLWTDefaultStateSetDrawable();
+        if (drawable == null) {
             return;
+        }
 
-        StateListDrawable stateList = new StateListDrawable();
+        final StateListDrawable stateList = new StateListDrawable();
         stateList.addState(PRIVATE_STATE_SET, getColorDrawable(R.color.background_private));
         stateList.addState(EMPTY_STATE_SET, drawable);
 
         setBackgroundDrawable(stateList);
+
+        editCancel.onLightweightThemeChanged();
     }
 
     @Override
     public void onLightweightThemeReset() {
         setBackgroundResource(R.drawable.url_bar_bg);
+        editCancel.onLightweightThemeReset();
+    }
+
+    public static LightweightThemeDrawable getLightweightThemeDrawable(final View view,
+            final Resources res, final LightweightTheme theme, final int colorResID) {
+        final int color = res.getColor(colorResID);
+
+        final LightweightThemeDrawable drawable = theme.getColorDrawable(view, color);
+        if (drawable != null) {
+            drawable.setAlpha(LIGHTWEIGHT_THEME_INVERT_ALPHA, LIGHTWEIGHT_THEME_INVERT_ALPHA);
+        }
+
+        return drawable;
+    }
+
+    public static class TabEditingState {
+        // The edited text from the most recent time this tab was unselected.
+        protected String lastEditingText;
+        protected int selectionStart;
+        protected int selectionEnd;
+
+        public boolean isBrowserSearchShown;
+
+        public void copyFrom(final TabEditingState s2) {
+            lastEditingText = s2.lastEditingText;
+            selectionStart = s2.selectionStart;
+            selectionEnd = s2.selectionEnd;
+
+            isBrowserSearchShown = s2.isBrowserSearchShown;
+        }
+
+        public boolean isBrowserSearchShown() {
+            return isBrowserSearchShown;
+        }
+
+        public void setIsBrowserSearchShown(final boolean isShown) {
+            isBrowserSearchShown = isShown;
+        }
     }
 }

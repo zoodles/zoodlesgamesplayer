@@ -123,11 +123,7 @@ public class EnsureClusterURLStage extends AbstractNonRepositorySyncStage {
               output = reader.readLine();
               BaseResource.consumeReader(reader);
               reader.close();
-            } catch (IllegalStateException e) {
-              delegate.handleError(e);
-              BaseResource.consumeEntity(response);
-              return;
-            } catch (IOException e) {
+            } catch (IllegalStateException | IOException e) {
               delegate.handleError(e);
               BaseResource.consumeEntity(response);
               return;
@@ -212,12 +208,7 @@ public class EnsureClusterURLStage extends AbstractNonRepositorySyncStage {
         callback.informNodeAssigned(session, oldClusterURL, url); // No matter what, we're getting a new node/weave clusterURL.
         session.config.setClusterURL(url);
 
-        ThreadPool.run(new Runnable() {
-          @Override
-          public void run() {
-            session.advance();
-          }
-        });
+        session.advance();
       }
 
       @Override

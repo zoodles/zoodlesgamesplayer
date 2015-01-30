@@ -43,7 +43,7 @@
 #include "nsICacheSession.h"
 
 #ifdef MOZ_WIDGET_GONK
-#include "nsINetworkStatsServiceProxy.h"
+#include "NetStatistics.h"
 #endif
 
 #if defined(PR_LOGGING)
@@ -64,13 +64,13 @@ removeParamsFromPath(nsCString& path)
   }
 }
 
-NS_IMPL_ISUPPORTS_INHERITED5(nsFtpState,
-                             nsBaseContentStream,
-                             nsIInputStreamCallback, 
-                             nsITransportEventSink,
-                             nsICacheListener,
-                             nsIRequestObserver,
-                             nsIProtocolProxyCallback)
+NS_IMPL_ISUPPORTS_INHERITED(nsFtpState,
+                            nsBaseContentStream,
+                            nsIInputStreamCallback, 
+                            nsITransportEventSink,
+                            nsICacheListener,
+                            nsIRequestObserver,
+                            nsIProtocolProxyCallback)
 
 nsFtpState::nsFtpState()
     : nsBaseContentStream(true)
@@ -80,7 +80,7 @@ nsFtpState::nsFtpState()
     , mReceivedControlData(false)
     , mTryingCachedControl(false)
     , mRETRFailed(false)
-    , mFileSize(UINT64_MAX)
+    , mFileSize(kJS_MAX_SAFE_UINTEGER)
     , mServerType(FTP_GENERIC_TYPE)
     , mAction(GET)
     , mAnonymous(true)
@@ -92,7 +92,9 @@ nsFtpState::nsFtpState()
     , mPort(21)
     , mAddressChecked(false)
     , mServerIsIPv6(false)
+    , mUseUTF8(false)
     , mControlStatus(NS_OK)
+    , mDoomCache(false)
     , mDeferredCallbackPending(false)
 {
     LOG_ALWAYS(("FTP:(%x) nsFtpState created", this));
@@ -276,7 +278,12 @@ nsFtpState::EstablishControlConnection()
             mServerType = mControlConnection->mServerType;           
             mPassword   = mControlConnection->mPassword;
             mPwd        = mControlConnection->mPwd;
+            mUseUTF8    = mControlConnection->mUseUTF8;
             mTryingCachedControl = true;
+
+            // we have to set charset to connection if server supports utf-8
+            if (mUseUTF8)
+                mChannel->SetContentCharset(NS_LITERAL_CSTRING("UTF-8"));
             
             // we're already connected to this server, skip login.
             mState = FTP_S_PASV;
@@ -646,7 +653,43 @@ nsFtpState::Process()
                 mInternalError = NS_ERROR_FTP_PWD;
 
             break;
-            
+
+// FEAT for RFC2640 support
+          case FTP_S_FEAT:
+            rv = S_feat();
+
+            if (NS_FAILED(rv))
+                mInternalError = rv;
+
+            MoveToNextState(FTP_R_FEAT);
+            break;
+
+          case FTP_R_FEAT:
+            mState = R_feat();
+
+            // Don't want to overwrite a more explicit status code
+            if (FTP_ERROR == mState && NS_SUCCEEDED(mInternalError))
+                mInternalError = NS_ERROR_FAILURE;
+            break;
+
+// OPTS for some non-RFC2640-compliant servers support
+          case FTP_S_OPTS:
+            rv = S_opts();
+
+            if (NS_FAILED(rv))
+                mInternalError = rv;
+
+            MoveToNextState(FTP_R_OPTS);
+            break;
+
+          case FTP_R_OPTS:
+            mState = R_opts();
+
+            // Don't want to overwrite a more explicit status code
+            if (FTP_ERROR == mState && NS_SUCCEEDED(mInternalError))
+                mInternalError = NS_ERROR_FAILURE;
+            break;
+
           default:
             ;
             
@@ -923,7 +966,7 @@ nsFtpState::R_syst() {
             return FTP_ERROR;
         }
         
-        return FTP_S_PWD;
+        return FTP_S_FEAT;
     }
 
     if (mResponseCode/100 == 5) {   
@@ -931,7 +974,7 @@ nsFtpState::R_syst() {
         // No clue.  We will just hope it is UNIX type server.
         mServerType = FTP_UNIX_TYPE;
 
-        return FTP_S_PWD;
+        return FTP_S_FEAT;
     }
     return FTP_ERROR;
 }
@@ -1134,6 +1177,10 @@ nsFtpState::S_list() {
         nsAutoCString serverType;
         serverType.AppendInt(mServerType);
         mCacheEntry->SetMetaDataElement("servertype", serverType.get());
+
+        nsAutoCString useUTF8;
+        useUTF8.AppendInt(mUseUTF8);
+        mCacheEntry->SetMetaDataElement("useUTF8", useUTF8.get());
 
         // open cache entry for writing, and configure it to receive data.
         if (NS_FAILED(InstallCacheListener())) {
@@ -1551,6 +1598,39 @@ nsFtpState::R_pasv() {
     return FTP_S_SIZE;
 }
 
+nsresult
+nsFtpState::S_feat() {
+    return SendFTPCommand(NS_LITERAL_CSTRING("FEAT" CRLF));
+}
+
+FTP_STATE
+nsFtpState::R_feat() {
+    if (mResponseCode/100 == 2) {
+        if (mResponseMsg.Find(NS_LITERAL_CSTRING(CRLF " UTF8" CRLF), true) > -1) {
+            // This FTP server supports UTF-8 encoding
+            mChannel->SetContentCharset(NS_LITERAL_CSTRING("UTF-8"));
+            mUseUTF8 = true;
+            return FTP_S_OPTS;
+        }
+    }
+
+    mUseUTF8 = false;
+    return FTP_S_PWD;
+}
+
+nsresult
+nsFtpState::S_opts() {
+     // This command is for compatibility of old FTP spec (IETF Draft)
+    return SendFTPCommand(NS_LITERAL_CSTRING("OPTS UTF8 ON" CRLF));
+}
+
+FTP_STATE
+nsFtpState::R_opts() {
+    // Ignore error code because "OPTS UTF8 ON" is for compatibility of
+    // FTP server using IETF draft
+    return FTP_S_PWD;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // nsIRequest methods:
 
@@ -1691,7 +1771,10 @@ nsFtpState::Init(nsFtpChannel *channel)
     mCountRecv = 0;
 
 #ifdef MOZ_WIDGET_GONK
-    NS_GetActiveNetworkInterface(mActiveNetwork);
+    nsCOMPtr<nsINetworkInterface> activeNetwork;
+    GetActiveNetworkInterface(activeNetwork);
+    mActiveNetwork =
+        new nsMainThreadPtrHolder<nsINetworkInterface>(activeNetwork);
 #endif
 
     mKeepRunning = true;
@@ -1790,7 +1873,7 @@ nsFtpState::Init(nsFtpChannel *channel)
         do_GetService(NS_PROTOCOLPROXYSERVICE_CONTRACTID);
 
     if (pps && !mChannel->ProxyInfo()) {
-        pps->AsyncResolve(mChannel->URI(), 0, this,
+        pps->AsyncResolve(static_cast<nsIChannel*>(mChannel), 0, this,
                           getter_AddRefs(mProxyRequest));
     }
 
@@ -1844,6 +1927,7 @@ nsFtpState::KillControlConnection()
         mControlConnection->mServerType = mServerType;           
         mControlConnection->mPassword = mPassword;
         mControlConnection->mPwd = mPwd;
+        mControlConnection->mUseUTF8 = mUseUTF8;
         
         nsresult rv = NS_OK;
         // Don't cache controlconnection if anonymous (bug #473371)
@@ -1862,28 +1946,30 @@ nsFtpState::KillControlConnection()
 class nsFtpAsyncAlert : public nsRunnable
 {
 public:
-    nsFtpAsyncAlert(nsIPrompt *aPrompter, nsACString& aResponseMsg)
+    nsFtpAsyncAlert(nsIPrompt *aPrompter, nsString aResponseMsg)
         : mPrompter(aPrompter)
         , mResponseMsg(aResponseMsg)
     {
         MOZ_COUNT_CTOR(nsFtpAsyncAlert);
     }
+protected:
     virtual ~nsFtpAsyncAlert()
     {
         MOZ_COUNT_DTOR(nsFtpAsyncAlert);
     }
+public:
     NS_IMETHOD Run()
     {
         if (mPrompter) {
-            mPrompter->Alert(nullptr, NS_ConvertASCIItoUTF16(mResponseMsg).get());
+            mPrompter->Alert(nullptr, mResponseMsg.get());
         }
         return NS_OK;
     }
 private:
     nsCOMPtr<nsIPrompt> mPrompter;
-    nsCString mResponseMsg;
+    nsString mResponseMsg;
 };
-    
+
 
 nsresult
 nsFtpState::StopProcessing()
@@ -1907,12 +1993,18 @@ nsFtpState::StopProcessing()
         nsCOMPtr<nsIPrompt> prompter;
         mChannel->GetCallback(prompter);
         if (prompter) {
-            nsCOMPtr<nsIRunnable> alertEvent =
-                new nsFtpAsyncAlert(prompter, mResponseMsg);
-            NS_DispatchToMainThread(alertEvent, NS_DISPATCH_NORMAL);
+            nsCOMPtr<nsIRunnable> alertEvent;
+            if (mUseUTF8) {
+                alertEvent = new nsFtpAsyncAlert(prompter,
+                    NS_ConvertUTF8toUTF16(mResponseMsg));
+            } else {
+                alertEvent = new nsFtpAsyncAlert(prompter,
+                    NS_ConvertASCIItoUTF16(mResponseMsg));
+            }
+            NS_DispatchToMainThread(alertEvent);
         }
     }
-    
+
     nsresult broadcastErrorCode = mControlStatus;
     if (NS_SUCCEEDED(broadcastErrorCode))
         broadcastErrorCode = mInternalError;
@@ -2077,7 +2169,7 @@ nsFtpState::ConvertDirspecFromVMS(nsCString& dirSpec)
 
 NS_IMETHODIMP
 nsFtpState::OnTransportStatus(nsITransport *transport, nsresult status,
-                              uint64_t progress, uint64_t progressMax)
+                              int64_t progress, int64_t progressMax)
 {
     // Mix signals from both the control and data connections.
 
@@ -2218,20 +2310,11 @@ nsFtpState::SaveNetworkStats(bool enforce)
         return NS_OK;
     }
 
-    nsresult rv;
-    nsCOMPtr<nsINetworkStatsServiceProxy> networkStatsServiceProxy =
-        do_GetService("@mozilla.org/networkstatsServiceProxy;1", &rv);
-    if (NS_FAILED(rv)) {
-        return rv;
-    }
-
-    networkStatsServiceProxy->SaveAppStats(appId,
-                                           mActiveNetwork,
-                                           PR_Now() / 1000,
-                                           mCountRecv,
-                                           0,
-                                           false,
-                                           nullptr);
+    // Create the event to save the network statistics.
+    // the event is then dispathed to the main thread.
+    nsRefPtr<nsRunnable> event =
+        new SaveNetworkStatsEvent(appId, mActiveNetwork, mCountRecv, 0, false);
+    NS_DispatchToMainThread(event);
 
     // Reset the counters after saving.
     mCountRecv = 0;
@@ -2278,7 +2361,7 @@ nsFtpState::CloseWithStatus(nsresult status)
 }
 
 static nsresult
-CreateHTTPProxiedChannel(nsIURI *uri, nsIProxyInfo *pi, nsIChannel **newChannel)
+CreateHTTPProxiedChannel(nsIChannel *channel, nsIProxyInfo *pi, nsIChannel **newChannel)
 {
     nsresult rv;
     nsCOMPtr<nsIIOService> ioService = do_GetIOService(&rv);
@@ -2294,11 +2377,14 @@ CreateHTTPProxiedChannel(nsIURI *uri, nsIProxyInfo *pi, nsIChannel **newChannel)
     if (NS_FAILED(rv))
         return rv;
 
+    nsCOMPtr<nsIURI> uri;
+    channel->GetURI(getter_AddRefs(uri));
+
     return pph->NewProxiedChannel(uri, pi, 0, nullptr, newChannel);
 }
 
 NS_IMETHODIMP
-nsFtpState::OnProxyAvailable(nsICancelable *request, nsIURI *uri,
+nsFtpState::OnProxyAvailable(nsICancelable *request, nsIChannel *channel,
                              nsIProxyInfo *pi, nsresult status)
 {
   mProxyRequest = nullptr;
@@ -2315,7 +2401,7 @@ nsFtpState::OnProxyAvailable(nsICancelable *request, nsIURI *uri,
         LOG(("FTP:(%p) Configured to use a HTTP proxy channel\n", this));
 
         nsCOMPtr<nsIChannel> newChannel;
-        if (NS_SUCCEEDED(CreateHTTPProxiedChannel(uri, pi,
+        if (NS_SUCCEEDED(CreateHTTPProxiedChannel(channel, pi,
                                                   getter_AddRefs(newChannel))) &&
             NS_SUCCEEDED(mChannel->Redirect(newChannel,
                                             nsIChannelEventSink::REDIRECT_INTERNAL,
@@ -2378,6 +2464,12 @@ nsFtpState::ReadCacheEntry()
     nsAutoCString serverNum(serverType.get());
     nsresult err;
     mServerType = serverNum.ToInteger(&err);
+
+    nsXPIDLCString charset;
+    mCacheEntry->GetMetaDataElement("useUTF8", getter_Copies(charset));
+    const char *useUTF8 = charset.get();
+    if (useUTF8 && atoi(useUTF8) == 1)
+        mChannel->SetContentCharset(NS_LITERAL_CSTRING("UTF-8"));
     
     mChannel->PushStreamConverter("text/ftp-dir",
                                   APPLICATION_HTTP_INDEX_FORMAT);
@@ -2425,7 +2517,11 @@ nsFtpState::CheckCache()
 
     // Set cache access requested:
     nsCacheAccessMode accessReq;
-    if (NS_IsOffline()) {
+    uint32_t appId;
+    bool isInBrowser;
+    NS_GetAppInfo(mChannel, &appId, &isInBrowser);
+
+    if (NS_IsOffline() || NS_IsAppOffline(appId)) {
         accessReq = nsICache::ACCESS_READ; // can only read
     } else if (mChannel->HasLoadFlag(nsIRequest::LOAD_BYPASS_CACHE)) {
         accessReq = nsICache::ACCESS_WRITE; // replace cache entry

@@ -8,20 +8,24 @@ const { classes: Cc, interfaces: Ci, utils: Cu } = Components;
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
-
-// JS shim that contains the callback functions to be triggered from the
-// payment provider's code in order to fire DOMRequest events.
-const kPaymentShimFile = "chrome://b2g/content/payment.js";
+Cu.import("resource://gre/modules/Promise.jsm");
 
 // Type of MozChromEvents to handle payment dialogs.
 const kOpenPaymentConfirmationEvent = "open-payment-confirmation-dialog";
 const kOpenPaymentFlowEvent = "open-payment-flow-dialog";
+const kClosePaymentFlowEvent = "close-payment-flow-dialog";
+
+// Observer notification topic for payment flow cancelation.
+const kPaymentFlowCancelled = "payment-flow-cancelled";
 
 const PREF_DEBUG = "dom.payment.debug";
 
 XPCOMUtils.defineLazyServiceGetter(this, "uuidgen",
                                    "@mozilla.org/uuid-generator;1",
                                    "nsIUUIDGenerator");
+
+XPCOMUtils.defineLazyModuleGetter(this, "SystemAppProxy",
+                                  "resource://gre/modules/SystemAppProxy.jsm");
 
 function PaymentUI() {
   try {
@@ -44,13 +48,6 @@ PaymentUI.prototype = {
         aErrorCb.onresult(aRequestId, errorMsg);
       }
     };
-
-    let browser = Services.wm.getMostRecentWindow("navigator:browser");
-    let content = browser.getContentWindow();
-    if (!content) {
-      _error("NO_CONTENT_WINDOW");
-      return;
-    }
 
     // The UI should listen for mozChromeEvent 'open-payment-confirmation-dialog'
     // type in order to create and show the payment request confirmation frame
@@ -78,89 +75,53 @@ PaymentUI.prototype = {
         _error(msg.errorMsg);
       }
 
-      content.removeEventListener("mozContentEvent", this._handleSelection);
+      SystemAppProxy.removeEventListener("mozContentEvent", this._handleSelection);
       this._handleSelection = null;
     }).bind(this);
-    content.addEventListener("mozContentEvent", this._handleSelection);
+    SystemAppProxy.addEventListener("mozContentEvent", this._handleSelection);
 
-    browser.shell.sendChromeEvent(detail);
+    SystemAppProxy.dispatchEvent(detail);
   },
 
   showPaymentFlow: function showPaymentFlow(aRequestId,
                                             aPaymentFlowInfo,
                                             aErrorCb) {
-    let _error = function _error(errorMsg) {
+    let _error = (errorMsg) => {
       if (aErrorCb) {
         aErrorCb.onresult(aRequestId, errorMsg);
       }
     };
 
     // We ask the UI to browse to the selected payment flow.
-    let browser = Services.wm.getMostRecentWindow("navigator:browser");
-    let content = browser.getContentWindow();
-    if (!content) {
-      _error("NO_CONTENT_WINDOW");
-      return;
-    }
-
     let id = kOpenPaymentFlowEvent + "-" + this.getRandomId();
     let detail = {
       type: kOpenPaymentFlowEvent,
       id: id,
-      requestId: aRequestId,
-      uri: aPaymentFlowInfo.uri,
-      method: aPaymentFlowInfo.requestMethod,
-      jwt: aPaymentFlowInfo.jwt
+      requestId: aRequestId
     };
 
-    // At some point the UI would send the created iframe back so the
-    // callbacks for firing DOMRequest events can be loaded on its
-    // content.
-    this._loadPaymentShim = (function _loadPaymentShim(evt) {
-      let msg = evt.detail;
-      if (msg.id != id) {
+    this._setPaymentRequest = (event) => {
+      let message = event.detail;
+      if (message.id != id) {
         return;
       }
 
-      if (msg.errorMsg) {
-        content.removeEventListener("mozContentEvent", this._loadPaymentShim);
-        this._loadPaymentShim = null;
-        _error("ERROR_LOADING_PAYMENT_SHIM: " + msg.errorMsg);
-        return;
-      }
+      let frame = message.frame;
+      let docshell = frame.contentWindow
+                          .QueryInterface(Ci.nsIInterfaceRequestor)
+                          .getInterface(Ci.nsIWebNavigation)
+                          .QueryInterface(Ci.nsIDocShell);
+      docshell.paymentRequestId = aRequestId;
+      frame.src = aPaymentFlowInfo.uri + aPaymentFlowInfo.jwt;
+      SystemAppProxy.removeEventListener("mozContentEvent",
+                                         this._setPaymentRequest);
+    };
+    SystemAppProxy.addEventListener("mozContentEvent",
+                                    this._setPaymentRequest);
 
-      if (!msg.frame) {
-        content.removeEventListener("mozContentEvent", this._loadPaymentShim);
-        this._loadPaymentShim = null;
-        _error("ERROR_LOADING_PAYMENT_SHIM");
-        return;
-      }
-
-      // Try to load the payment shim file containing the payment callbacks
-      // in the content script.
-      let frame = msg.frame;
-      let frameLoader = frame.QueryInterface(Ci.nsIFrameLoaderOwner)
-                             .frameLoader;
-      let mm = frameLoader.messageManager;
-      try {
-        mm.loadFrameScript(kPaymentShimFile, true, true);
-        mm.sendAsyncMessage("Payment:LoadShim", { requestId: aRequestId });
-      } catch (e) {
-        if (this._debug) {
-          this.LOG("Error loading " + kPaymentShimFile + " as a frame script: "
-                    + e);
-        }
-        _error("ERROR_LOADING_PAYMENT_SHIM");
-      } finally {
-        content.removeEventListener("mozContentEvent", this._loadPaymentShim);
-        this._loadPaymentShim = null;
-      }
-    }).bind(this);
-    content.addEventListener("mozContentEvent", this._loadPaymentShim);
-
-    // We also listen for UI notifications about a closed payment flow. The UI
+    // We listen for UI notifications about a closed payment flow. The UI
     // should provide the reason of the closure within the 'errorMsg' parameter
-    this._notifyPayFlowClosed = (function _notifyPayFlowClosed(evt) {
+    this._notifyPayFlowClosed = (evt) => {
       let msg = evt.detail;
       if (msg.id != id) {
         return;
@@ -173,48 +134,64 @@ PaymentUI.prototype = {
       if (msg.errorMsg) {
         _error(msg.errorMsg);
       }
-      content.removeEventListener("mozContentEvent",
-                                  this._notifyPayFlowClosed);
-      this._notifyPayFlowClosed = null;
-    }).bind(this);
-    content.addEventListener("mozContentEvent",
-                             this._notifyPayFlowClosed);
 
-    browser.shell.sendChromeEvent(detail);
+      SystemAppProxy.removeEventListener("mozContentEvent",
+                                         this._notifyPayFlowClosed);
+      this._notifyPayFlowClosed = null;
+
+      Services.obs.notifyObservers(null, kPaymentFlowCancelled, null);
+    };
+    SystemAppProxy.addEventListener("mozContentEvent",
+                                    this._notifyPayFlowClosed);
+
+    SystemAppProxy.dispatchEvent(detail);
+  },
+
+  closePaymentFlow: function(aRequestId) {
+    return new Promise((aResolve) => {
+      // After receiving the payment provider confirmation about the
+      // successful or failed payment flow, we notify the UI to close the
+      // payment flow dialog and return to the caller application.
+      let id = kClosePaymentFlowEvent + "-" + uuidgen.generateUUID().toString();
+
+      let detail = {
+        type: kClosePaymentFlowEvent,
+        id: id,
+        requestId: aRequestId
+      };
+
+      // In order to avoid race conditions, we wait for the UI to notify that
+      // it has successfully closed the payment flow and has recovered the
+      // caller app, before notifying the parent process to fire the success
+      // or error event over the DOMRequest.
+      SystemAppProxy.addEventListener("mozContentEvent",
+                                      (function closePaymentFlowReturn() {
+        SystemAppProxy.removeEventListener("mozContentEvent",
+                                    closePaymentFlowReturn);
+        this.cleanup();
+        aResolve();
+      }).bind(this));
+
+      SystemAppProxy.dispatchEvent(detail);
+    });
   },
 
   cleanup: function cleanup() {
-    let browser = Services.wm.getMostRecentWindow("navigator:browser");
-    let content = browser.getContentWindow();
-    if (!content) {
-      return;
-    }
-
     if (this._handleSelection) {
-      content.removeEventListener("mozContentEvent", this._handleSelection);
+      SystemAppProxy.removeEventListener("mozContentEvent",
+                                         this._handleSelection);
       this._handleSelection = null;
     }
 
     if (this._notifyPayFlowClosed) {
-      content.removeEventListener("mozContentEvent", this._notifyPayFlowClosed);
+      SystemAppProxy.removeEventListener("mozContentEvent",
+                                         this._notifyPayFlowClosed);
       this._notifyPayFlowClosed = null;
-    }
-
-    if (this._loadPaymentShim) {
-      content.removeEventListener("mozContentEvent", this._loadPaymentShim);
-      this._loadPaymentShim = null;
     }
   },
 
   getRandomId: function getRandomId() {
     return uuidgen.generateUUID().toString();
-  },
-
-  LOG: function LOG(s) {
-    if (!this._debug) {
-      return;
-    }
-    dump("-*- PaymentGlue: " + s + "\n");
   },
 
   classID: Components.ID("{8b83eabc-7929-47f4-8b48-4dea8d887e4b}"),

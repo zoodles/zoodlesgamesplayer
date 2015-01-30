@@ -26,6 +26,7 @@
 #include "nsBidiKeyboard.h"
 #include "nsScreenManagerGtk.h"
 #include "nsGTKToolkit.h"
+#include "WakeLockListener.h"
 
 #ifdef NS_PRINTING
 #include "nsPrintOptionsGTK.h"
@@ -213,18 +214,15 @@ static const mozilla::Module::CIDEntry kWidgetCIDs[] = {
 #endif
     { &kNS_HTMLFORMATCONVERTER_CID, false, nullptr, nsHTMLFormatConverterConstructor },
     { &kNS_BIDIKEYBOARD_CID, false, nullptr, nsBidiKeyboardConstructor },
-    { &kNS_SCREENMANAGER_CID, false, nullptr, nsScreenManagerGtkConstructor },
+    { &kNS_SCREENMANAGER_CID, false, nullptr, nsScreenManagerGtkConstructor,
+      Module::MAIN_PROCESS_ONLY },
     { &kNS_THEMERENDERER_CID, false, nullptr, nsNativeThemeGTKConstructor },
 #ifdef NS_PRINTING
     { &kNS_PRINTSETTINGSSERVICE_CID, false, nullptr, nsPrintOptionsGTKConstructor },
-    { &kNS_PRINTER_ENUMERATOR_CID, false, nullptr, nsPrinterEnumeratorGTKConstructor,
-      Module::MAIN_PROCESS_ONLY },
-    { &kNS_PRINTSESSION_CID, false, nullptr, nsPrintSessionConstructor,
-      Module::MAIN_PROCESS_ONLY },
-    { &kNS_DEVICE_CONTEXT_SPEC_CID, false, nullptr, nsDeviceContextSpecGTKConstructor,
-      Module::MAIN_PROCESS_ONLY },
-    { &kNS_PRINTDIALOGSERVICE_CID, false, nullptr, nsPrintDialogServiceGTKConstructor,
-      Module::MAIN_PROCESS_ONLY },
+    { &kNS_PRINTER_ENUMERATOR_CID, false, nullptr, nsPrinterEnumeratorGTKConstructor },
+    { &kNS_PRINTSESSION_CID, false, nullptr, nsPrintSessionConstructor },
+    { &kNS_DEVICE_CONTEXT_SPEC_CID, false, nullptr, nsDeviceContextSpecGTKConstructor },
+    { &kNS_PRINTDIALOGSERVICE_CID, false, nullptr, nsPrintDialogServiceGTKConstructor },
 #endif
     { &kNS_IMAGE_TO_PIXBUF_CID, false, nullptr, nsImageToPixbufConstructor },
 #if defined(MOZ_X11)
@@ -249,18 +247,15 @@ static const mozilla::Module::ContractIDEntry kWidgetContracts[] = {
 #endif
     { "@mozilla.org/widget/htmlformatconverter;1", &kNS_HTMLFORMATCONVERTER_CID },
     { "@mozilla.org/widget/bidikeyboard;1", &kNS_BIDIKEYBOARD_CID },
-    { "@mozilla.org/gfx/screenmanager;1", &kNS_SCREENMANAGER_CID },
+    { "@mozilla.org/gfx/screenmanager;1", &kNS_SCREENMANAGER_CID,
+      Module::MAIN_PROCESS_ONLY },
     { "@mozilla.org/chrome/chrome-native-theme;1", &kNS_THEMERENDERER_CID },
 #ifdef NS_PRINTING
     { "@mozilla.org/gfx/printsettings-service;1", &kNS_PRINTSETTINGSSERVICE_CID },
-    { "@mozilla.org/gfx/printerenumerator;1", &kNS_PRINTER_ENUMERATOR_CID,
-      Module::MAIN_PROCESS_ONLY },
-    { "@mozilla.org/gfx/printsession;1", &kNS_PRINTSESSION_CID,
-      Module::MAIN_PROCESS_ONLY },
-    { "@mozilla.org/gfx/devicecontextspec;1", &kNS_DEVICE_CONTEXT_SPEC_CID,
-      Module::MAIN_PROCESS_ONLY },
-    { NS_PRINTDIALOGSERVICE_CONTRACTID, &kNS_PRINTDIALOGSERVICE_CID,
-      Module::MAIN_PROCESS_ONLY },
+    { "@mozilla.org/gfx/printerenumerator;1", &kNS_PRINTER_ENUMERATOR_CID },
+    { "@mozilla.org/gfx/printsession;1", &kNS_PRINTSESSION_CID },
+    { "@mozilla.org/gfx/devicecontextspec;1", &kNS_DEVICE_CONTEXT_SPEC_CID },
+    { NS_PRINTDIALOGSERVICE_CONTRACTID, &kNS_PRINTDIALOGSERVICE_CID },
 #endif
     { "@mozilla.org/widget/image-to-gdk-pixbuf;1", &kNS_IMAGE_TO_PIXBUF_CID },
 #if defined(MOZ_X11)
@@ -280,6 +275,9 @@ nsWidgetGtk2ModuleDtor()
   nsWindow::ReleaseGlobals();
   nsGTKToolkit::Shutdown();
   nsAppShellShutdown();
+#ifdef MOZ_ENABLE_DBUS
+  WakeLockListener::Shutdown();
+#endif
 }
 
 static const mozilla::Module kWidgetModule = {

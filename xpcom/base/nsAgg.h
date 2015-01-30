@@ -1,4 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -15,12 +16,12 @@
 // Put NS_DECL_AGGREGATED or NS_DECL_CYCLE_COLLECTING_AGGREGATED in your class's
 // declaration.
 #define NS_DECL_AGGREGATED                                                  \
-    NS_DECL_ISUPPORTS                                                       \
-    NS_DECL_AGGREGATED_HELPER
+  NS_DECL_ISUPPORTS                                                         \
+  NS_DECL_AGGREGATED_HELPER
 
 #define NS_DECL_CYCLE_COLLECTING_AGGREGATED                                 \
-    NS_DECL_CYCLE_COLLECTING_ISUPPORTS                                      \
-    NS_DECL_AGGREGATED_HELPER
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS                                        \
+  NS_DECL_AGGREGATED_HELPER
 
 #define NS_DECL_AGGREGATED_HELPER                                           \
 public:                                                                     \
@@ -54,15 +55,20 @@ private:                                                                    \
         Internal() {}                                                       \
                                                                             \
         NS_IMETHOD QueryInterface(const nsIID& aIID, void** aInstancePtr);  \
-        NS_IMETHOD_(nsrefcnt) AddRef(void);                                 \
-        NS_IMETHOD_(nsrefcnt) Release(void);                                \
+        NS_IMETHOD_(MozExternalRefCountType) AddRef(void);                  \
+        NS_IMETHOD_(MozExternalRefCountType) Release(void);                 \
                                                                             \
         NS_DECL_OWNINGTHREAD                                                \
     };                                                                      \
                                                                             \
     friend class Internal;                                                  \
                                                                             \
-    nsISupports*        fOuter;                                             \
+    nsISupports* MOZ_UNSAFE_REF("fOuter can either point to fAggregated "   \
+                                "or to an outer object, and the safety "    \
+                                "of this reference depends on the exact "   \
+                                "lifetime semantics of the AddRef/Release " \
+                                "functions created by these macros.")       \
+                        fOuter;                                             \
     Internal            fAggregated;                                        \
                                                                             \
 public:                                                                     \
@@ -107,7 +113,7 @@ static NS_CYCLE_COLLECTION_INNERCLASS NS_CYCLE_COLLECTION_INNERNAME;
                                                                             \
 NS_IMPL_AGGREGATED_HELPER(_class)                                           \
                                                                             \
-NS_IMETHODIMP_(nsrefcnt)                                                    \
+NS_IMETHODIMP_(MozExternalRefCountType)                                     \
 _class::Internal::AddRef(void)                                              \
 {                                                                           \
     _class* agg = (_class*)((char*)(this) - offsetof(_class, fAggregated)); \
@@ -118,7 +124,7 @@ _class::Internal::AddRef(void)                                              \
     return agg->mRefCnt;                                                    \
 }                                                                           \
                                                                             \
-NS_IMETHODIMP_(nsrefcnt)                                                    \
+NS_IMETHODIMP_(MozExternalRefCountType)                                     \
 _class::Internal::Release(void)                                             \
 {                                                                           \
     _class* agg = (_class*)((char*)(this) - offsetof(_class, fAggregated)); \
@@ -138,7 +144,7 @@ _class::Internal::Release(void)                                             \
                                                                             \
 NS_IMPL_AGGREGATED_HELPER(_class)                                           \
                                                                             \
-NS_IMETHODIMP_(nsrefcnt)                                                    \
+NS_IMETHODIMP_(MozExternalRefCountType)                                     \
 _class::Internal::AddRef(void)                                              \
 {                                                                           \
     _class* agg = NS_CYCLE_COLLECTION_CLASSNAME(_class)::Downcast(this);    \
@@ -148,7 +154,7 @@ _class::Internal::AddRef(void)                                              \
     NS_LOG_ADDREF(this, count, #_class, sizeof(*agg));                      \
     return count;                                                           \
 }                                                                           \
-NS_IMETHODIMP_(nsrefcnt)                                                    \
+NS_IMETHODIMP_(MozExternalRefCountType)                                     \
 _class::Internal::Release(void)                                             \
 {                                                                           \
     _class* agg = NS_CYCLE_COLLECTION_CLASSNAME(_class)::Downcast(this);    \
@@ -171,13 +177,13 @@ _class::QueryInterface(const nsIID& aIID, void** aInstancePtr)              \
     return fOuter->QueryInterface(aIID, aInstancePtr);                      \
 }                                                                           \
                                                                             \
-NS_IMETHODIMP_(nsrefcnt)                                                    \
+NS_IMETHODIMP_(MozExternalRefCountType)                                     \
 _class::AddRef(void)                                                        \
 {                                                                           \
     return fOuter->AddRef();                                                \
 }                                                                           \
                                                                             \
-NS_IMETHODIMP_(nsrefcnt)                                                    \
+NS_IMETHODIMP_(MozExternalRefCountType)                                     \
 _class::Release(void)                                                       \
 {                                                                           \
     return fOuter->Release();                                               \
@@ -230,10 +236,10 @@ _class::Internal::QueryInterface(const nsIID& aIID, void** aInstancePtr)    \
 class nsAggregatedCycleCollectionParticipant
 {
 public:
-    NS_DECLARE_STATIC_IID_ACCESSOR(NS_AGGREGATED_CYCLECOLLECTIONPARTICIPANT_IID)
+  NS_DECLARE_STATIC_IID_ACCESSOR(NS_AGGREGATED_CYCLECOLLECTIONPARTICIPANT_IID)
 };
 
-NS_DEFINE_STATIC_IID_ACCESSOR(nsAggregatedCycleCollectionParticipant, 
+NS_DEFINE_STATIC_IID_ACCESSOR(nsAggregatedCycleCollectionParticipant,
                               NS_AGGREGATED_CYCLECOLLECTIONPARTICIPANT_IID)
 
 // for use with QI macros in nsISupportsUtils.h:

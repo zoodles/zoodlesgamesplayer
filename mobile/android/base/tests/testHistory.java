@@ -1,37 +1,35 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 package org.mozilla.gecko.tests;
 
-import org.mozilla.gecko.*;
-import android.widget.ListView;
-import android.app.Activity;
-import java.util.ArrayList;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.ListView;
+
+import org.mozilla.gecko.home.HomePager;
 
 public class testHistory extends AboutHomeTest {
     private View mFirstChild;
 
-    @Override
-    protected int getTestType() {
-        return TEST_MOCHITEST;
-    }
-
     public void testHistory() {
         blockForGeckoReady();
 
-        String url = getAbsoluteUrl("/robocop/robocop_blank_01.html");
-        String url2 = getAbsoluteUrl("/robocop/robocop_blank_02.html");
-        String url3 = getAbsoluteUrl("/robocop/robocop_blank_03.html");
+        String url = getAbsoluteUrl(StringHelper.ROBOCOP_BLANK_PAGE_01_URL);
+        String url2 = getAbsoluteUrl(StringHelper.ROBOCOP_BLANK_PAGE_02_URL);
+        String url3 = getAbsoluteUrl(StringHelper.ROBOCOP_BLANK_PAGE_03_URL);
 
         inputAndLoadUrl(url);
-        verifyPageTitle("Browser Blank Page 01");
+        verifyUrlBarTitle(url);
         inputAndLoadUrl(url2);
-        verifyPageTitle("Browser Blank Page 02");
+        verifyUrlBarTitle(url2);
         inputAndLoadUrl(url3);
-        verifyPageTitle("Browser Blank Page 03");
+        verifyUrlBarTitle(url3);
 
-        openAboutHomeTab(AboutHomeTabs.MOST_RECENT);
+        openAboutHomeTab(AboutHomeTabs.HISTORY);
 
-        final ListView hList = findListViewWithTag("most_recent");
+        final ListView hList = findListViewWithTag(HomePager.LIST_TAG_HISTORY);
         mAsserter.is(waitForNonEmptyListToLoad(hList), true, "list is properly loaded");
 
         // Click on the history item and wait for the page to load
@@ -67,8 +65,8 @@ public class testHistory extends AboutHomeTest {
         mSolo.clickOnView(mFirstChild);
 
         // The first item here (since it was just visited) should be a "Switch to tab" item
-        // i.e. don't expect a DOMCOntentLoaded event
-        verifyPageTitle("Browser Blank Page 03");
+        // i.e. don't expect a DOMContentLoaded event
+        verifyUrlBarTitle(StringHelper.ROBOCOP_BLANK_PAGE_03_URL);
         verifyUrl(url3);
     }
 }

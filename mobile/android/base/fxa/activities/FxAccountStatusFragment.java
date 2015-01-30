@@ -8,26 +8,39 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
+import org.mozilla.gecko.AppConstants;
 import org.mozilla.gecko.R;
 import org.mozilla.gecko.background.common.log.Logger;
+import org.mozilla.gecko.background.fxa.FxAccountUtils;
 import org.mozilla.gecko.background.preferences.PreferenceFragment;
-import org.mozilla.gecko.db.BrowserContract;
+import org.mozilla.gecko.fxa.FirefoxAccounts;
 import org.mozilla.gecko.fxa.FxAccountConstants;
 import org.mozilla.gecko.fxa.authenticator.AndroidFxAccount;
 import org.mozilla.gecko.fxa.login.Married;
 import org.mozilla.gecko.fxa.login.State;
+import org.mozilla.gecko.fxa.sync.FxAccountSyncStatusHelper;
+import org.mozilla.gecko.fxa.tasks.FxAccountCodeResender;
+import org.mozilla.gecko.sync.ExtendedJSONObject;
+import org.mozilla.gecko.sync.SharedPreferencesClientsDataDelegate;
 import org.mozilla.gecko.sync.SyncConfiguration;
+import org.mozilla.gecko.util.HardwareUtils;
 
+import android.accounts.Account;
 import android.content.ContentResolver;
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.os.Handler;
 import android.preference.CheckBoxPreference;
+import android.preference.EditTextPreference;
 import android.preference.Preference;
+import android.preference.Preference.OnPreferenceChangeListener;
 import android.preference.Preference.OnPreferenceClickListener;
 import android.preference.PreferenceCategory;
 import android.preference.PreferenceScreen;
+import android.text.TextUtils;
+import android.text.format.DateUtils;
 
 /**
  * A fragment that displays the status of an AndroidFxAccount.
@@ -35,7 +48,9 @@ import android.preference.PreferenceScreen;
  * The owning activity is responsible for providing an AndroidFxAccount at
  * appropriate times.
  */
-public class FxAccountStatusFragment extends PreferenceFragment implements OnPreferenceClickListener {
+public class FxAccountStatusFragment
+    extends PreferenceFragment
+    implements OnPreferenceClickListener, OnPreferenceChangeListener {
   private static final String LOG_TAG = FxAccountStatusFragment.class.getSimpleName();
 
   // When a checkbox is toggled, wait 5 seconds (for other checkbox actions)
@@ -45,14 +60,26 @@ public class FxAccountStatusFragment extends PreferenceFragment implements OnPre
   // schedule the sync as usual. See also comment below about garbage
   // collection.
   private static final long DELAY_IN_MILLISECONDS_BEFORE_REQUESTING_SYNC = 5 * 1000;
+  private static final long LAST_SYNCED_TIME_UPDATE_INTERVAL_IN_MILLISECONDS = 60 * 1000;
 
+  // By default, the auth/account server preference is only shown when the
+  // account is configured to use a custom server. In debug mode, this is set.
+  private static boolean ALWAYS_SHOW_AUTH_SERVER = false;
+
+  // By default, the Sync server preference is only shown when the account is
+  // configured to use a custom Sync server. In debug mode, this is set.
+  private static boolean ALWAYS_SHOW_SYNC_SERVER = false;
+
+  protected PreferenceCategory accountCategory;
   protected Preference emailPreference;
+  protected Preference authServerPreference;
 
   protected Preference needsPasswordPreference;
   protected Preference needsUpgradePreference;
   protected Preference needsVerificationPreference;
   protected Preference needsMasterSyncAutomaticallyEnabledPreference;
   protected Preference needsAccountEnabledPreference;
+  protected Preference needsFinishMigratingPreference;
 
   protected PreferenceCategory syncCategory;
 
@@ -61,7 +88,15 @@ public class FxAccountStatusFragment extends PreferenceFragment implements OnPre
   protected CheckBoxPreference tabsPreference;
   protected CheckBoxPreference passwordsPreference;
 
+  protected EditTextPreference deviceNamePreference;
+  protected Preference syncServerPreference;
+  protected Preference morePreference;
+  protected Preference syncNowPreference;
+
   protected volatile AndroidFxAccount fxAccount;
+  // The contract is: when fxAccount is non-null, then clientsDataDelegate is
+  // non-null.  If violated then an IllegalStateException is thrown.
+  protected volatile SharedPreferencesClientsDataDelegate clientsDataDelegate;
 
   // Used to post delayed sync requests.
   protected Handler handler;
@@ -70,6 +105,11 @@ public class FxAccountStatusFragment extends PreferenceFragment implements OnPre
   // This Runnable references the fxAccount above, but it is not specific to a
   // single account. (That is, it does not capture a single account instance.)
   protected Runnable requestSyncRunnable;
+
+  // Runnable to update last synced time.
+  protected Runnable lastSyncedTimeUpdateRunnable;
+
+  protected final InnerSyncStatusDelegate syncStatusDelegate = new InnerSyncStatusDelegate();
 
   protected Preference ensureFindPreference(String key) {
     Preference preference = findPreference(key);
@@ -82,15 +122,29 @@ public class FxAccountStatusFragment extends PreferenceFragment implements OnPre
   @Override
   public void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
+
+    // We need to do this before we can query the hardware menu button state.
+    // We're guaranteed to have an activity at this point (onAttach is called
+    // before onCreate). It's okay to call this multiple times (with different
+    // contexts).
+    HardwareUtils.init(getActivity());
+
+    addPreferences();
+  }
+
+  protected void addPreferences() {
     addPreferencesFromResource(R.xml.fxaccount_status_prefscreen);
 
+    accountCategory = (PreferenceCategory) ensureFindPreference("signed_in_as_category");
     emailPreference = ensureFindPreference("email");
+    authServerPreference = ensureFindPreference("auth_server");
 
     needsPasswordPreference = ensureFindPreference("needs_credentials");
     needsUpgradePreference = ensureFindPreference("needs_upgrade");
     needsVerificationPreference = ensureFindPreference("needs_verification");
     needsMasterSyncAutomaticallyEnabledPreference = ensureFindPreference("needs_master_sync_automatically_enabled");
     needsAccountEnabledPreference = ensureFindPreference("needs_account_enabled");
+    needsFinishMigratingPreference = ensureFindPreference("needs_finish_migrating");
 
     syncCategory = (PreferenceCategory) ensureFindPreference("sync_category");
 
@@ -99,20 +153,38 @@ public class FxAccountStatusFragment extends PreferenceFragment implements OnPre
     tabsPreference = (CheckBoxPreference) ensureFindPreference("tabs");
     passwordsPreference = (CheckBoxPreference) ensureFindPreference("passwords");
 
-    if (!FxAccountConstants.LOG_PERSONAL_INFORMATION) {
+    if (!FxAccountUtils.LOG_PERSONAL_INFORMATION) {
       removeDebugButtons();
     } else {
       connectDebugButtons();
+      ALWAYS_SHOW_AUTH_SERVER = true;
+      ALWAYS_SHOW_SYNC_SERVER = true;
     }
 
     needsPasswordPreference.setOnPreferenceClickListener(this);
     needsVerificationPreference.setOnPreferenceClickListener(this);
     needsAccountEnabledPreference.setOnPreferenceClickListener(this);
+    needsFinishMigratingPreference.setOnPreferenceClickListener(this);
 
     bookmarksPreference.setOnPreferenceClickListener(this);
     historyPreference.setOnPreferenceClickListener(this);
     tabsPreference.setOnPreferenceClickListener(this);
     passwordsPreference.setOnPreferenceClickListener(this);
+
+    deviceNamePreference = (EditTextPreference) ensureFindPreference("device_name");
+    deviceNamePreference.setOnPreferenceChangeListener(this);
+
+    syncServerPreference = ensureFindPreference("sync_server");
+    morePreference = ensureFindPreference("more");
+    morePreference.setOnPreferenceClickListener(this);
+
+    syncNowPreference = ensureFindPreference("sync_now");
+    syncNowPreference.setEnabled(true);
+    syncNowPreference.setOnPreferenceClickListener(this);
+
+    if (HardwareUtils.hasMenuButton()) {
+      syncCategory.removePreference(morePreference);
+    }
   }
 
   /**
@@ -128,6 +200,24 @@ public class FxAccountStatusFragment extends PreferenceFragment implements OnPre
   public boolean onPreferenceClick(Preference preference) {
     if (preference == needsPasswordPreference) {
       Intent intent = new Intent(getActivity(), FxAccountUpdateCredentialsActivity.class);
+      final Bundle extras = getExtrasForAccount();
+      if (extras != null) {
+        intent.putExtras(extras);
+      }
+      // Per http://stackoverflow.com/a/8992365, this triggers a known bug with
+      // the soft keyboard not being shown for the started activity. Why, Android, why?
+      intent.setFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
+      startActivity(intent);
+
+      return true;
+    }
+
+    if (preference == needsFinishMigratingPreference) {
+      final Intent intent = new Intent(getActivity(), FxAccountFinishMigratingActivity.class);
+      final Bundle extras = getExtrasForAccount();
+      if (extras != null) {
+        intent.putExtras(extras);
+      }
       // Per http://stackoverflow.com/a/8992365, this triggers a known bug with
       // the soft keyboard not being shown for the started activity. Why, Android, why?
       intent.setFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
@@ -137,7 +227,7 @@ public class FxAccountStatusFragment extends PreferenceFragment implements OnPre
     }
 
     if (preference == needsVerificationPreference) {
-      FxAccountConfirmAccountActivity.resendCode(getActivity().getApplicationContext(), fxAccount);
+      FxAccountCodeResender.resendCode(getActivity().getApplicationContext(), fxAccount);
 
       Intent intent = new Intent(getActivity(), FxAccountConfirmAccountActivity.class);
       // Per http://stackoverflow.com/a/8992365, this triggers a known bug with
@@ -163,7 +253,30 @@ public class FxAccountStatusFragment extends PreferenceFragment implements OnPre
       return true;
     }
 
+    if (preference == morePreference) {
+      getActivity().openOptionsMenu();
+      return true;
+    }
+
+    if (preference == syncNowPreference) {
+      if (fxAccount != null) {
+        FirefoxAccounts.requestSync(fxAccount.getAndroidAccount(), FirefoxAccounts.FORCE, null, null);
+      }
+      return true;
+    }
+
     return false;
+  }
+
+  protected Bundle getExtrasForAccount() {
+    final Bundle extras = new Bundle();
+    final ExtendedJSONObject o = new ExtendedJSONObject();
+    o.put(FxAccountAbstractSetupActivity.JSON_KEY_AUTH, fxAccount.getAccountServerURI());
+    final ExtendedJSONObject services = new ExtendedJSONObject();
+    services.put(FxAccountAbstractSetupActivity.JSON_KEY_SYNC, fxAccount.getTokenServerURI());
+    o.put(FxAccountAbstractSetupActivity.JSON_KEY_SERVICES, services);
+    extras.putString(FxAccountAbstractSetupActivity.EXTRA_EXTRAS, o.toJSONString());
+    return extras;
   }
 
   protected void setCheckboxesEnabled(boolean enabled) {
@@ -171,6 +284,9 @@ public class FxAccountStatusFragment extends PreferenceFragment implements OnPre
     historyPreference.setEnabled(enabled);
     tabsPreference.setEnabled(enabled);
     passwordsPreference.setEnabled(enabled);
+    // Since we can't sync, we can't update our remote client record.
+    deviceNamePreference.setEnabled(enabled);
+    syncNowPreference.setEnabled(enabled);
   }
 
   /**
@@ -186,6 +302,7 @@ public class FxAccountStatusFragment extends PreferenceFragment implements OnPre
         this.needsVerificationPreference,
         this.needsMasterSyncAutomaticallyEnabledPreference,
         this.needsAccountEnabledPreference,
+        this.needsFinishMigratingPreference,
     };
     for (Preference errorPreference : errorPreferences) {
       final boolean currentlyShown = null != findPreference(errorPreference.getKey());
@@ -221,6 +338,9 @@ public class FxAccountStatusFragment extends PreferenceFragment implements OnPre
 
   protected void showNeedsMasterSyncAutomaticallyEnabled() {
     syncCategory.setTitle(R.string.fxaccount_status_sync);
+    needsMasterSyncAutomaticallyEnabledPreference.setTitle(AppConstants.Versions.preLollipop ?
+                                                   R.string.fxaccount_status_needs_master_sync_automatically_enabled :
+                                                   R.string.fxaccount_status_needs_master_sync_automatically_enabled_v21);
     showOnlyOneErrorPreference(needsMasterSyncAutomaticallyEnabledPreference);
     setCheckboxesEnabled(false);
   }
@@ -231,10 +351,53 @@ public class FxAccountStatusFragment extends PreferenceFragment implements OnPre
     setCheckboxesEnabled(false);
   }
 
+  protected void showNeedsFinishMigrating() {
+    syncCategory.setTitle(R.string.fxaccount_status_sync);
+    showOnlyOneErrorPreference(needsFinishMigratingPreference);
+    setCheckboxesEnabled(false);
+  }
+
   protected void showConnected() {
     syncCategory.setTitle(R.string.fxaccount_status_sync_enabled);
     showOnlyOneErrorPreference(null);
     setCheckboxesEnabled(true);
+  }
+
+  protected class InnerSyncStatusDelegate implements FirefoxAccounts.SyncStatusListener {
+    protected final Runnable refreshRunnable = new Runnable() {
+      @Override
+      public void run() {
+        refresh();
+      }
+    };
+
+    @Override
+    public Context getContext() {
+      return FxAccountStatusFragment.this.getActivity();
+    }
+
+    @Override
+    public Account getAccount() {
+      return fxAccount.getAndroidAccount();
+    }
+
+    @Override
+    public void onSyncStarted() {
+      if (fxAccount == null) {
+        return;
+      }
+      Logger.info(LOG_TAG, "Got sync started message; refreshing.");
+      getActivity().runOnUiThread(refreshRunnable);
+    }
+
+    @Override
+    public void onSyncFinished() {
+      if (fxAccount == null) {
+        return;
+      }
+      Logger.info(LOG_TAG, "Got sync finished message; refreshing.");
+      getActivity().runOnUiThread(refreshRunnable);
+    }
   }
 
   /**
@@ -251,6 +414,14 @@ public class FxAccountStatusFragment extends PreferenceFragment implements OnPre
       throw new IllegalArgumentException("fxAccount must not be null");
     }
     this.fxAccount = fxAccount;
+    try {
+      this.clientsDataDelegate = new SharedPreferencesClientsDataDelegate(fxAccount.getSyncPrefs(), getActivity().getApplicationContext());
+    } catch (Exception e) {
+      Logger.error(LOG_TAG, "Got exception fetching Sync prefs associated to Firefox Account; aborting.", e);
+      // Something is terribly wrong; best to get a stack trace rather than
+      // continue with a null clients delegate.
+      throw new IllegalStateException(e);
+    }
 
     handler = new Handler(); // Attached to current (assumed to be UI) thread.
 
@@ -258,6 +429,37 @@ public class FxAccountStatusFragment extends PreferenceFragment implements OnPre
     // a reference to this fragment alive, but we expect posted runnables to be
     // serviced very quickly, so this is not an issue.
     requestSyncRunnable = new RequestSyncRunnable();
+    lastSyncedTimeUpdateRunnable = new LastSyncTimeUpdateRunnable();
+
+    // We would very much like register these status observers in bookended
+    // onResume/onPause calls, but because the Fragment gets onResume during the
+    // Activity's super.onResume, it hasn't yet been told its Firefox Account.
+    // So we register the observer here (and remove it in onPause), and open
+    // ourselves to the possibility that we don't have properly paired
+    // register/unregister calls.
+    FxAccountSyncStatusHelper.getInstance().startObserving(syncStatusDelegate);
+
+    refresh();
+  }
+
+  @Override
+  public void onPause() {
+    super.onPause();
+    FxAccountSyncStatusHelper.getInstance().stopObserving(syncStatusDelegate);
+
+    // Focus lost, remove scheduled update if any.
+    if (lastSyncedTimeUpdateRunnable != null) {
+      handler.removeCallbacks(lastSyncedTimeUpdateRunnable);
+    }
+  }
+
+  protected void hardRefresh() {
+    // This is the only way to guarantee that the EditText dialogs created by
+    // EditTextPreferences are re-created. This works around the issue described
+    // at http://androiddev.orkitra.com/?p=112079.
+    final PreferenceScreen statusScreen = (PreferenceScreen) ensureFindPreference("status_screen");
+    statusScreen.removeAll();
+    addPreferences();
 
     refresh();
   }
@@ -271,6 +473,8 @@ public class FxAccountStatusFragment extends PreferenceFragment implements OnPre
     }
 
     emailPreference.setTitle(fxAccount.getEmail());
+    updateAuthServerPreference();
+    updateSyncServerPreference();
 
     try {
       // There are error states determined by Android, not the login state
@@ -298,8 +502,12 @@ public class FxAccountStatusFragment extends PreferenceFragment implements OnPre
       case NeedsVerification:
         showNeedsVerification();
         break;
-      default:
+      case NeedsFinishMigrating:
+        showNeedsFinishMigrating();
+        break;
+      case None:
         showConnected();
+        break;
       }
 
       // We check for the master setting last, since it is not strictly
@@ -315,6 +523,67 @@ public class FxAccountStatusFragment extends PreferenceFragment implements OnPre
       // No matter our state, we should update the checkboxes.
       updateSelectedEngines();
     }
+
+    final String clientName = clientsDataDelegate.getClientName();
+    deviceNamePreference.setSummary(clientName);
+    deviceNamePreference.setText(clientName);
+
+    updateSyncNowPreference();
+  }
+
+  // This is a helper function similar to TabsAccessor.getLastSyncedString() to calculate relative "Last synced" time span.
+  private String getLastSyncedString(final long startTime) {
+    final CharSequence relativeTimeSpanString = DateUtils.getRelativeTimeSpanString(startTime);
+    return getActivity().getResources().getString(R.string.fxaccount_status_last_synced, relativeTimeSpanString);
+  }
+
+  protected void updateSyncNowPreference() {
+    final boolean currentlySyncing = fxAccount.isCurrentlySyncing();
+    syncNowPreference.setEnabled(!currentlySyncing);
+    if (currentlySyncing) {
+      syncNowPreference.setTitle(R.string.fxaccount_status_syncing);
+    } else {
+      syncNowPreference.setTitle(R.string.fxaccount_status_sync_now);
+    }
+    scheduleAndUpdateLastSyncedTime();
+  }
+
+  private void scheduleAndUpdateLastSyncedTime() {
+    final String lastSynced = getLastSyncedString(fxAccount.getLastSyncedTimestamp());
+    syncNowPreference.setSummary(lastSynced);
+    handler.postDelayed(lastSyncedTimeUpdateRunnable, LAST_SYNCED_TIME_UPDATE_INTERVAL_IN_MILLISECONDS);
+  }
+
+  protected void updateAuthServerPreference() {
+    final String authServer = fxAccount.getAccountServerURI();
+    final boolean shouldBeShown = ALWAYS_SHOW_AUTH_SERVER || !FxAccountConstants.DEFAULT_AUTH_SERVER_ENDPOINT.equals(authServer);
+    final boolean currentlyShown = null != findPreference(authServerPreference.getKey());
+    if (currentlyShown != shouldBeShown) {
+      if (shouldBeShown) {
+        accountCategory.addPreference(authServerPreference);
+      } else {
+        accountCategory.removePreference(authServerPreference);
+      }
+    }
+    // Always set the summary, because on first run, the preference is visible,
+    // and the above block will be skipped if there is a custom value.
+    authServerPreference.setSummary(authServer);
+  }
+
+  protected void updateSyncServerPreference() {
+    final String syncServer = fxAccount.getTokenServerURI();
+    final boolean shouldBeShown = ALWAYS_SHOW_SYNC_SERVER || !FxAccountConstants.DEFAULT_TOKEN_SERVER_ENDPOINT.equals(syncServer);
+    final boolean currentlyShown = null != findPreference(syncServerPreference.getKey());
+    if (currentlyShown != shouldBeShown) {
+      if (shouldBeShown) {
+        syncCategory.addPreference(syncServerPreference);
+      } else {
+        syncCategory.removePreference(syncServerPreference);
+      }
+    }
+    // Always set the summary, because on first run, the preference is visible,
+    // and the above block will be skipped if there is a custom value.
+    syncServerPreference.setSummary(syncServer);
   }
 
   /**
@@ -440,9 +709,17 @@ public class FxAccountStatusFragment extends PreferenceFragment implements OnPre
         return;
       }
       Logger.info(LOG_TAG, "Requesting a sync sometime soon.");
-      // Request a sync, but not necessarily an immediate sync.
-      ContentResolver.requestSync(fxAccount.getAndroidAccount(), BrowserContract.AUTHORITY, Bundle.EMPTY);
-      // SyncAdapter.requestImmediateSync(fxAccount.getAndroidAccount(), null);
+      fxAccount.requestSync();
+    }
+  }
+
+  /**
+   * The Runnable that schedules a future update and updates the last synced time.
+   */
+  protected class LastSyncTimeUpdateRunnable implements Runnable  {
+    @Override
+    public void run() {
+      scheduleAndUpdateLastSyncedTime();
     }
   }
 
@@ -459,10 +736,8 @@ public class FxAccountStatusFragment extends PreferenceFragment implements OnPre
       } else if ("debug_dump".equals(key)) {
         fxAccount.dump();
       } else if ("debug_force_sync".equals(key)) {
-        Logger.info(LOG_TAG, "Syncing.");
-        final Bundle extras = new Bundle();
-        extras.putBoolean(ContentResolver.SYNC_EXTRAS_MANUAL, true);
-        fxAccount.requestSync(extras);
+        Logger.info(LOG_TAG, "Force syncing.");
+        fxAccount.requestSync(FirefoxAccounts.FORCE);
         // No sense refreshing, since the sync will complete in the future.
       } else if ("debug_forget_certificate".equals(key)) {
         State state = fxAccount.getState();
@@ -485,6 +760,11 @@ public class FxAccountStatusFragment extends PreferenceFragment implements OnPre
         State state = fxAccount.getState();
         fxAccount.setState(state.makeDoghouseState());
         refresh();
+      } else if ("debug_migrated_from_sync11".equals(key)) {
+        Logger.info(LOG_TAG, "Moving to MigratedFromSync11 state: Requiring password.");
+        State state = fxAccount.getState();
+        fxAccount.setState(state.makeMigratedFromSync11State(null));
+        refresh();
       } else {
         return false;
       }
@@ -493,7 +773,7 @@ public class FxAccountStatusFragment extends PreferenceFragment implements OnPre
   }
 
   /**
-   * Iterate through debug buttons, adding a special deubg preference click
+   * Iterate through debug buttons, adding a special debug preference click
    * listener to each of them.
    */
   protected void connectDebugButtons() {
@@ -511,11 +791,30 @@ public class FxAccountStatusFragment extends PreferenceFragment implements OnPre
         "debug_force_sync",
         "debug_forget_certificate",
         "debug_require_password",
-        "debug_require_upgrade" };
+        "debug_require_upgrade",
+        "debug_migrated_from_sync11" };
     for (String debugKey : debugKeys) {
       final Preference button = ensureFindPreference(debugKey);
       button.setTitle(debugKey); // Not very friendly, but this is for debugging only!
       button.setOnPreferenceClickListener(listener);
     }
+  }
+
+  @Override
+  public boolean onPreferenceChange(Preference preference, Object newValue) {
+    if (preference == deviceNamePreference) {
+      String newClientName = (String) newValue;
+      if (TextUtils.isEmpty(newClientName)) {
+        newClientName = clientsDataDelegate.getDefaultClientName();
+      }
+      final long now = System.currentTimeMillis();
+      clientsDataDelegate.setClientName(newClientName, now);
+      requestDelayedSync(); // Try to update our remote client record.
+      hardRefresh(); // Updates the value displayed to the user, among other things.
+      return true;
+    }
+
+    // For everything else, accept the change.
+    return true;
   }
 }

@@ -27,6 +27,7 @@
                           accesskey="&newPrivateWindow.accesskey;"
                           command="Tools:PrivateBrowsing"
                           key="key_privatebrowsing"/>
+#ifdef E10S_TESTING_ONLY
                 <menuitem id="menu_newRemoteWindow"
                           label="New e10s Window"
                           hidden="true"
@@ -35,6 +36,13 @@
                           label="New Non-e10s Window"
                           hidden="true"
                           command="Tools:NonRemoteWindow"/>
+#endif
+#ifdef MAC_NON_BROWSER_WINDOW
+                <menuitem id="menu_openLocation"
+                          label="&openLocationCmd.label;"
+                          command="Browser:OpenLocation"
+                          key="focusURLBar"/>
+#endif
                 <menuitem id="menu_openFile"
                           label="&openFileCmd.label;"
                           command="Browser:OpenFile"
@@ -73,10 +81,12 @@
                           accesskey="&emailPageCmd.accesskey;"
                           command="Browser:SendLink"/>
                 <menuseparator/>
+#if !defined(MOZ_WIDGET_GTK) && !defined(MOZ_WIDGET_QT)
                 <menuitem id="menu_printSetup"
                           label="&printSetupCmd.label;"
                           accesskey="&printSetupCmd.accesskey;"
                           command="cmd_pageSetup"/>
+#endif
 #ifndef XP_MACOSX
                 <menuitem id="menu_printPreview"
                           label="&printPreviewCmd.label;"
@@ -441,7 +451,8 @@
 
             <menu id="tools-menu"
                   label="&toolsMenu.label;"
-                  accesskey="&toolsMenu.accesskey;">
+                  accesskey="&toolsMenu.accesskey;"
+                  onpopupshowing="mirrorShow(this)">
               <menupopup id="menu_ToolsPopup"
 #ifdef MOZ_SERVICES_SYNC
 # We have to use setTimeout() here to avoid a flickering menu bar when opening
@@ -460,13 +471,17 @@
                         accesskey="&addons.accesskey;"
                         key="key_openAddons"
                         command="Tools:Addons"/>
+              <menuitem id="menu_openApps"
+                        label="&webapps.label;"
+                        accesskey="&webapps.accesskey;"
+                        oncommand="BrowserOpenApps();"/>
 #ifdef MOZ_SERVICES_SYNC
               <!-- only one of sync-setup or sync-menu will be showing at once -->
               <menuitem id="sync-setup"
                         label="&syncSetup.label;"
                         accesskey="&syncSetup.accesskey;"
                         observes="sync-setup-state"
-                        oncommand="gSyncUI.openSetup()"/>
+                        oncommand="gSyncUI.openSetup(null, 'menubar')"/>
               <menuitem id="sync-syncnowitem"
                         label="&syncSyncNowItem.label;"
                         accesskey="&syncSyncNowItem.accesskey;"
@@ -476,7 +491,7 @@
                         label="&syncReAuthItem.label;"
                         accesskey="&syncReAuthItem.accesskey;"
                         observes="sync-reauth-state"
-                        oncommand="gSyncUI.openSignInAgainPage();"/>
+                        oncommand="gSyncUI.openSignInAgainPage('menubar');"/>
 #endif
               <menuseparator id="devToolsSeparator"/>
               <menu id="webDeveloperMenu"
@@ -493,15 +508,23 @@
                   <menuitem id="menu_devAppMgr"
                             observes="devtoolsMenuBroadcaster_DevAppMgr"
                             accesskey="&devAppMgrMenu.accesskey;"/>
+                  <menuitem id="menu_webide"
+                            observes="devtoolsMenuBroadcaster_webide"
+                            accesskey="&webide.accesskey;"/>
                   <menuitem id="menu_browserToolbox"
                             observes="devtoolsMenuBroadcaster_BrowserToolbox"
                             accesskey="&browserToolboxMenu.accesskey;"/>
+                  <menuitem id="menu_browserContentToolbox"
+                            observes="devtoolsMenuBroadcaster_BrowserContentToolbox"/>
                   <menuitem id="menu_browserConsole"
                             observes="devtoolsMenuBroadcaster_BrowserConsole"
                             accesskey="&browserConsoleCmd.accesskey;"/>
                   <menuitem id="menu_responsiveUI"
                             observes="devtoolsMenuBroadcaster_ResponsiveUI"
                             accesskey="&responsiveDesignTool.accesskey;"/>
+                  <menuitem id="menu_eyedropper"
+                            observes="devtoolsMenuBroadcaster_Eyedropper"
+                            accesskey="&eyedropper.accesskey;"/>
                   <menuitem id="menu_scratchpad"
                             observes="devtoolsMenuBroadcaster_Scratchpad"
                             accesskey="&scratchpad.accesskey;"/>
@@ -526,6 +549,13 @@
                         key="key_viewInfo"
 #endif
                         command="View:PageInfo"/>
+              <menu id="menu_mirrorTabCmd"
+                    hidden="true"
+                    accesskey="&mirrorTabCmd.accesskey;"
+                    label="&mirrorTabCmd.label;">
+                <menupopup id="menu_mirrorTab-popup"
+                           onpopupshowing="populateMirrorTabMenu(this)"/>
+              </menu>
 #ifndef XP_UNIX
               <menuseparator id="prefSep"/>
               <menuitem id="menu_preferences"

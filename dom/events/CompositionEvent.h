@@ -27,10 +27,9 @@ public:
   NS_FORWARD_TO_UIEVENT
   NS_DECL_NSIDOMCOMPOSITIONEVENT
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE
+  virtual JSObject* WrapObjectInternal(JSContext* aCx) MOZ_OVERRIDE
   {
-    return CompositionEventBinding::Wrap(aCx, aScope, this);
+    return CompositionEventBinding::Wrap(aCx, this);
   }
 
   void InitCompositionEvent(const nsAString& aType,
@@ -46,6 +45,8 @@ public:
   }
 
 protected:
+  ~CompositionEvent() {}
+
   nsString mData;
   nsString mLocale;
 };

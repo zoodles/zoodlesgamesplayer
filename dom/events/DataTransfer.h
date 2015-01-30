@@ -16,16 +16,18 @@
 #include "nsCycleCollectionParticipant.h"
 
 #include "nsAutoPtr.h"
-#include "nsDOMFile.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/dom/File.h"
 
-class nsEventStateManager;
 class nsINode;
 class nsITransferable;
 class nsISupportsArray;
 class nsILoadContext;
 
 namespace mozilla {
+
+class EventStateManager;
+
 namespace dom {
 
 class DOMStringList;
@@ -60,7 +62,7 @@ public:
 
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(DataTransfer)
 
-  friend class ::nsEventStateManager;
+  friend class mozilla::EventStateManager;
 
 protected:
 
@@ -102,7 +104,7 @@ public:
   DataTransfer(nsISupports* aParent, uint32_t aEventType, bool aIsExternal,
                int32_t aClipboardType);
 
-  virtual JSObject* WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope);
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
   nsISupports* GetParentObject()
   {
     return mParent;
@@ -141,7 +143,7 @@ public:
                ErrorResult& aRv);
   void ClearData(const mozilla::dom::Optional<nsAString>& aFormat,
                  mozilla::ErrorResult& aRv);
-  nsDOMFileList* GetFiles(mozilla::ErrorResult& aRv);
+  FileList* GetFiles(mozilla::ErrorResult& aRv);
   void AddElement(Element& aElement, mozilla::ErrorResult& aRv);
   uint32_t MozItemCount()
   {
@@ -162,8 +164,9 @@ public:
   void MozSetDataAt(JSContext* aCx, const nsAString& aFormat,
                     JS::Handle<JS::Value> aData, uint32_t aIndex,
                     mozilla::ErrorResult& aRv);
-  JS::Value MozGetDataAt(JSContext* aCx, const nsAString& aFormat,
-                         uint32_t aIndex, mozilla::ErrorResult& aRv);
+  void MozGetDataAt(JSContext* aCx, const nsAString& aFormat,
+                    uint32_t aIndex, JS::MutableHandle<JS::Value> aRetval,
+                    mozilla::ErrorResult& aRv);
   bool MozUserCancelled()
   {
     return mUserCancelled;
@@ -216,9 +219,6 @@ public:
                  bool aIsCrossDomainSubFrameDrop, DataTransfer** aResult);
 
 protected:
-
-  // returns a weak reference to the current principal
-  nsIPrincipal* GetCurrentPrincipal(nsresult* rv);
 
   // converts some formats used for compatibility in aInFormat into aOutFormat.
   // Text and text/unicode become text/plain, and URL becomes text/uri-list
@@ -278,7 +278,7 @@ protected:
   nsTArray<nsTArray<TransferItem> > mItems;
 
   // array of files, containing only the files present in the dataTransfer
-  nsRefPtr<nsDOMFileList> mFiles;
+  nsRefPtr<FileList> mFiles;
 
   // the target of the drag. The drag and dragend events will fire at this.
   nsCOMPtr<mozilla::dom::Element> mDragTarget;

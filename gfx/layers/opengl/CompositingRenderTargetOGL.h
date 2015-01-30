@@ -22,7 +22,6 @@
 #include "nsDebug.h"                    // for NS_ERROR, NS_WARNING
 #include "nsString.h"                   // for nsAutoCString
 
-class gfxImageSurface;
 
 namespace mozilla {
 namespace gl {
@@ -68,7 +67,6 @@ public:
                              GLuint aTexure, GLuint aFBO)
     : CompositingRenderTarget(aOrigin)
     , mInitParams()
-    , mTransform()
     , mCompositor(aCompositor)
     , mGL(aCompositor->gl())
     , mTextureHandle(aTexure)
@@ -83,12 +81,10 @@ public:
    */
   static TemporaryRef<CompositingRenderTargetOGL>
   RenderTargetForWindow(CompositorOGL* aCompositor,
-                        const gfx::IntSize& aSize,
-                        const gfx::Matrix& aTransform)
+                        const gfx::IntSize& aSize)
   {
     RefPtr<CompositingRenderTargetOGL> result
-      = new CompositingRenderTargetOGL(aCompositor, gfx::IntPoint(0, 0), 0, 0);
-    result->mTransform = aTransform;
+      = new CompositingRenderTargetOGL(aCompositor, gfx::IntPoint(), 0, 0);
     result->mInitParams = InitParams(aSize, 0, INIT_MODE_NONE);
     result->mInitParams.mStatus = InitParams::INITIALIZED;
     return result.forget();
@@ -116,6 +112,8 @@ public:
    */
   void BindRenderTarget();
 
+  bool IsWindow() { return GetFBO() == 0; }
+
   GLuint GetFBO() const
   {
     MOZ_ASSERT(mInitParams.mStatus == InitParams::INITIALIZED);
@@ -137,9 +135,7 @@ public:
   }
   gfx::IntSize GetSize() const MOZ_OVERRIDE
   {
-    // XXX - Bug 900770
-    MOZ_ASSERT(false, "CompositingRenderTargetOGL should not be used as a TextureSource");
-    return gfx::IntSize(0, 0);
+    return mInitParams.mSize;
   }
 
   gfx::SurfaceFormat GetFormat() const MOZ_OVERRIDE
@@ -149,13 +145,13 @@ public:
     return gfx::SurfaceFormat::UNKNOWN;
   }
 
-  const gfx::Matrix& GetTransform() {
-    return mTransform;
-  }
-
 #ifdef MOZ_DUMP_PAINTING
-  virtual TemporaryRef<gfx::DataSourceSurface> Dump(Compositor* aCompositor);
+  virtual TemporaryRef<gfx::DataSourceSurface> Dump(Compositor* aCompositor) MOZ_OVERRIDE;
 #endif
+
+  const gfx::IntSize& GetInitSize() const {
+    return mInitParams.mSize;
+  }
 
 private:
   /**
@@ -165,8 +161,12 @@ private:
   void InitializeImpl();
 
   InitParams mInitParams;
-  gfx::Matrix mTransform;
-  CompositorOGL* mCompositor;
+  /**
+   * There is temporary a cycle between the compositor and the render target,
+   * each having a strong ref to the other. The compositor's reference to
+   * the target is always cleared at the end of a frame.
+   */
+  RefPtr<CompositorOGL> mCompositor;
   GLContext* mGL;
   GLuint mTextureHandle;
   GLuint mFBO;

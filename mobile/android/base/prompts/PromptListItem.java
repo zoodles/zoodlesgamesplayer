@@ -2,11 +2,13 @@ package org.mozilla.gecko.prompts;
 
 import org.mozilla.gecko.gfx.BitmapUtils;
 import org.mozilla.gecko.GeckoAppShell;
+import org.mozilla.gecko.widget.GeckoActionProvider;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.json.JSONException;
 
+import android.content.Context;
 import android.content.Intent;
 import android.graphics.drawable.Drawable;
 import android.util.Log;
@@ -30,6 +32,7 @@ public class PromptListItem {
     public Drawable mIcon;
 
     PromptListItem(JSONObject aObject) {
+        Context context = GeckoAppShell.getContext();
         label = aObject.isNull("label") ? "" : aObject.optString("label");
         isGroup = aObject.optBoolean("isGroup");
         inGroup = aObject.optBoolean("inGroup");
@@ -41,8 +44,10 @@ public class PromptListItem {
         if (obj != null) {
             showAsActions = true;
             String uri = obj.isNull("uri") ? "" : obj.optString("uri");
-            String type = obj.isNull("type") ? "text/html" : obj.optString("type", "text/html");
-            mIntent = GeckoAppShell.getShareIntent(GeckoAppShell.getContext(), uri, type, "");
+            String type = obj.isNull("type") ? GeckoActionProvider.DEFAULT_MIME_TYPE :
+                                               obj.optString("type", GeckoActionProvider.DEFAULT_MIME_TYPE);
+
+            mIntent = GeckoAppShell.getShareIntent(context, uri, type, "");
             isParent = true;
         } else {
             mIntent = null;
@@ -51,12 +56,15 @@ public class PromptListItem {
             isParent = aObject.optBoolean("isParent") || aObject.optBoolean("menu");
         }
 
-        BitmapUtils.getDrawable(GeckoAppShell.getContext(), aObject.optString("icon"), new BitmapUtils.BitmapLoader() {
-            @Override
-            public void onBitmapFound(Drawable d) {
-                mIcon = d;
-            }
-        });
+        final String iconStr = aObject.optString("icon");
+        if (iconStr != null) {
+            BitmapUtils.getDrawable(context, iconStr, new BitmapUtils.BitmapLoader() {
+                    @Override
+                    public void onBitmapFound(Drawable d) {
+                        mIcon = d;
+                    }
+                });
+        }
     }
 
     public void setIntent(Intent i) {
@@ -99,7 +107,7 @@ public class PromptListItem {
         }
 
         int length = items.length();
-        List<PromptListItem> list = new ArrayList<PromptListItem>(length);
+        List<PromptListItem> list = new ArrayList<>(length);
         for (int i = 0; i < length; i++) {
             try {
                 PromptListItem item = new PromptListItem(items.getJSONObject(i));
@@ -107,8 +115,6 @@ public class PromptListItem {
             } catch(Exception ex) { }
         }
 
-        PromptListItem[] arrays = new PromptListItem[length];
-        list.toArray(arrays);
-        return arrays;
+        return list.toArray(new PromptListItem[length]);
     }
 }

@@ -10,18 +10,18 @@ const { Cc, Ci, Cr } = require('chrome'),
       { WindowTabs, WindowTabTracker } = require('./tabs-firefox'),
       { WindowDom } = require('./dom'),
       { WindowLoader } = require('./loader'),
-      { isBrowser, getWindowDocShell, windows: windowIterator } = require('../window/utils'),
+      { isBrowser, getWindowDocShell, isFocused,
+        windows: windowIterator, isWindowPrivate } = require('../window/utils'),
       { Options } = require('../tabs/common'),
       apiUtils = require('../deprecated/api-utils'),
       unload = require('../system/unload'),
       windowUtils = require('../deprecated/window-utils'),
       { WindowTrackerTrait } = windowUtils,
       { ns } = require('../core/namespace'),
-      { observer: windowObserver } = require('./observer'),
-      { getOwnerWindow } = require('../private-browsing/window/utils');
+      { observer: windowObserver } = require('./observer');
 const { windowNS } = require('../window/namespace');
 const { isPrivateBrowsingSupported } = require('../self');
-const { ignoreWindow } = require('sdk/private-browsing/utils');
+const { ignoreWindow, isPrivate } = require('sdk/private-browsing/utils');
 const { viewFor } = require('../view/core');
 
 /**
@@ -70,14 +70,16 @@ const BrowserWindowTrait = Trait.compose(
       else if ('url' in options) {
         this._tabOptions = [ Options(options.url) ];
       }
+      for (let tab of this._tabOptions) {
+        tab.inNewWindow = true;
+      }
 
       this._isPrivate = isPrivateBrowsingSupported && !!options.isPrivate;
 
       this._load();
 
       windowNS(this._public).window = this._window;
-      getOwnerWindow.implement(this._public, getChromeWindow);
-      viewFor.implement(this._public, getChromeWindow);
+      viewFor.implement(this._public, (w) => windowNS(w).window);
 
       return this;
     },
@@ -120,7 +122,7 @@ const BrowserWindowTrait = Trait.compose(
  * registered, `null` otherwise.
  */
 function getRegisteredWindow(chromeWindow) {
-  for each (let window in windows) {
+  for (let window of windows) {
     if (chromeWindow === window._window)
       return window;
   }
@@ -261,8 +263,8 @@ const browserWindows = Trait.resolve({ toString: null }).compose(
   }).resolve({ toString: null })
 )();
 
-function getChromeWindow(window) {
-  return windowNS(window).window;
-}
+const isBrowserWindow = (x) => x instanceof BrowserWindow;
+isPrivate.when(isBrowserWindow, (w) => isWindowPrivate(viewFor(w)));
+isFocused.when(isBrowserWindow, (w) => isFocused(viewFor(w)));
 
 exports.browserWindows = browserWindows;

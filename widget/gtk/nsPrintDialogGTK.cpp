@@ -4,11 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include <gtk/gtk.h>
-#if (MOZ_WIDGET_GTK == 2)
-#include <gtk/gtkprintunixdialog.h>
-#else
 #include <gtk/gtkunixprint.h>
-#endif
 #include <stdlib.h>
 
 #include "mozilla/ArrayUtils.h"
@@ -513,7 +509,7 @@ nsPrintDialogWidgetGTK::ConstructHeaderFooterDropdown(const char16_t *currentStr
   return dropdown;
 }
 
-NS_IMPL_ISUPPORTS1(nsPrintDialogServiceGTK, nsIPrintDialogService)
+NS_IMPL_ISUPPORTS(nsPrintDialogServiceGTK, nsIPrintDialogService)
 
 nsPrintDialogServiceGTK::nsPrintDialogServiceGTK()
 {

@@ -7,7 +7,7 @@
 
 using namespace mozilla::widget::winrt;
 
-NS_IMPL_ISUPPORTS1(WakeLockListener, nsIDOMMozWakeLockListener)
+NS_IMPL_ISUPPORTS(WakeLockListener, nsIDOMMozWakeLockListener)
 
 NS_IMETHODIMP
 WakeLockListener::Callback(const nsAString& aTopic, const nsAString& aState)
@@ -19,7 +19,7 @@ WakeLockListener::Callback(const nsAString& aTopic, const nsAString& aState)
     }
   }
 
-  if (aState.Equals(NS_LITERAL_STRING("locked-foreground"))) {
+  if (aState.EqualsLiteral("locked-foreground")) {
     mDisplayRequest->RequestActive();
   } else {
     mDisplayRequest->RequestRelease();

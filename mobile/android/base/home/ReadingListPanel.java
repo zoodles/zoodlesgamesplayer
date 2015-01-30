@@ -7,19 +7,20 @@ package org.mozilla.gecko.home;
 
 import java.util.EnumSet;
 
+import org.mozilla.gecko.GeckoProfile;
 import org.mozilla.gecko.R;
 import org.mozilla.gecko.ReaderModeUtils;
+import org.mozilla.gecko.Telemetry;
+import org.mozilla.gecko.TelemetryContract;
 import org.mozilla.gecko.db.BrowserContract.ReadingListItems;
+import org.mozilla.gecko.db.BrowserContract.URLColumns;
 import org.mozilla.gecko.db.BrowserDB;
-import org.mozilla.gecko.db.BrowserDB.URLColumns;
+import org.mozilla.gecko.home.HomeContextMenuInfo.RemoveItemType;
 import org.mozilla.gecko.home.HomePager.OnUrlOpenListener;
 
-import android.app.Activity;
 import android.content.Context;
-import android.content.res.Configuration;
 import android.database.Cursor;
 import android.os.Bundle;
-import android.support.v4.app.LoaderManager.LoaderCallbacks;
 import android.support.v4.content.Loader;
 import android.support.v4.widget.CursorAdapter;
 import android.text.SpannableStringBuilder;
@@ -58,28 +59,6 @@ public class ReadingListPanel extends HomeFragment {
     // Callbacks used for the reading list and favicon cursor loaders
     private CursorLoaderCallbacks mCursorLoaderCallbacks;
 
-    // On URL open listener
-    private OnUrlOpenListener mUrlOpenListener;
-
-    @Override
-    public void onAttach(Activity activity) {
-        super.onAttach(activity);
-
-        try {
-            mUrlOpenListener = (OnUrlOpenListener) activity;
-        } catch (ClassCastException e) {
-            throw new ClassCastException(activity.toString()
-                    + " must implement HomePager.OnUrlOpenListener");
-        }
-    }
-
-    @Override
-    public void onDetach() {
-        super.onDetach();
-
-        mUrlOpenListener = null;
-    }
-
     @Override
     public View onCreateView(LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
         return inflater.inflate(R.layout.home_reading_list_panel, container, false);
@@ -105,18 +84,21 @@ public class ReadingListPanel extends HomeFragment {
                 String url = c.getString(c.getColumnIndexOrThrow(URLColumns.URL));
                 url = ReaderModeUtils.getAboutReaderForUrl(url);
 
+                Telemetry.sendUIEvent(TelemetryContract.Event.LOAD_URL, TelemetryContract.Method.LIST_ITEM);
+
                 // This item is a TwoLinePageRow, so we allow switch-to-tab.
                 mUrlOpenListener.onUrlOpen(url, EnumSet.of(OnUrlOpenListener.Flags.ALLOW_SWITCH_TO_TAB));
             }
         });
 
-        mList.setContextMenuInfoFactory(new HomeListView.ContextMenuInfoFactory() {
+        mList.setContextMenuInfoFactory(new HomeContextMenuInfo.Factory() {
             @Override
             public HomeContextMenuInfo makeInfoForCursor(View view, int position, long id, Cursor cursor) {
                 final HomeContextMenuInfo info = new HomeContextMenuInfo(view, position, id);
                 info.url = cursor.getString(cursor.getColumnIndexOrThrow(ReadingListItems.URL));
                 info.title = cursor.getString(cursor.getColumnIndexOrThrow(ReadingListItems.TITLE));
                 info.readingListItemId = cursor.getInt(cursor.getColumnIndexOrThrow(ReadingListItems._ID));
+                info.itemType = RemoveItemType.READING_LIST;
                 return info;
             }
         });
@@ -129,19 +111,6 @@ public class ReadingListPanel extends HomeFragment {
         mList = null;
         mTopView = null;
         mEmptyView = null;
-    }
-
-    @Override
-    public void onConfigurationChanged(Configuration newConfig) {
-        super.onConfigurationChanged(newConfig);
-
-        // Detach and reattach the fragment as the layout changes.
-        if (isVisible()) {
-            getFragmentManager().beginTransaction()
-                                .detach(this)
-                                .attach(this)
-                                .commitAllowingStateLoss();
-        }
     }
 
     @Override
@@ -195,13 +164,16 @@ public class ReadingListPanel extends HomeFragment {
      * Cursor loader for the list of reading list items.
      */
     private static class ReadingListLoader extends SimpleCursorLoader {
+        private final BrowserDB mDB;
+
         public ReadingListLoader(Context context) {
             super(context);
+            mDB = GeckoProfile.get(context).getDB();
         }
 
         @Override
         public Cursor loadCursor() {
-            return BrowserDB.getReadingList(getContext().getContentResolver());
+            return mDB.getReadingList(getContext().getContentResolver());
         }
     }
 
@@ -215,33 +187,34 @@ public class ReadingListPanel extends HomeFragment {
 
         @Override
         public void bindView(View view, Context context, Cursor cursor) {
-            final TwoLinePageRow row = (TwoLinePageRow) view;
+            final ReadingListRow row = (ReadingListRow) view;
             row.updateFromCursor(cursor);
         }
 
         @Override
         public View newView(Context context, Cursor cursor, ViewGroup parent) {
-            return LayoutInflater.from(parent.getContext()).inflate(R.layout.bookmark_item_row, parent, false);
+            return LayoutInflater.from(parent.getContext()).inflate(R.layout.reading_list_item_row, parent, false);
         }
     }
 
     /**
      * LoaderCallbacks implementation that interacts with the LoaderManager.
      */
-    private class CursorLoaderCallbacks implements LoaderCallbacks<Cursor> {
+    private class CursorLoaderCallbacks extends TransitionAwareCursorLoaderCallbacks {
         @Override
         public Loader<Cursor> onCreateLoader(int id, Bundle args) {
             return new ReadingListLoader(getActivity());
         }
 
         @Override
-        public void onLoadFinished(Loader<Cursor> loader, Cursor c) {
+        public void onLoadFinishedAfterTransitions(Loader<Cursor> loader, Cursor c) {
             mAdapter.swapCursor(c);
             updateUiFromCursor(c);
         }
 
         @Override
         public void onLoaderReset(Loader<Cursor> loader) {
+            super.onLoaderReset(loader);
             mAdapter.swapCursor(null);
         }
     }

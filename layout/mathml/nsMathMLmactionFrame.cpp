@@ -80,9 +80,9 @@ nsMathMLmactionFrame::~nsMathMLmactionFrame()
 }
 
 void
-nsMathMLmactionFrame::Init(nsIContent*      aContent,
-                           nsIFrame*        aParent,
-                           nsIFrame*        aPrevInFlow)
+nsMathMLmactionFrame::Init(nsIContent*       aContent,
+                           nsContainerFrame* aParent,
+                           nsIFrame*         aPrevInFlow)
 {
   // Init our local attributes
 
@@ -172,11 +172,11 @@ nsMathMLmactionFrame::GetSelectedFrame()
   return mSelectedFrame;
 }
 
-nsresult
+void
 nsMathMLmactionFrame::SetInitialChildList(ChildListID     aListID,
                                           nsFrameList&    aChildList)
 {
-  nsresult rv = nsMathMLSelectedFrame::SetInitialChildList(aListID, aChildList);
+  nsMathMLSelectedFrame::SetInitialChildList(aListID, aChildList);
 
   if (!mSelectedFrame) {
     mActionType = NS_MATHML_ACTION_TYPE_NONE;
@@ -192,7 +192,6 @@ nsMathMLmactionFrame::SetInitialChildList(ChildListID     aListID,
     mContent->AddSystemEventListener(NS_LITERAL_STRING("mouseout"), mListener,
                                      false, false);
   }
-  return rv;
 }
 
 nsresult
@@ -236,12 +235,12 @@ nsMathMLmactionFrame::AttributeChanged(int32_t  aNameSpaceID,
 // Event handlers 
 // ################################################################
 
-NS_IMPL_ISUPPORTS1(nsMathMLmactionFrame::MouseListener,
-                   nsIDOMEventListener)
+NS_IMPL_ISUPPORTS(nsMathMLmactionFrame::MouseListener,
+                  nsIDOMEventListener)
 
 
 // helper to show a msg on the status bar
-// curled from nsObjectFrame.cpp ...
+// curled from nsPluginFrame.cpp ...
 void
 ShowStatus(nsPresContext* aPresContext, nsString& aStatusMsg)
 {

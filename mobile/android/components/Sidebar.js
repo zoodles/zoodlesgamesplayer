@@ -1,6 +1,6 @@
-# This Source Code Form is subject to the terms of the Mozilla Public
-# License, v. 2.0. If a copy of the MPL was not distributed with this
-# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 const Ci = Components.interfaces;
 const Cc = Components.classes;
@@ -91,7 +91,6 @@ Sidebar.prototype = {
     Services.search.addEngine(engineURL, dataType, iconURL, true);
   },
 
-  // =========================== nsISidebarExternal ===========================
   // This function exists to implement window.external.AddSearchProvider(),
   // to match other browsers' APIs.  The capitalization, although nonstandard here,
   // is therefore important.
@@ -121,17 +120,8 @@ Sidebar.prototype = {
     return 0;
   },
 
-  // =========================== nsIClassInfo ===========================
-  classInfo: XPCOMUtils.generateCI({classID: SIDEBAR_CID,
-                                    contractID: SIDEBAR_CONTRACTID,
-                                    interfaces: [Ci.nsISidebar,
-                                                 Ci.nsISidebarExternal],
-                                    flags: Ci.nsIClassInfo.DOM_OBJECT,
-                                    classDescription: "Sidebar"}),
-
   // =========================== nsISupports ===========================
-  QueryInterface: XPCOMUtils.generateQI([Ci.nsISidebar,
-                                         Ci.nsISidebarExternal]),
+  QueryInterface: XPCOMUtils.generateQI([Ci.nsISupports]),
 
   // XPCOMUtils stuff
   classID: SIDEBAR_CID,

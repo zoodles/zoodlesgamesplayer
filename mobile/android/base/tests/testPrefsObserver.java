@@ -1,11 +1,12 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 package org.mozilla.gecko.tests;
 
-import org.mozilla.gecko.*;
-import android.app.Instrumentation;
-
-import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.mozilla.gecko.Actions;
 
 /**
  * Basic test to check bounce-back from overscroll.
@@ -19,11 +20,6 @@ public class testPrefsObserver extends BaseTest {
     private static final long PREF_TIMEOUT = 10000;
 
     private Actions.RepeatedEventExpecter mExpecter;
-
-    @Override
-    protected int getTestType() {
-        return TEST_MOCHITEST;
-    }
 
     public void setPref(boolean value) throws JSONException {
         mAsserter.dumpLog("Setting pref");

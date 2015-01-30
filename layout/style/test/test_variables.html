@@ -18,38 +18,43 @@
 
 <div id="t4"></div>
 
+<style id="test5">
+</style>
+
+<div id="t5"></div>
+
 <script>
 var tests = [
   function() {
     // https://bugzilla.mozilla.org/show_bug.cgi?id=773296#c121
     var test1 = document.getElementById("test1");
-    test1.textContent = "p { var-a:123!important; }";
+    test1.textContent = "p { --a:123!important; }";
     var declaration = test1.sheet.cssRules[0].style;
     declaration.cssText;
     declaration.setProperty("color", "black");
-    is(declaration.getPropertyValue("var-a"), "123");
+    is(declaration.getPropertyValue("--a"), "123");
   },
 
   function() {
     // https://bugzilla.mozilla.org/show_bug.cgi?id=773296#c121
     var test2 = document.getElementById("test2");
-    test2.textContent = "p { var-a: a !important; }";
+    test2.textContent = "p { --a: a !important; }";
     var declaration = test2.sheet.cssRules[0].style;
-    is(declaration.getPropertyPriority("var-a"), "important");
+    is(declaration.getPropertyPriority("--a"), "important");
   },
 
   function() {
     // https://bugzilla.mozilla.org/show_bug.cgi?id=955913
     var test3 = document.getElementById("test3");
-    test3.textContent = "p { border-left-style: inset; padding: 1px; var-decoration: line-through; }";
+    test3.textContent = "p { border-left-style: inset; padding: 1px; --decoration: line-through; }";
     var declaration = test3.sheet.cssRules[0].style;
-    is(declaration[declaration.length - 1], "var-decoration");
+    is(declaration[declaration.length - 1], "--decoration");
   },
 
   function() {
     // https://bugzilla.mozilla.org/show_bug.cgi?id=959973
     var test4 = document.getElementById("test4");
-    test4.textContent = "#t4 { background-image: var(a); }";
+    test4.textContent = "#t4 { background-image: var(--a); }";
 
     var element = document.getElementById("t4");
     var path = window.location.pathname;
@@ -57,6 +62,22 @@ var tests = [
     var imageURL = "http://mochi.test:8888" + currentDir + "/image.png";
 
     is(window.getComputedStyle(element).getPropertyValue("background-image"), "url(\"" + imageURL +"\")");
+  },
+
+  function() {
+    // https://bugzilla.mozilla.org/show_bug.cgi?id=1043713
+    var test5 = document.getElementById("test5");
+    test5.textContent = "#t5 { --SomeVariableName: a; }";
+
+    var declaration = test5.sheet.cssRules[0].style;
+    is(declaration.item(0), "--SomeVariableName", "custom property name returned by item() on style declaration");
+    is(declaration[0], "--SomeVariableName", "custom property name returned by indexed getter on style declaration");
+
+    var element = document.getElementById("t5");
+    var cs = window.getComputedStyle(element);
+
+    is(cs.item(cs.length - 1), "--SomeVariableName", "custom property name returned by item() on computed style");
+    is(cs[cs.length - 1], "--SomeVariableName", "custom property name returned by indexed getter on style declaration");
   },
 ];
 

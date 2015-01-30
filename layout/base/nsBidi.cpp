@@ -3,7 +3,6 @@
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-#ifdef IBMBIDI
 
 #include "nsBidi.h"
 #include "nsUnicodeProperties.h"
@@ -1453,7 +1452,7 @@ bool nsBidi::GetRuns()
     GetSingleRun(mParaLevel);
   } else /* NSBIDI_MIXED, length>0 */ {
     /* mixed directionality */
-    int32_t length=mLength, limit=length;
+    int32_t length=mLength, limit=mTrailingWSStart;
 
     /*
      * If there are WS characters at the end of the line
@@ -1466,7 +1465,6 @@ bool nsBidi::GetRuns()
      * In other words, for the trailing WS, it may be
      * levels[]!=paraLevel but we have to treat it like it were so.
      */
-    limit=mTrailingWSStart;
     if(limit==0) {
       /* there is only WS on this line */
       GetSingleRun(mParaLevel);
@@ -2218,4 +2216,3 @@ nsresult nsBidi::WriteReverse(const char16_t *aSrc, int32_t aSrcLength, char16_t
   return NS_OK;
 }
 #endif // FULL_BIDI_ENGINE
-#endif // IBMBIDI

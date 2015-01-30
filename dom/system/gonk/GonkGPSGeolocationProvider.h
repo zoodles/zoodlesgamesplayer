@@ -20,10 +20,12 @@
 #include <hardware/gps.h> // for GpsInterface
 #include "nsCOMPtr.h"
 #include "nsIGeolocationProvider.h"
+#include "nsIObserver.h"
+#include "nsIDOMGeoPosition.h"
 #ifdef MOZ_B2G_RIL
 #include "nsIRadioInterfaceLayer.h"
-#include "nsISettingsService.h"
 #endif
+#include "nsISettingsService.h"
 
 class nsIThread;
 
@@ -34,18 +36,14 @@ class nsIThread;
 "@mozilla.org/gonk-gps-geolocation-provider;1"
 
 class GonkGPSGeolocationProvider : public nsIGeolocationProvider
-#ifdef MOZ_B2G_RIL
-                                 , public nsIRILDataCallback
+                                 , public nsIObserver
                                  , public nsISettingsServiceCallback
-#endif
 {
 public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIGEOLOCATIONPROVIDER
-#ifdef MOZ_B2G_RIL
-  NS_DECL_NSIRILDATACALLBACK
+  NS_DECL_NSIOBSERVER
   NS_DECL_NSISETTINGSSERVICECALLBACK
-#endif
 
   static already_AddRefed<GonkGPSGeolocationProvider> GetSingleton();
 
@@ -82,13 +80,15 @@ private:
   void StartGPS();
   void ShutdownGPS();
   void InjectLocation(double latitude, double longitude, float accuracy);
+  void RequestSettingValue(const char* aKey);
 #ifdef MOZ_B2G_RIL
+  void UpdateRadioInterface();
+  bool IsValidRilServiceId(uint32_t aServiceId);
   void SetupAGPS();
   int32_t GetDataConnectionState();
   void SetAGpsDataConn(nsAString& aApn);
   void RequestDataConnection();
   void ReleaseDataConnection();
-  void RequestSettingValue(char* aKey);
   void RequestSetID(uint32_t flags);
   void SetReferenceLocation();
 #endif
@@ -103,6 +103,13 @@ private:
 #ifdef MOZ_B2G_RIL
   bool mSupportsMSB;
   bool mSupportsMSA;
+  uint32_t mRilDataServiceId;
+  // mNumberOfRilServices indicates how many SIM slots supported on device, and
+  // RadioInterfaceLayer.js takes responsibility to set up the corresponding
+  // preference value.
+  uint32_t mNumberOfRilServices;
+  bool mObservingNetworkConnStateChange;
+  bool mObservingSettingsChange;
 #endif
   bool mSupportsSingleShot;
   bool mSupportsTimeInjection;
@@ -114,9 +121,9 @@ private:
   nsCOMPtr<nsIRadioInterface> mRadioInterface;
 #endif
   nsCOMPtr<nsIGeolocationUpdate> mLocationCallback;
-  PRTime mLastGPSDerivedLocationTime;
   nsCOMPtr<nsIThread> mInitThread;
   nsCOMPtr<nsIGeolocationProvider> mNetworkLocationProvider;
+  nsCOMPtr<nsIDOMGeoPosition> mLastGPSPosition;
 
   class NetworkLocationUpdate : public nsIGeolocationUpdate
   {

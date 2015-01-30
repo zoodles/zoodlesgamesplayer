@@ -102,7 +102,7 @@ class WaitForTopicSpinner MOZ_FINAL : public nsIObserver
 public:
   NS_DECL_ISUPPORTS
 
-  WaitForTopicSpinner(const char* const aTopic)
+  explicit WaitForTopicSpinner(const char* const aTopic)
   : mTopicReceived(false)
   , mStartTime(PR_IntervalNow())
   {
@@ -125,7 +125,7 @@ public:
 
   NS_IMETHOD Observe(nsISupports* aSubject,
                      const char* aTopic,
-                     const char16_t* aData)
+                     const char16_t* aData) MOZ_OVERRIDE
   {
     mTopicReceived = true;
     nsCOMPtr<nsIObserverService> observerService =
@@ -136,10 +136,12 @@ public:
   }
 
 private:
+  ~WaitForTopicSpinner() {}
+
   bool mTopicReceived;
   PRIntervalTime mStartTime;
 };
-NS_IMPL_ISUPPORTS1(
+NS_IMPL_ISUPPORTS(
   WaitForTopicSpinner,
   nsIObserver
 )
@@ -158,11 +160,13 @@ public:
   uint16_t completionReason;
 
 protected:
+  ~AsyncStatementSpinner() {}
+
   volatile bool mCompleted;
 };
 
-NS_IMPL_ISUPPORTS1(AsyncStatementSpinner,
-                   mozIStorageStatementCallback)
+NS_IMPL_ISUPPORTS(AsyncStatementSpinner,
+                  mozIStorageStatementCallback)
 
 AsyncStatementSpinner::AsyncStatementSpinner()
 : completionReason(0)
@@ -371,6 +375,9 @@ static const char TOPIC_PLACES_CONNECTION_CLOSED[] = "places-connection-closed";
 class WaitForConnectionClosed MOZ_FINAL : public nsIObserver
 {
   nsRefPtr<WaitForTopicSpinner> mSpinner;
+
+  ~WaitForConnectionClosed() {}
+
 public:
   NS_DECL_ISUPPORTS
 
@@ -387,7 +394,7 @@ public:
 
   NS_IMETHOD Observe(nsISupports* aSubject,
                      const char* aTopic,
-                     const char16_t* aData)
+                     const char16_t* aData) MOZ_OVERRIDE
   {
     nsCOMPtr<nsIObserverService> os =
       do_GetService(NS_OBSERVERSERVICE_CONTRACTID);
@@ -402,4 +409,4 @@ public:
   }
 };
 
-NS_IMPL_ISUPPORTS1(WaitForConnectionClosed, nsIObserver)
+NS_IMPL_ISUPPORTS(WaitForConnectionClosed, nsIObserver)

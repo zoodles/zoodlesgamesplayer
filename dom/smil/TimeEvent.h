@@ -19,7 +19,7 @@ class TimeEvent MOZ_FINAL : public Event,
 public:
   TimeEvent(EventTarget* aOwner,
             nsPresContext* aPresContext,
-            WidgetEvent* aEvent);
+            InternalSMILTimeEvent* aEvent);
 
   // nsISupports interface:
   NS_DECL_ISUPPORTS_INHERITED
@@ -31,10 +31,9 @@ public:
   // Forward to base class
   NS_FORWARD_TO_EVENT
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE
+  virtual JSObject* WrapObjectInternal(JSContext* aCx) MOZ_OVERRIDE
   {
-    return TimeEventBinding::Wrap(aCx, aScope, this);
+    return TimeEventBinding::Wrap(aCx, this);
   }
 
   int32_t Detail() const
@@ -54,6 +53,8 @@ public:
   }
 
 private:
+  ~TimeEvent() {}
+
   nsCOMPtr<nsIDOMWindow> mView;
   int32_t mDetail;
 };

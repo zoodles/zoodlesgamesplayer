@@ -15,7 +15,6 @@
 #include "base/basictypes.h"
 
 #include "jsapi.h"
-#include "js/OldDebugAPI.h"
 
 #include "xpcpublic.h"
 
@@ -33,7 +32,6 @@
 #include "nsIXPConnect.h"
 #include "nsIXPCScriptable.h"
 
-#include "nsCxPusher.h"
 #include "nsJSUtils.h"
 #include "nsJSPrincipals.h"
 #include "nsThreadUtils.h"
@@ -63,11 +61,13 @@ public:
     XPCShellDirProvider() { }
     ~XPCShellDirProvider() { }
 
-    bool SetGREDir(const char *dir);
-    void ClearGREDir() { mGREDir = nullptr; }
+    bool SetGREDirs(const char *dir);
+    void ClearGREDirs() { mGREDir = nullptr;
+                          mGREBinDir = nullptr; }
 
 private:
     nsCOMPtr<nsIFile> mGREDir;
+    nsCOMPtr<nsIFile> mGREBinDir;
 };
 
 inline XPCShellEnvironment*
@@ -165,13 +165,13 @@ Load(JSContext *cx,
         JS::CompileOptions options(cx);
         options.setUTF8(true)
                .setFileAndLine(filename.ptr(), 1);
-        JS::Rooted<JSScript*> script(cx, JS::Compile(cx, obj, options, file));
+        JS::Rooted<JSScript*> script(cx);
+        bool ok = JS::Compile(cx, obj, options, file, &script);
         fclose(file);
-        if (!script)
+        if (!ok)
             return false;
 
-        JS::Rooted<JS::Value> result(cx);
-        if (!JS_ExecuteScript(cx, obj, script, result.address())) {
+        if (!JS_ExecuteScript(cx, obj, script)) {
             return false;
         }
     }
@@ -335,9 +335,9 @@ XPCShellEnvironment::ProcessFile(JSContext *cx,
         JS::CompileOptions options(cx);
         options.setUTF8(true)
                .setFileAndLine(filename, 1);
-        JS::Rooted<JSScript*> script(cx, JS::Compile(cx, obj, options, file));
-        if (script)
-            (void)JS_ExecuteScript(cx, obj, script, result.address());
+        JS::Rooted<JSScript*> script(cx);
+        if (JS::Compile(cx, obj, options, file, &script))
+            (void)JS_ExecuteScript(cx, obj, script, &result);
 
         return;
     }
@@ -372,20 +372,19 @@ XPCShellEnvironment::ProcessFile(JSContext *cx,
         JS_ClearPendingException(cx);
         JS::CompileOptions options(cx);
         options.setFileAndLine("typein", startline);
-        JS::Rooted<JSScript*> script(cx,
-                                     JS_CompileScript(cx, obj, buffer, strlen(buffer), options));
-        if (script) {
+        JS::Rooted<JSScript*> script(cx);
+        if (JS_CompileScript(cx, obj, buffer, strlen(buffer), options, &script)) {
             JSErrorReporter older;
 
-            ok = JS_ExecuteScript(cx, obj, script, result.address());
+            ok = JS_ExecuteScript(cx, obj, script, &result);
             if (ok && result != JSVAL_VOID) {
                 /* Suppress error reports from JS::ToString(). */
-                older = JS_SetErrorReporter(cx, nullptr);
+                older = JS_SetErrorReporter(JS_GetRuntime(cx), nullptr);
                 str = JS::ToString(cx, result);
                 JSAutoByteString bytes;
                 if (str)
                     bytes.encodeLatin1(cx, str);
-                JS_SetErrorReporter(cx, older);
+                JS_SetErrorReporter(JS_GetRuntime(cx), older);
 
                 if (!!bytes)
                     fprintf(stdout, "%s\n", bytes.ptr());
@@ -398,24 +397,30 @@ XPCShellEnvironment::ProcessFile(JSContext *cx,
     fprintf(stdout, "\n");
 }
 
-NS_IMETHODIMP_(nsrefcnt)
+NS_IMETHODIMP_(MozExternalRefCountType)
 XPCShellDirProvider::AddRef()
 {
     return 2;
 }
 
-NS_IMETHODIMP_(nsrefcnt)
+NS_IMETHODIMP_(MozExternalRefCountType)
 XPCShellDirProvider::Release()
 {
     return 1;
 }
 
-NS_IMPL_QUERY_INTERFACE1(XPCShellDirProvider, nsIDirectoryServiceProvider)
+NS_IMPL_QUERY_INTERFACE(XPCShellDirProvider, nsIDirectoryServiceProvider)
 
 bool
-XPCShellDirProvider::SetGREDir(const char *dir)
+XPCShellDirProvider::SetGREDirs(const char *dir)
 {
     nsresult rv = XRE_GetFileFromPath(dir, getter_AddRefs(mGREDir));
+    if (NS_SUCCEEDED(rv)) {
+        mGREDir->Clone(getter_AddRefs(mGREBinDir));
+#ifdef XP_MACOSX
+        mGREBinDir->SetNativeLeafName(NS_LITERAL_CSTRING("MacOS"));
+#endif
+    }
     return NS_SUCCEEDED(rv);
 }
 
@@ -427,6 +432,10 @@ XPCShellDirProvider::GetFile(const char *prop,
     if (mGREDir && !strcmp(prop, NS_GRE_DIR)) {
         *persistent = true;
         NS_ADDREF(*result = mGREDir);
+        return NS_OK;
+    } else if (mGREBinDir && !strcmp(prop, NS_GRE_BIN_DIR)) {
+        *persistent = true;
+        NS_ADDREF(*result = mGREBinDir);
         return NS_OK;
     }
 
@@ -460,7 +469,7 @@ XPCShellEnvironment::~XPCShellEnvironment()
             JSAutoCompartment ac(cx, global);
             JS_SetAllNonReservedSlotsToUndefined(cx, global);
         }
-        mGlobalHolder.Release();
+        mGlobalHolder.reset();
 
         JSRuntime *rt = JS_GetRuntime(cx);
         JS_GC(rt);
@@ -489,10 +498,7 @@ XPCShellEnvironment::Init()
         return false;
     }
 
-    if (!mGlobalHolder.Hold(rt)) {
-        NS_ERROR("Can't protect global object!");
-        return false;
-    }
+    mGlobalHolder.init(rt);
 
     AutoSafeJSContext cx;
 
@@ -547,10 +553,11 @@ XPCShellEnvironment::Init()
 
     backstagePass->SetGlobalObject(globalObj);
 
+    JS::Rooted<Value> privateVal(cx, PrivateValue(this));
     if (!JS_DefineProperty(cx, globalObj, "__XPCShellEnvironment",
-                           PRIVATE_TO_JSVAL(this), JS_PropertyStub,
-                           JS_StrictPropertyStub,
-                           JSPROP_READONLY | JSPROP_PERMANENT) ||
+                           privateVal,
+                           JSPROP_READONLY | JSPROP_PERMANENT,
+                           JS_STUBGETTER, JS_STUBSETTER) ||
         !JS_DefineFunctions(cx, globalObj, gGlobalFunctions) ||
         !JS_DefineProfilingFunctions(cx, globalObj))
     {
@@ -581,9 +588,10 @@ XPCShellEnvironment::EvaluateString(const nsString& aString,
 
   JS::CompileOptions options(cx);
   options.setFileAndLine("typein", 0);
-  JS::Rooted<JSScript*> script(cx, JS_CompileUCScript(cx, global, aString.get(),
-                                                      aString.Length(), options));
-  if (!script) {
+  JS::Rooted<JSScript*> script(cx);
+  if (!JS_CompileUCScript(cx, global, aString.get(), aString.Length(), options,
+                          &script))
+  {
      return false;
   }
 
@@ -592,17 +600,17 @@ XPCShellEnvironment::EvaluateString(const nsString& aString,
   }
 
   JS::Rooted<JS::Value> result(cx);
-  bool ok = JS_ExecuteScript(cx, global, script, result.address());
+  bool ok = JS_ExecuteScript(cx, global, script, &result);
   if (ok && result != JSVAL_VOID) {
-      JSErrorReporter old = JS_SetErrorReporter(cx, nullptr);
+      JSErrorReporter old = JS_SetErrorReporter(JS_GetRuntime(cx), nullptr);
       JSString* str = JS::ToString(cx, result);
-      nsDependentJSString depStr;
+      nsAutoJSString autoStr;
       if (str)
-          depStr.init(cx, str);
-      JS_SetErrorReporter(cx, old);
+          autoStr.init(cx, str);
+      JS_SetErrorReporter(JS_GetRuntime(cx), old);
 
-      if (!depStr.IsEmpty() && aResult) {
-          aResult->Assign(depStr);
+      if (!autoStr.IsEmpty() && aResult) {
+          aResult->Assign(autoStr);
       }
   }
 

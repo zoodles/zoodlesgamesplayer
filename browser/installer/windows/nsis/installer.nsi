@@ -38,6 +38,7 @@ Var AddQuickLaunchSC
 Var AddDesktopSC
 Var InstallMaintenanceService
 Var PageName
+Var PreventRebootRequired
 
 ; By defining NO_STARTMENU_DIR an installer that doesn't provide an option for
 ; an application's Start Menu PROGRAMS directory and doesn't define the
@@ -102,13 +103,13 @@ VIAddVersionKey "OriginalFilename" "setup.exe"
 !ifdef MOZ_METRO
 !insertmacro RemoveDEHRegistrationIfMatching
 !endif
+!insertmacro RemovePrecompleteEntries
 !insertmacro SetAppLSPCategories
 !insertmacro SetBrandNameVars
 !insertmacro UpdateShortcutAppModelIDs
 !insertmacro UnloadUAC
 !insertmacro WriteRegStr2
 !insertmacro WriteRegDWORD2
-!insertmacro CheckIfRegistryKeyExists
 
 !include shared.nsh
 
@@ -124,7 +125,7 @@ VIAddVersionKey "OriginalFilename" "setup.exe"
 
 Name "${BrandFullName}"
 OutFile "setup.exe"
-!ifdef HAVE_64BIT_OS
+!ifdef HAVE_64BIT_BUILD
   InstallDir "$PROGRAMFILES64\${BrandFullName}\"
 !else
   InstallDir "$PROGRAMFILES32\${BrandFullName}\"
@@ -203,7 +204,41 @@ Section "-InstallStartCleanup"
   SetOutPath "$INSTDIR"
   ${StartInstallLog} "${BrandFullName}" "${AB_CD}" "${AppVersion}" "${GREVersion}"
 
-  ; Delete the app exe to prevent launching the app while we are installing.
+  StrCpy $PreventRebootRequired "false"
+  ${GetParameters} $R8
+  ${GetOptions} "$R8" "/INI=" $R7
+  ${Unless} ${Errors}
+    ; The configuration file must also exist
+    ${If} ${FileExists} "$R7"
+      ReadINIStr $R9 $R7 "Install" "RemoveDistributionDir"
+      ReadINIStr $R8 $R7 "Install" "PreventRebootRequired"
+      ${If} $R8 == "true"
+        StrCpy $PreventRebootRequired "true"
+      ${EndIf}
+    ${EndIf}
+  ${EndUnless}
+
+  ; Remove directories and files we always control before parsing the uninstall
+  ; log so empty directories can be removed.
+  ${If} ${FileExists} "$INSTDIR\updates"
+    RmDir /r "$INSTDIR\updates"
+  ${EndIf}
+  ${If} ${FileExists} "$INSTDIR\updated"
+    RmDir /r "$INSTDIR\updated"
+  ${EndIf}
+  ${If} ${FileExists} "$INSTDIR\defaults\shortcuts"
+    RmDir /r "$INSTDIR\defaults\shortcuts"
+  ${EndIf}
+  ; Only remove the distribution directory if it exists and if the installer
+  ; isn't launched with an ini file that has RemoveDistributionDir=false in the
+  ; install section.
+  ${If} ${FileExists} "$INSTDIR\distribution"
+  ${AndIf} $R9 != "false"
+    RmDir /r "$INSTDIR\distribution"
+  ${EndIf}
+
+  ; Delete the app exe if present to prevent launching the app while we are
+  ; installing.
   ClearErrors
   ${DeleteFile} "$INSTDIR\${FileMainEXE}"
   ${If} ${Errors}
@@ -223,6 +258,31 @@ Section "-InstallStartCleanup"
 
   ${RemoveDeprecatedFiles}
 
+  StrCpy $R2 "false"
+  StrCpy $R3 "false"
+  ${RemovePrecompleteEntries} "$R2" "$R3"
+
+  ${If} ${FileExists} "$INSTDIR\defaults\pref\channel-prefs.js"
+    Delete "$INSTDIR\defaults\pref\channel-prefs.js"
+  ${EndIf}
+  ${If} ${FileExists} "$INSTDIR\defaults\pref"
+    RmDir "$INSTDIR\defaults\pref"
+  ${EndIf}
+  ${If} ${FileExists} "$INSTDIR\defaults"
+    RmDir "$INSTDIR\defaults"
+  ${EndIf}
+  ${If} ${FileExists} "$INSTDIR\uninstall"
+    ; Remove the uninstall directory that we control
+    RmDir /r "$INSTDIR\uninstall"
+  ${EndIf}
+  ${If} ${FileExists} "$INSTDIR\update-settings.ini"
+    Delete "$INSTDIR\update-settings.ini"
+  ${EndIf}
+
+  ; Explictly remove empty webapprt dir in case it exists (bug 757978).
+  RmDir "$INSTDIR\webapprt\components"
+  RmDir "$INSTDIR\webapprt"
+
   ${InstallStartCleanupCommon}
 SectionEnd
 
@@ -232,8 +292,6 @@ Section "-Application" APP_IDX
   SetDetailsPrint both
   DetailPrint $(STATUS_INSTALL_APP)
   SetDetailsPrint none
-
-  RmDir /r /REBOOTOK "$INSTDIR\${TO_BE_DELETED}"
 
   ${LogHeader} "Installing Main Files"
   ${CopyFilesFromDir} "$EXEDIR\core" "$INSTDIR" \
@@ -254,18 +312,6 @@ Section "-Application" APP_IDX
     ${LogUninstall} "DLLReg: \AccessibleMarshal.dll"
     ${LogMsg} "Registered: $INSTDIR\AccessibleMarshal.dll"
   ${EndIf}
-
-  ; Write extra files created by the application to the uninstall log so they
-  ; will be removed when the application is uninstalled. To remove an empty
-  ; directory write a bogus filename to the deepest directory and all empty
-  ; parent directories will be removed.
-  ${LogUninstall} "File: \components\compreg.dat"
-  ${LogUninstall} "File: \components\xpti.dat"
-  ${LogUninstall} "File: \active-update.xml"
-  ${LogUninstall} "File: \install.log"
-  ${LogUninstall} "File: \install_status.log"
-  ${LogUninstall} "File: \install_wizard.log"
-  ${LogUninstall} "File: \updates.xml"
 
   ClearErrors
 
@@ -578,38 +624,51 @@ Section "-InstallEndCleanup"
   ${GetShortcutsLogPath} $0
   WriteIniStr "$0" "TASKBAR" "Migrated" "true"
 
+  ; Add the Firewall entries during install
+  Call AddFirewallEntries
+
   ; Refresh desktop icons
   System::Call "shell32::SHChangeNotify(i ${SHCNE_ASSOCCHANGED}, i ${SHCNF_DWORDFLUSH}, i 0, i 0)"
 
   ${InstallEndCleanupCommon}
 
-  ${If} ${RebootFlag}
-    ; When a reboot is required give SHChangeNotify time to finish the
-    ; refreshing the icons so the OS doesn't display the icons from helper.exe
-    Sleep 10000
-    ${LogHeader} "Reboot Required To Finish Installation"
-    ; ${FileMainEXE}.moz-upgrade should never exist but just in case...
-    ${Unless} ${FileExists} "$INSTDIR\${FileMainEXE}.moz-upgrade"
-      Rename "$INSTDIR\${FileMainEXE}" "$INSTDIR\${FileMainEXE}.moz-upgrade"
-    ${EndUnless}
+  ${If} $PreventRebootRequired == "true"
+    SetRebootFlag false
+  ${EndIf}
 
-    ${If} ${FileExists} "$INSTDIR\${FileMainEXE}"
-      ClearErrors
-      Rename "$INSTDIR\${FileMainEXE}" "$INSTDIR\${FileMainEXE}.moz-delete"
-      ${Unless} ${Errors}
-        Delete /REBOOTOK "$INSTDIR\${FileMainEXE}.moz-delete"
+  ${If} ${RebootFlag}
+    ; Admin is required to delete files on reboot so only add the moz-delete if
+    ; the user is an admin. After calling UAC::IsAdmin $0 will equal 1 if the
+    ; user is an admin.
+    UAC::IsAdmin
+    ${If} "$0" == "1"
+      ; When a reboot is required give SHChangeNotify time to finish the
+      ; refreshing the icons so the OS doesn't display the icons from helper.exe
+      Sleep 10000
+      ${LogHeader} "Reboot Required To Finish Installation"
+      ; ${FileMainEXE}.moz-upgrade should never exist but just in case...
+      ${Unless} ${FileExists} "$INSTDIR\${FileMainEXE}.moz-upgrade"
+        Rename "$INSTDIR\${FileMainEXE}" "$INSTDIR\${FileMainEXE}.moz-upgrade"
+      ${EndUnless}
+
+      ${If} ${FileExists} "$INSTDIR\${FileMainEXE}"
+        ClearErrors
+        Rename "$INSTDIR\${FileMainEXE}" "$INSTDIR\${FileMainEXE}.moz-delete"
+        ${Unless} ${Errors}
+          Delete /REBOOTOK "$INSTDIR\${FileMainEXE}.moz-delete"
+        ${EndUnless}
+      ${EndIf}
+
+      ${Unless} ${FileExists} "$INSTDIR\${FileMainEXE}"
+        CopyFiles /SILENT "$INSTDIR\uninstall\helper.exe" "$INSTDIR"
+        FileOpen $0 "$INSTDIR\${FileMainEXE}" w
+        FileWrite $0 "Will be deleted on restart"
+        Rename /REBOOTOK "$INSTDIR\${FileMainEXE}.moz-upgrade" "$INSTDIR\${FileMainEXE}"
+        FileClose $0
+        Delete "$INSTDIR\${FileMainEXE}"
+        Rename "$INSTDIR\helper.exe" "$INSTDIR\${FileMainEXE}"
       ${EndUnless}
     ${EndIf}
-
-    ${Unless} ${FileExists} "$INSTDIR\${FileMainEXE}"
-      CopyFiles /SILENT "$INSTDIR\uninstall\helper.exe" "$INSTDIR"
-      FileOpen $0 "$INSTDIR\${FileMainEXE}" w
-      FileWrite $0 "Will be deleted on restart"
-      Rename /REBOOTOK "$INSTDIR\${FileMainEXE}.moz-upgrade" "$INSTDIR\${FileMainEXE}"
-      FileClose $0
-      Delete "$INSTDIR\${FileMainEXE}"
-      Rename "$INSTDIR\helper.exe" "$INSTDIR\${FileMainEXE}"
-    ${EndUnless}
   ${EndIf}
 SectionEnd
 
@@ -746,7 +805,9 @@ Function CheckExistingInstall
 FunctionEnd
 
 Function LaunchApp
+!ifndef DEV_EDITION
   ${ManualCloseAppPrompt} "${WindowClass}" "$(WARN_MANUALLY_CLOSE_APP_LAUNCH)"
+!endif
 
   ClearErrors
   ${GetParameters} $0

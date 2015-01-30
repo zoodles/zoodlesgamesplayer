@@ -34,7 +34,7 @@ namespace mozilla {
 
 static nsTArray<nsCString> *gFeaturesAlreadyReported = nullptr;
 
-class ObserverToDestroyFeaturesAlreadyReported : public nsIObserver
+class ObserverToDestroyFeaturesAlreadyReported MOZ_FINAL : public nsIObserver
 {
 
 public:
@@ -42,11 +42,12 @@ public:
   NS_DECL_NSIOBSERVER
 
   ObserverToDestroyFeaturesAlreadyReported() {}
+private:
   virtual ~ObserverToDestroyFeaturesAlreadyReported() {}
 };
 
-NS_IMPL_ISUPPORTS1(ObserverToDestroyFeaturesAlreadyReported,
-                   nsIObserver)
+NS_IMPL_ISUPPORTS(ObserverToDestroyFeaturesAlreadyReported,
+                  nsIObserver)
 
 NS_IMETHODIMP
 ObserverToDestroyFeaturesAlreadyReported::Observe(nsISupports* aSubject,
@@ -106,7 +107,7 @@ void
 ScopedGfxFeatureReporter::WriteAppNote(char statusChar)
 {
   nsCOMPtr<nsIRunnable> r = new AppNoteWritingRunnable(statusChar, mFeature);
-  NS_DispatchToMainThread(r.get(), NS_DISPATCH_NORMAL);
+  NS_DispatchToMainThread(r);
 }
 
 } // end namespace mozilla

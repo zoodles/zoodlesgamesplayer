@@ -98,12 +98,17 @@ checkAndLogStatementPerformance(sqlite3_stmt *aStatement)
   nsAutoCString message;
   message.AppendInt(count);
   if (count == 1)
-    message.Append(" sort operation has ");
+    message.AppendLiteral(" sort operation has ");
   else
-    message.Append(" sort operations have ");
-  message.Append("occurred for the SQL statement '");
+    message.AppendLiteral(" sort operations have ");
+  message.AppendLiteral("occurred for the SQL statement '");
+#ifdef MOZ_STORAGE_SORTWARNING_SQL_DUMP
+  message.AppendLiteral("SQL command: ");
+  message.Append(sql);
+#else
   nsPrintfCString address("0x%p", aStatement);
   message.Append(address);
+#endif
   message.Append("'.  See https://developer.mozilla.org/En/Storage/Warnings "
                  "details.");
   NS_WARNING(message.get());
@@ -121,8 +126,8 @@ convertJSValToVariant(
     return new FloatVariant(aValue.toDouble());
 
   if (aValue.isString()) {
-    nsDependentJSString value;
-    if (!value.init(aCtx, aValue))
+    nsAutoJSString value;
+    if (!value.init(aCtx, aValue.toString()))
         return nullptr;
     return new TextVariant(value);
   }
@@ -134,12 +139,12 @@ convertJSValToVariant(
     return new NullVariant();
 
   if (aValue.isObject()) {
-    JSObject* obj = &aValue.toObject();
+    JS::Rooted<JSObject*> obj(aCtx, &aValue.toObject());
     // We only support Date instances, all others fail.
-    if (!::js_DateIsValid(obj))
+    if (!js::DateIsValid(aCtx, obj))
       return nullptr;
 
-    double msecd = ::js_DateGetMsecSinceEpoch(obj);
+    double msecd = js::DateGetMsecSinceEpoch(aCtx, obj);
     msecd *= 1000.0;
     int64_t msec = msecd;
 
@@ -153,7 +158,7 @@ namespace {
 class CallbackEvent : public nsRunnable
 {
 public:
-  CallbackEvent(mozIStorageCompletionCallback *aCallback)
+  explicit CallbackEvent(mozIStorageCompletionCallback *aCallback)
   : mCallback(aCallback)
   {
   }

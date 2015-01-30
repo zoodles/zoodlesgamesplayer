@@ -6,7 +6,7 @@
 #include "nsFontFace.h"
 #include "nsFontFaceLoader.h"
 #include "nsIFrame.h"
-#include "gfxFont.h"
+#include "gfxTextRun.h"
 #include "mozilla/gfx/2D.h"
 
 nsFontFaceList::nsFontFaceList()
@@ -20,7 +20,7 @@ nsFontFaceList::~nsFontFaceList()
 ////////////////////////////////////////////////////////////////////////
 // nsISupports
 
-NS_IMPL_ISUPPORTS1(nsFontFaceList, nsIDOMFontFaceList)
+NS_IMPL_ISUPPORTS(nsFontFaceList, nsIDOMFontFaceList)
 
 ////////////////////////////////////////////////////////////////////////
 // nsIDOMFontFaceList

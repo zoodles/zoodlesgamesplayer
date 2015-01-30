@@ -12,7 +12,7 @@
 #include "mozilla/ipc/PTestShellCommandParent.h"
 
 #include "js/TypeDecls.h"
-#include "nsAutoJSValHolder.h"
+#include "js/RootingAPI.h"
 #include "nsString.h"
 
 namespace mozilla {
@@ -24,11 +24,13 @@ class TestShellCommandParent;
 class TestShellParent : public PTestShellParent
 {
 public:
+  virtual void ActorDestroy(ActorDestroyReason aWhy) MOZ_OVERRIDE;
+
   PTestShellCommandParent*
-  AllocPTestShellCommandParent(const nsString& aCommand);
+  AllocPTestShellCommandParent(const nsString& aCommand) MOZ_OVERRIDE;
 
   bool
-  DeallocPTestShellCommandParent(PTestShellCommandParent* aActor);
+  DeallocPTestShellCommandParent(PTestShellCommandParent* aActor) MOZ_OVERRIDE;
 
   bool
   CommandDone(TestShellCommandParent* aActor, const nsString& aResponse);
@@ -38,7 +40,7 @@ public:
 class TestShellCommandParent : public PTestShellCommandParent
 {
 public:
-  TestShellCommandParent() : mCx(nullptr) { }
+  TestShellCommandParent() {}
 
   bool SetCallback(JSContext* aCx, JS::Value aCallback);
 
@@ -56,8 +58,7 @@ protected:
   }
 
 private:
-  JSContext* mCx;
-  nsAutoJSValHolder mCallback;
+  JS::PersistentRooted<JS::Value> mCallback;
 };
 
 

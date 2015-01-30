@@ -77,7 +77,7 @@ public abstract class ServerSyncStage extends AbstractSessionManagingSyncStage i
     // We can be disabled by the server's meta/global record, or malformed in the server's meta/global record,
     // or by the user manually in Sync Settings.
     // We catch the subclasses of MetaGlobalException to trigger various resets and wipes in execute().
-    boolean enabledInMetaGlobal = session.engineIsEnabled(this.getEngineName(), engineSettings);
+    boolean enabledInMetaGlobal = session.isEngineRemotelyEnabled(this.getEngineName(), engineSettings);
 
     // Check for manual changes to engines by the user.
     checkAndUpdateUserSelectedEngines(enabledInMetaGlobal);
@@ -89,10 +89,7 @@ public abstract class ServerSyncStage extends AbstractSessionManagingSyncStage i
     }
 
     // We can also be disabled just for this sync.
-    if (session.config.stagesToSync == null) {
-      return true;
-    }
-    boolean enabledThisSync = session.config.stagesToSync.contains(this.getEngineName()); // For ServerSyncStage, stage name == engine name.
+    boolean enabledThisSync = session.isEngineLocallyEnabled(this.getEngineName()); // For ServerSyncStage, stage name == engine name.
     if (!enabledThisSync) {
       Logger.debug(LOG_TAG, "Stage " + this.getEngineName() + " disabled just for this sync.");
     }
@@ -128,14 +125,14 @@ public abstract class ServerSyncStage extends AbstractSessionManagingSyncStage i
     Integer version = getStorageVersion();
     if (version == null) {
       Logger.warn(LOG_TAG, "null storage version for " + this + "; using version 0.");
-      version = Integer.valueOf(0);
+      version = 0;
     }
 
     SynchronizerConfiguration config = this.getConfig();
     if (config == null) {
-      return new EngineSettings(null, version.intValue());
+      return new EngineSettings(null, version);
     }
-    return new EngineSettings(config.syncID, version.intValue());
+    return new EngineSettings(config.syncID, version);
   }
 
   protected abstract String getCollection();
@@ -148,7 +145,8 @@ public abstract class ServerSyncStage extends AbstractSessionManagingSyncStage i
     String collection = getCollection();
     return new Server11Repository(collection,
                                   session.config.storageURL(),
-                                  session.getAuthHeaderProvider());
+                                  session.getAuthHeaderProvider(),
+                                  session.config.infoCollections);
   }
 
   /**
@@ -551,13 +549,7 @@ public abstract class ServerSyncStage extends AbstractSessionManagingSyncStage i
     } catch (URISyntaxException e) {
       session.abort(e, "Invalid URI syntax for server repository.");
       return;
-    } catch (NonObjectJSONException e) {
-      session.abort(e, "Invalid persisted JSON for config.");
-      return;
-    } catch (IOException e) {
-      session.abort(e, "Invalid persisted JSON for config.");
-      return;
-    } catch (ParseException e) {
+    } catch (NonObjectJSONException | ParseException | IOException e) {
       session.abort(e, "Invalid persisted JSON for config.");
       return;
     }

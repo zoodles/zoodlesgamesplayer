@@ -17,6 +17,7 @@
 
 #include "mozilla/Services.h"
 
+#undef VOLUME_MANAGER_LOG_TAG
 #define VOLUME_MANAGER_LOG_TAG  "VolumeServiceTest"
 #include "VolumeManagerLog.h"
 
@@ -89,7 +90,7 @@ public:
 };
 static nsCOMPtr<VolumeTestObserver>  sTestObserver;
 
-NS_IMPL_ISUPPORTS1(VolumeTestObserver, nsIObserver)
+NS_IMPL_ISUPPORTS(VolumeTestObserver, nsIObserver)
 
 NS_IMETHODIMP
 VolumeTestObserver::Observe(nsISupports* aSubject,

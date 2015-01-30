@@ -51,16 +51,20 @@ function checkPage() {
   // Now press the "Try Again" button
   ok(gBrowser.contentDocument.getElementById("errorTryAgain"),
     "The error page has got a #errorTryAgain element");
+
+  // Re-enable the proxy so example.com is resolved to localhost, rather than
+  // the actual example.com.
+  Services.prefs.setIntPref("network.proxy.type", proxyPrefValue);
+
+  Services.obs.addObserver(function observer(aSubject, aTopic) {
+    ok(!Services.io.offline, "After clicking the Try Again button, we're back " +
+                             "online.");
+    finish();
+  }, "network:offline-status-changed", false);
   gBrowser.contentDocument.getElementById("errorTryAgain").click();
-
-  ok(!Services.io.offline, "After clicking the Try Again button, we're back " +
-                           "online.");
-
-  finish();
 }
 
 registerCleanupFunction(function() {
-  Services.prefs.setIntPref("network.proxy.type", proxyPrefValue);
   Services.prefs.setBoolPref("browser.cache.disk.enable", true);
   Services.prefs.setBoolPref("browser.cache.memory.enable", true);
   Services.io.offline = false;

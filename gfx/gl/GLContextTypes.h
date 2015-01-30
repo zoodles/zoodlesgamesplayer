@@ -7,33 +7,24 @@
 #define GLCONTEXT_TYPES_H_
 
 #include "GLTypes.h"
-#include "mozilla/TypedEnum.h"
 
 namespace mozilla {
 namespace gl {
 
 class GLContext;
 
-typedef uintptr_t SharedTextureHandle;
-
-MOZ_BEGIN_ENUM_CLASS(SharedTextureShareType)
-    SameProcess = 0,
-    CrossProcess
-MOZ_END_ENUM_CLASS(SharedTextureShareType)
-
-MOZ_BEGIN_ENUM_CLASS(SharedTextureBufferType)
-    TextureID,
-    SurfaceTexture,
-    IOSurface
-MOZ_END_ENUM_CLASS(SharedTextureBufferType)
-
-MOZ_BEGIN_ENUM_CLASS(GLContextType)
+enum class GLContextType {
     Unknown,
     WGL,
     CGL,
     GLX,
     EGL
-MOZ_END_ENUM_CLASS(GLContextType)
+};
+
+enum class OriginPos : uint8_t {
+  TopLeft,
+  BottomLeft
+};
 
 struct GLFormats
 {
@@ -52,7 +43,6 @@ struct GLFormats
     GLsizei samples;
 };
 
-
 struct PixelBufferFormat
 {
     // Constructs a zeroed object:
@@ -65,7 +55,6 @@ struct PixelBufferFormat
 
     int ColorBits() const { return red + green + blue; }
 };
-
 
 } /* namespace gl */
 } /* namespace mozilla */

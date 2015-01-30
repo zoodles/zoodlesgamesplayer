@@ -40,7 +40,7 @@ class EventTarget;
  * http://dvcs.w3.org/hg/domcore/raw-file/tip/Overview.html
  */
 
-[scriptable, builtinclass, uuid(02d54f52-a1f5-4ad2-b560-36f14012935e)]
+[builtinclass, uuid(02d54f52-a1f5-4ad2-b560-36f14012935e)]
 interface nsIDOMEvent : nsISupports
 {
   // PhaseType
@@ -262,12 +262,23 @@ NS_NewDOMClipboardEvent(nsIDOMEvent** aInstancePtrResult,
                         mozilla::dom::EventTarget* aOwner,
                         nsPresContext* aPresContext,
                         mozilla::InternalClipboardEvent* aEvent);
-
+nsresult
+NS_NewDOMInputEvent(nsIDOMEvent** aInstancePtrResult,
+                    mozilla::dom::EventTarget* aOwner,
+                    nsPresContext* aPresContext,
+                    mozilla::InternalEditorInputEvent* aEvent);
 nsresult
 NS_NewDOMKeyboardEvent(nsIDOMEvent** aInstancePtrResult,
                        mozilla::dom::EventTarget* aOwner,
                        nsPresContext* aPresContext,
                        mozilla::WidgetKeyboardEvent* aEvent);
+
+nsresult
+NS_NewDOMBeforeAfterKeyboardEvent(nsIDOMEvent** aInstancePtrResult,
+                                  mozilla::dom::EventTarget* aOwner,
+                                  nsPresContext* aPresContext,
+                                  mozilla::InternalBeforeAfterKeyboardEvent* aEvent);
+
 nsresult
 NS_NewDOMCompositionEvent(nsIDOMEvent** aInstancePtrResult,
                           mozilla::dom::EventTarget* aOwner,
@@ -284,11 +295,6 @@ NS_NewDOMDeviceMotionEvent(nsIDOMEvent** aResult,
                            nsPresContext* aPresContext,
                            mozilla::WidgetEvent* aEvent);
 nsresult
-NS_NewDOMTextEvent(nsIDOMEvent** aResult,
-                   mozilla::dom::EventTarget* aOwner,
-                   nsPresContext* aPresContext,
-                   mozilla::WidgetTextEvent* aEvent);
-nsresult
 NS_NewDOMBeforeUnloadEvent(nsIDOMEvent** aResult,
                            mozilla::dom::EventTarget* aOwner,
                            nsPresContext* aPresContext,
@@ -302,12 +308,12 @@ nsresult
 NS_NewDOMSVGZoomEvent(nsIDOMEvent** aResult,
                       mozilla::dom::EventTarget* aOwner,
                       nsPresContext* aPresContext,
-                      mozilla::WidgetGUIEvent* aEvent);
+                      mozilla::InternalSVGZoomEvent* aEvent);
 nsresult
 NS_NewDOMTimeEvent(nsIDOMEvent** aResult,
                    mozilla::dom::EventTarget* aOwner,
                    nsPresContext* aPresContext,
-                   mozilla::WidgetEvent* aEvent);
+                   mozilla::InternalSMILTimeEvent* aEvent);
 nsresult
 NS_NewDOMXULCommandEvent(nsIDOMEvent** aResult,
                          mozilla::dom::EventTarget* aOwner,
@@ -323,11 +329,6 @@ NS_NewDOMMessageEvent(nsIDOMEvent** aInstancePtrResult,
                       mozilla::dom::EventTarget* aOwner,
                       nsPresContext* aPresContext,
                       mozilla::WidgetEvent* aEvent);
-nsresult
-NS_NewDOMProgressEvent(nsIDOMEvent** aInstancePtrResult,
-                       mozilla::dom::EventTarget* aOwner,
-                       nsPresContext* aPresContext,
-                       mozilla::WidgetEvent* aEvent);
 // This empties aInvalidateRequests.
 nsresult
 NS_NewDOMNotifyPaintEvent(nsIDOMEvent** aResult,
@@ -336,15 +337,6 @@ NS_NewDOMNotifyPaintEvent(nsIDOMEvent** aResult,
                           mozilla::WidgetEvent* aEvent,
                           uint32_t aEventType = 0,
                           nsInvalidateRequestList* aInvalidateRequests = nullptr);
-nsresult
-NS_NewDOMAudioAvailableEvent(nsIDOMEvent** aResult,
-                             mozilla::dom::EventTarget* aOwner,
-                             nsPresContext* aPresContext,
-                             mozilla::WidgetEvent* aEvent,
-                             uint32_t aEventType = 0,
-                             float* aFrameBuffer = nullptr,
-                             uint32_t aFrameBufferLength = 0,
-                             float aTime = 0);
 nsresult
 NS_NewDOMSimpleGestureEvent(nsIDOMEvent** aInstancePtrResult,
                             mozilla::dom::EventTarget* aOwner,
@@ -376,13 +368,8 @@ NS_NewDOMTouchEvent(nsIDOMEvent** aInstancePtrResult,
                     nsPresContext* aPresContext,
                     mozilla::WidgetTouchEvent* aEvent);
 nsresult
-NS_NewDOMMozSettingsEvent(nsIDOMEvent** aInstancePtrResult,
-                          mozilla::dom::EventTarget* aOwner,
-                          nsPresContext* aPresContext,
-                          mozilla::WidgetEvent* aEvent);
-nsresult
-NS_NewDOMMozApplicationEvent(nsIDOMEvent** aInstancePtrResult,
-                             mozilla::dom::EventTarget* aOwner,
-                             nsPresContext* aPresContext,
-                             mozilla::WidgetEvent* aEvent);
+NS_NewDOMCustomEvent(nsIDOMEvent** aInstancePtrResult,
+                     mozilla::dom::EventTarget* aOwner,
+                     nsPresContext* aPresContext,
+                     mozilla::WidgetEvent* aEvent);
 %}

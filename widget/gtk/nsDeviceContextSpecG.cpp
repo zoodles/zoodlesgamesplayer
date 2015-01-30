@@ -3,9 +3,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifdef MOZ_LOGGING
-#define FORCE_PR_LOG 1 /* Allow logging in the release build */
-#endif /* MOZ_LOGGING */
 #include "prlog.h"
 
 #include "plstr.h"
@@ -104,17 +101,14 @@ nsDeviceContextSpecGTK::~nsDeviceContextSpecGTK()
   }
 }
 
-NS_IMPL_ISUPPORTS1(nsDeviceContextSpecGTK,
-                   nsIDeviceContextSpec)
+NS_IMPL_ISUPPORTS(nsDeviceContextSpecGTK,
+                  nsIDeviceContextSpec)
 
 #include "gfxPDFSurface.h"
 #include "gfxPSSurface.h"
 NS_IMETHODIMP nsDeviceContextSpecGTK::GetSurfaceForPrinter(gfxASurface **aSurface)
 {
   *aSurface = nullptr;
-
-  const char *path;
-  GetPath(&path);
 
   double width, height;
   mPrintSettings->GetEffectivePageSize(&width, &height);
@@ -123,7 +117,7 @@ NS_IMETHODIMP nsDeviceContextSpecGTK::GetSurfaceForPrinter(gfxASurface **aSurfac
   width  /= TWIPS_PER_POINT_FLOAT;
   height /= TWIPS_PER_POINT_FLOAT;
 
-  DO_PR_DEBUG_LOG(("\"%s\", %f, %f\n", path, width, height));
+  DO_PR_DEBUG_LOG(("\"%s\", %f, %f\n", mPath, width, height));
   nsresult rv;
 
   // Spool file. Use Glib's temporary file function since we're
@@ -259,12 +253,6 @@ NS_IMETHODIMP nsDeviceContextSpecGTK::Init(nsIWidget *aWidget,
   gtk_page_setup_set_paper_size_and_default_margins(mGtkPageSetup, properPaperSize);
   gtk_paper_size_free(standardGtkPaperSize);
 
-  return NS_OK;
-}
-
-NS_IMETHODIMP nsDeviceContextSpecGTK::GetPath(const char **aPath)      
-{
-  *aPath = mPath;
   return NS_OK;
 }
 
@@ -412,7 +400,7 @@ nsPrinterEnumeratorGTK::nsPrinterEnumeratorGTK()
 {
 }
 
-NS_IMPL_ISUPPORTS1(nsPrinterEnumeratorGTK, nsIPrinterEnumerator)
+NS_IMPL_ISUPPORTS(nsPrinterEnumeratorGTK, nsIPrinterEnumerator)
 
 NS_IMETHODIMP nsPrinterEnumeratorGTK::GetPrinterNameList(nsIStringEnumerator **aPrinterNameList)
 {

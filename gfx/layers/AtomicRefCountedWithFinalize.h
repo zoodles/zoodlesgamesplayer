@@ -7,7 +7,10 @@
 #define MOZILLA_ATOMICREFCOUNTEDWITHFINALIZE_H_
 
 #include "mozilla/RefPtr.h"
-#include "mozilla/NullPtr.h"
+#include "mozilla/Likely.h"
+#include "MainThreadUtils.h"
+#include "base/message_loop.h"
+#include "base/task.h"
 
 namespace mozilla {
 
@@ -18,9 +21,20 @@ class AtomicRefCountedWithFinalize
     AtomicRefCountedWithFinalize()
       : mRecycleCallback(nullptr)
       , mRefCount(0)
+      , mMessageLoopToPostDestructionTo(nullptr)
     {}
 
     ~AtomicRefCountedWithFinalize() {}
+
+    void SetMessageLoopToPostDestructionTo(MessageLoop* l) {
+      MOZ_ASSERT(NS_IsMainThread());
+      mMessageLoopToPostDestructionTo = l;
+    }
+
+    static void DestroyToBeCalledOnMainThread(T* ptr) {
+      MOZ_ASSERT(NS_IsMainThread());
+      delete ptr;
+    }
 
   public:
     void AddRef() {
@@ -30,6 +44,9 @@ class AtomicRefCountedWithFinalize
 
     void Release() {
       MOZ_ASSERT(mRefCount > 0);
+      // Read mRecycleCallback early so that it does not get set to
+      // deleted memory, if the object is goes away.
+      RecycleCallback recycleCallback = mRecycleCallback;
       int currCount = --mRefCount;
       if (0 == currCount) {
         // Recycle listeners must call ClearRecycleCallback
@@ -40,10 +57,20 @@ class AtomicRefCountedWithFinalize
 #endif
         T* derived = static_cast<T*>(this);
         derived->Finalize();
-        delete derived;
-      } else if (1 == currCount && mRecycleCallback) {
+        if (MOZ_LIKELY(!mMessageLoopToPostDestructionTo)) {
+          delete derived;
+        } else {
+          if (MOZ_LIKELY(NS_IsMainThread())) {
+            delete derived;
+          } else {
+            mMessageLoopToPostDestructionTo->PostTask(
+              FROM_HERE,
+              NewRunnableFunction(&DestroyToBeCalledOnMainThread, derived));
+          }
+        }
+      } else if (1 == currCount && recycleCallback) {
         T* derived = static_cast<T*>(this);
-        mRecycleCallback(derived, mClosure);
+        recycleCallback(derived, mClosure);
       }
     }
 
@@ -59,10 +86,16 @@ class AtomicRefCountedWithFinalize
     }
     void ClearRecycleCallback() { SetRecycleCallback(nullptr, nullptr); }
 
+    bool HasRecycleCallback() const
+    {
+      return !!mRecycleCallback;
+    }
+
 private:
     RecycleCallback mRecycleCallback;
     void *mClosure;
     Atomic<int> mRefCount;
+    MessageLoop *mMessageLoopToPostDestructionTo;
 };
 
 }

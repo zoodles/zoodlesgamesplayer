@@ -1,4 +1,4 @@
-# -*- Mode: javascript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
+# -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -39,7 +39,6 @@ let CustomizationHandler = {
     UpdateUrlbarSearchSplitterState();
 
     CombinedStopReload.uninit();
-    CombinedBackForward.uninit();
     PlacesToolbarHelper.customizeStart();
     DownloadsButton.customizeStart();
 
@@ -87,7 +86,6 @@ let CustomizationHandler = {
     // The url bar splitter state is dependent on whether stop/reload
     // and the location bar are combined, so we need this ordering
     CombinedStopReload.init();
-    CombinedBackForward.init();
     UpdateUrlbarSearchSplitterState();
 
     // Update the urlbar

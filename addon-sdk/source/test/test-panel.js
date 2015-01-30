@@ -12,19 +12,21 @@ module.metadata = {
 const { Cc, Ci } = require("chrome");
 const { Loader } = require('sdk/test/loader');
 const { LoaderWithHookedConsole } = require("sdk/test/loader");
-const timer = require("sdk/timers");
+const { setTimeout } = require("sdk/timers");
 const self = require('sdk/self');
 const { open, close, focus, ready } = require('sdk/window/helpers');
 const { isPrivate } = require('sdk/private-browsing');
-const { isWindowPBSupported, isGlobalPBSupported } = require('sdk/private-browsing/utils');
+const { isWindowPBSupported } = require('sdk/private-browsing/utils');
 const { defer, all } = require('sdk/core/promise');
 const { getMostRecentBrowserWindow } = require('sdk/window/utils');
 const { getWindow } = require('sdk/panel/window');
-const { pb } = require('./private-browsing/helper');
 const { URL } = require('sdk/url');
+const { wait } = require('./event/helpers');
+
 const fixtures = require('./fixtures')
 
 const SVG_URL = fixtures.url('mofo_logo.SVG');
+
 const Isolate = fn => '(' + fn + ')()';
 
 function ignorePassingDOMNodeWarning(type, message) {
@@ -279,17 +281,28 @@ exports["test Hide Before Show"] = function(assert, done) {
   const { Panel } = require('sdk/panel');
 
   let showCalled = false;
-  let panel = Panel({
+  let hideCalled = false;
+  let panel1 = Panel({
     onShow: function () {
       showCalled = true;
     },
     onHide: function () {
-      assert.ok(!showCalled, 'must not emit show if was hidden before');
-      done();
+      hideCalled = true;
     }
   });
-  panel.show();
-  panel.hide();
+  panel1.show();
+  panel1.hide();
+
+  let panel2 = Panel({
+    onShow: function () {
+      assert.ok(!showCalled, 'should not emit show');
+      assert.ok(!hideCalled, 'should not emit hide');
+      panel1.destroy();
+      panel2.destroy();
+      done();
+    },
+  });
+  panel2.show();
 };
 
 exports["test Several Show Hides"] = function(assert, done) {
@@ -542,7 +555,7 @@ function makeEventOrderTest(options) {
       panel.on(event, function() {
         assert.equal(event, expectedEvents.shift());
         if (cb)
-          timer.setTimeout(cb, 1);
+          setTimeout(cb, 1);
       });
       return {then: expect};
     }
@@ -662,7 +675,7 @@ exports["test console.log in Panel"] = function(assert, done) {
   }
 };
 
-if (isWindowPBSupported) {
+/*if (isWindowPBSupported) {
   exports.testPanelDoesNotShowInPrivateWindowNoAnchor = function(assert, done) {
     let { loader } = LoaderWithHookedConsole(module, ignorePassingDOMNodeWarning);
     let { Panel } = loader.require("sdk/panel");
@@ -770,7 +783,7 @@ if (isWindowPBSupported) {
       then(testShowPanel.bind(null, assert, panel)).
       then(done, assert.fail.bind(assert));
   }
-}
+}*/
 
 function testShowPanel(assert, panel) {
   let { promise, resolve } = defer();
@@ -899,7 +912,7 @@ exports['test passing DOM node as first argument'] = function (assert, done) {
 
   let widgetNode = document.getElementById(widgetId);
 
-  all(warned.promise, shown.promise).
+  all([warned.promise, shown.promise]).
     then(loader.unload).
     then(done, assert.fail)
 
@@ -974,6 +987,350 @@ exports['test panel can be constructed without any arguments'] = function (asser
   assert.ok(true, "Creating a panel with no arguments does not throw");
 };
 
+exports['test panel CSS'] = function(assert, done) {
+  const { merge } = require("sdk/util/object");
+
+  let loader = Loader(module, null, null, {
+    modules: {
+      "sdk/self": merge({}, self, {
+        data: merge({}, self.data, fixtures)
+      })
+    }
+  });
+
+  const { Panel } = loader.require('sdk/panel');
+
+  const { getActiveView } = loader.require('sdk/view/core');
+
+  const getContentWindow = panel =>
+    getActiveView(panel).querySelector('iframe').contentWindow;
+
+  let panel = Panel({
+    contentURL: 'data:text/html;charset=utf-8,' +
+                '<div style="background: silver">css test</div>',
+    contentStyle: 'div { height: 100px; }',
+    contentStyleFile: [fixtures.url("include-file.css"), "./border-style.css"],
+    onShow: () => {
+      ready(getContentWindow(panel)).then(({ window, document }) => {
+        let div = document.querySelector('div');
+
+      assert.equal(div.clientHeight, 100,
+        "Panel contentStyle worked");
+
+      assert.equal(div.offsetHeight, 120,
+        "Panel contentStyleFile worked");
+
+      assert.equal(window.getComputedStyle(div).borderTopStyle, "dashed",
+        "Panel contentStyleFile with relative path worked");
+
+        loader.unload();
+        done();
+      }).then(null, assert.fail);
+    }
+  });
+
+  panel.show();
+};
+
+exports['test panel contentScriptFile'] = function(assert, done) {
+  const { merge } = require("sdk/util/object");
+
+  let loader = Loader(module, null, null, {
+    modules: {
+      "sdk/self": merge({}, self, {
+        data: merge({}, self.data, {url: fixtures.url})
+      })
+    }
+  });
+
+  const { Panel } = loader.require('sdk/panel');
+  const { getActiveView } = loader.require('sdk/view/core');
+
+  const getContentWindow = panel =>
+    getActiveView(panel).querySelector('iframe').contentWindow;
+
+  let whenMessage = defer();
+  let whenShown = defer();
+
+  let panel = Panel({
+    contentURL: './test.html',
+    contentScriptFile: "./test-contentScriptFile.js",
+    onMessage: (message) => {
+      assert.equal(message, "msg from contentScriptFile",
+        "Panel contentScriptFile with relative path worked");
+
+      whenMessage.resolve();
+    },
+    onShow: () => {
+      ready(getContentWindow(panel)).then(({ document }) => {
+        assert.equal(document.title, 'foo',
+          "Panel contentURL with relative path worked");
+
+        whenShown.resolve();
+      });
+    }
+  });
+
+  all([whenMessage.promise, whenShown.promise]).
+    then(loader.unload).
+    then(done, assert.fail);
+
+  panel.show();
+};
+
+
+exports['test panel CSS list'] = function(assert, done) {
+  const loader = Loader(module);
+  const { Panel } = loader.require('sdk/panel');
+
+  const { getActiveView } = loader.require('sdk/view/core');
+
+  const getContentWindow = panel =>
+    getActiveView(panel).querySelector('iframe').contentWindow;
+
+  let panel = Panel({
+    contentURL: 'data:text/html;charset=utf-8,' +
+                '<div style="width:320px; max-width: 480px!important">css test</div>',
+    contentStyleFile: [
+      // Highlight evaluation order in this list
+      "data:text/css;charset=utf-8,div { border: 1px solid black; }",
+      "data:text/css;charset=utf-8,div { border: 10px solid black; }",
+      // Highlight evaluation order between contentStylesheet & contentStylesheetFile
+      "data:text/css;charset=utf-8s,div { height: 1000px; }",
+      // Highlight precedence between the author and user style sheet
+      "data:text/css;charset=utf-8,div { width: 200px; max-width: 640px!important}",
+    ],
+    contentStyle: [
+      "div { height: 10px; }",
+      "div { height: 100px; }"
+    ],
+    onShow: () => {
+      ready(getContentWindow(panel)).then(({ window, document }) => {
+        let div = document.querySelector('div');
+        let style = window.getComputedStyle(div);
+
+        assert.equal(div.clientHeight, 100,
+          'Panel contentStyle list is evaluated after contentStyleFile');
+
+        assert.equal(div.offsetHeight, 120,
+          'Panel contentStyleFile list works');
+
+        assert.equal(style.width, '320px',
+          'add-on author/page author stylesheet precedence works');
+
+        assert.equal(style.maxWidth, '480px',
+          'add-on author/page author stylesheet !important precedence works');
+
+        loader.unload();
+      }).then(done, assert.fail);
+    }
+  });
+
+  panel.show();
+};
+
+exports['test panel contextmenu validation'] = function(assert) {
+  const loader = Loader(module);
+  const { Panel } = loader.require('sdk/panel');
+
+  let panel = Panel({});
+
+  assert.equal(panel.contextMenu, false,
+    'contextMenu option is `false` by default');
+
+  panel.destroy();
+
+  panel = Panel({
+    contextMenu: false
+  });
+
+  assert.equal(panel.contextMenu, false,
+    'contextMenu option is `false`');
+
+  panel.contextMenu = true;
+
+  assert.equal(panel.contextMenu, true,
+    'contextMenu option accepts boolean values');
+
+  panel.destroy();
+
+  panel = Panel({
+    contextMenu: true
+  });
+
+  assert.equal(panel.contextMenu, true,
+    'contextMenu option is `true`');
+
+  panel.contextMenu = false;
+
+  assert.equal(panel.contextMenu, false,
+    'contextMenu option accepts boolean values');
+
+  assert.throws(() =>
+    Panel({contextMenu: 1}),
+    /The option "contextMenu" must be one of the following types: boolean, undefined, null/,
+    'contextMenu only accepts boolean or nil values');
+
+  panel = Panel();
+
+  assert.throws(() =>
+    panel.contextMenu = 1,
+    /The option "contextMenu" must be one of the following types: boolean, undefined, null/,
+    'contextMenu only accepts boolean or nil values');
+
+  loader.unload();
+}
+
+exports['test panel contextmenu enabled'] = function*(assert) {
+  const loader = Loader(module);
+  const { Panel } = loader.require('sdk/panel');
+  const { getActiveView } = loader.require('sdk/view/core');
+  const { getContentDocument } = loader.require('sdk/panel/utils');
+
+  let contextmenu = getMostRecentBrowserWindow().
+                      document.getElementById("contentAreaContextMenu");
+
+  let panel = Panel({contextMenu: true});
+
+  panel.show();
+
+  yield wait(panel, 'show');
+
+  let view = getActiveView(panel);
+  let window = getContentDocument(view).defaultView;
+
+  let { sendMouseEvent } = window.QueryInterface(Ci.nsIInterfaceRequestor).
+                                    getInterface(Ci.nsIDOMWindowUtils);
+
+  yield ready(window);
+
+  assert.equal(contextmenu.state, 'closed',
+    'contextmenu must be closed');
+
+  sendMouseEvent('contextmenu', 20, 20, 2, 1, 0);
+
+  yield wait(contextmenu, 'popupshown');
+
+  assert.equal(contextmenu.state, 'open',
+    'contextmenu is opened');
+
+  contextmenu.hidePopup();
+
+  loader.unload();
+}
+
+exports['test panel contextmenu disabled'] = function*(assert) {
+  const loader = Loader(module);
+  const { Panel } = loader.require('sdk/panel');
+  const { getActiveView } = loader.require('sdk/view/core');
+  const { getContentDocument } = loader.require('sdk/panel/utils');
+
+  let contextmenu = getMostRecentBrowserWindow().
+                      document.getElementById("contentAreaContextMenu");
+  let listener = () => assert.fail('popupshown should never be called');
+
+  let panel = Panel();
+
+  panel.show();
+
+  yield wait(panel, 'show');
+
+  let view = getActiveView(panel);
+  let window = getContentDocument(view).defaultView;
+
+  let { sendMouseEvent } = window.QueryInterface(Ci.nsIInterfaceRequestor).
+                                    getInterface(Ci.nsIDOMWindowUtils);
+
+  yield ready(window);
+
+  assert.equal(contextmenu.state, 'closed',
+    'contextmenu must be closed');
+
+  sendMouseEvent('contextmenu', 20, 20, 2, 1, 0);
+
+  contextmenu.addEventListener('popupshown', listener);
+
+  yield wait(1000);
+
+  contextmenu.removeEventListener('popupshown', listener);
+
+  assert.equal(contextmenu.state, 'closed',
+    'contextmenu was never open');
+
+  loader.unload();
+}
+
+exports["test panel addon global object"] = function*(assert) {
+  const { merge } = require("sdk/util/object");
+
+  let loader = Loader(module, null, null, {
+    modules: {
+      "sdk/self": merge({}, self, {
+        data: merge({}, self.data, {url: fixtures.url})
+      })
+    }
+  });
+
+  const { Panel } = loader.require('sdk/panel');
+
+  let panel = Panel({
+    contentURL: "./test-trusted-document.html"
+  });
+
+  panel.show();
+
+  yield wait(panel, "show");
+
+  panel.port.emit('addon-to-document', 'ok');
+
+  yield wait(panel.port, "document-to-addon");
+
+  assert.pass("Received an event from the document");
+
+  loader.unload();
+}
+
+exports["test panel load doesn't show"] = function*(assert) {
+  let loader = Loader(module);
+
+  let showCount = 0;
+  let panel = loader.require("sdk/panel").Panel({
+    contentScript: "addEventListener('load', function(event) { self.postMessage('load'); });",
+    contentScriptWhen: "start",
+    contentURL: "data:text/html;charset=utf-8,",
+  });
+
+  let shown = defer();
+  let messaged = defer();
+
+  panel.once("show", function() {
+    shown.resolve();
+  });
+
+  panel.once("message", function() {
+    messaged.resolve();
+  });
+
+  panel.show();
+  yield all([shown.promise, messaged.promise]);
+  assert.ok(true, "Saw panel display");
+
+  panel.on("show", function() {
+    assert.fail("Should not have seen another show event")
+  });
+
+  messaged = defer();
+  panel.once("message", function() {
+    assert.ok(true, "Saw panel reload");
+    messaged.resolve();
+  });
+
+  panel.contentURL = "data:text/html;charset=utf-8,<html/>";
+
+  yield messaged.promise;
+  loader.unload();
+}
+
 if (isWindowPBSupported) {
   exports.testGetWindow = function(assert, done) {
     let activeWindow = getMostRecentBrowserWindow();
@@ -981,36 +1338,13 @@ if (isWindowPBSupported) {
       toolbar: true,
       chrome: true,
       private: true
-    } }).then(function(window) {
+    } }).then(window => {
       assert.ok(isPrivate(window), 'window is private');
       assert.equal(getWindow(window.gBrowser), null, 'private window elements returns null');
       assert.equal(getWindow(activeWindow.gBrowser), activeWindow, 'non-private window elements returns window');
-      close(window).then(done);
-    })
-  }
-}
-else if (isGlobalPBSupported) {
-  exports.testGetWindow = function(assert, done) {
-    let activeWindow = getMostRecentBrowserWindow();
-
-    assert.equal(getWindow(activeWindow.gBrowser), activeWindow, 'non-private window elements returns window');
-    pb.once('start', function() {
-      assert.ok(isPrivate(activeWindow), 'window is private');
-      assert.equal(getWindow(activeWindow.gBrowser), activeWindow, 'private window elements returns window');
-      open(null, { features: {
-        toolbar: true,
-        chrome: true
-      } }).then(function(window) {
-        assert.ok(isPrivate(window), 'window is private');
-        assert.equal(getWindow(window.gBrowser), window, 'private window elements returns window');
-        assert.equal(getWindow(activeWindow.gBrowser), activeWindow, 'active window elements returns window');
-
-        pb.once('stop', done);
-        pb.deactivate();
-      })
-    });
-    pb.activate();
+      return window;
+    }).then(close).then(done).then(null, assert.fail);
   }
 }
 
-require("test").run(exports);
+require("sdk/test").run(exports);

@@ -11,6 +11,7 @@
 #include "mozilla/EventForwards.h"
 #include "nsContainerFrame.h"
 #include "nsIAnonymousContentCreator.h"
+#include "nsIDOMEventListener.h"
 #include "nsCOMPtr.h"
 
 class nsBaseContentList;
@@ -24,7 +25,7 @@ class nsRangeFrame : public nsContainerFrame,
 
   friend class nsDisplayRangeFocusRing;
 
-  nsRangeFrame(nsStyleContext* aContext);
+  explicit nsRangeFrame(nsStyleContext* aContext);
   virtual ~nsRangeFrame();
 
   typedef mozilla::dom::Element Element;
@@ -35,9 +36,9 @@ public:
   NS_DECL_FRAMEARENA_HELPERS
 
   // nsIFrame overrides
-  virtual void Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
 
   virtual void DestroyFrom(nsIFrame* aDestructRoot) MOZ_OVERRIDE;
 
@@ -45,10 +46,10 @@ public:
                         const nsRect&           aDirtyRect,
                         const nsDisplayListSet& aLists) MOZ_OVERRIDE;
 
-  virtual nsresult Reflow(nsPresContext*           aPresContext,
-                          nsHTMLReflowMetrics&     aDesiredSize,
-                          const nsHTMLReflowState& aReflowState,
-                          nsReflowStatus&          aStatus) MOZ_OVERRIDE;
+  virtual void Reflow(nsPresContext*           aPresContext,
+                      nsHTMLReflowMetrics&     aDesiredSize,
+                      const nsHTMLReflowState& aReflowState,
+                      nsReflowStatus&          aStatus) MOZ_OVERRIDE;
 
 #ifdef DEBUG_FRAME_DUMP
   virtual nsresult GetFrameName(nsAString& aResult) const MOZ_OVERRIDE {
@@ -64,20 +65,25 @@ public:
 
   // nsIAnonymousContentCreator
   virtual nsresult CreateAnonymousContent(nsTArray<ContentInfo>& aElements) MOZ_OVERRIDE;
-  virtual void AppendAnonymousContentTo(nsBaseContentList& aElements,
+  virtual void AppendAnonymousContentTo(nsTArray<nsIContent*>& aElements,
                                         uint32_t aFilter) MOZ_OVERRIDE;
 
   virtual nsresult AttributeChanged(int32_t  aNameSpaceID,
                                     nsIAtom* aAttribute,
                                     int32_t  aModType) MOZ_OVERRIDE;
 
-  virtual nsSize ComputeAutoSize(nsRenderingContext *aRenderingContext,
-                                 nsSize aCBSize, nscoord aAvailableWidth,
-                                 nsSize aMargin, nsSize aBorder,
-                                 nsSize aPadding, bool aShrinkWrap) MOZ_OVERRIDE;
+  virtual mozilla::LogicalSize
+  ComputeAutoSize(nsRenderingContext *aRenderingContext,
+                  mozilla::WritingMode aWritingMode,
+                  const mozilla::LogicalSize& aCBSize,
+                  nscoord aAvailableISize,
+                  const mozilla::LogicalSize& aMargin,
+                  const mozilla::LogicalSize& aBorder,
+                  const mozilla::LogicalSize& aPadding,
+                  bool aShrinkWrap) MOZ_OVERRIDE;
 
-  virtual nscoord GetMinWidth(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
-  virtual nscoord GetPrefWidth(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
+  virtual nscoord GetMinISize(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
+  virtual nscoord GetPrefISize(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
 
   virtual nsIAtom* GetType() const MOZ_OVERRIDE;
 
@@ -140,9 +146,9 @@ private:
                             nsTArray<ContentInfo>& aElements);
 
   // Helper function which reflows the anonymous div frames.
-  nsresult ReflowAnonymousContent(nsPresContext*           aPresContext,
-                                  nsHTMLReflowMetrics&     aDesiredSize,
-                                  const nsHTMLReflowState& aReflowState);
+  void ReflowAnonymousContent(nsPresContext*           aPresContext,
+                              nsHTMLReflowMetrics&     aDesiredSize,
+                              const nsHTMLReflowState& aReflowState);
 
   void DoUpdateThumbPosition(nsIFrame* aThumbFrame,
                              const nsSize& aRangeSize);
@@ -174,6 +180,25 @@ private:
    * Cached style context for -moz-focus-outer CSS pseudo-element style.
    */
   nsRefPtr<nsStyleContext> mOuterFocusStyle;
+
+  class DummyTouchListener MOZ_FINAL : public nsIDOMEventListener
+  {
+  private:
+    ~DummyTouchListener() {}
+
+  public:
+    NS_DECL_ISUPPORTS
+
+    NS_IMETHOD HandleEvent(nsIDOMEvent* aEvent) MOZ_OVERRIDE
+    {
+      return NS_OK;
+    }
+  };
+
+  /**
+   * A no-op touch-listener used for APZ purposes (see nsRangeFrame::Init).
+   */
+  nsRefPtr<DummyTouchListener> mDummyTouchListener;
 };
 
 #endif

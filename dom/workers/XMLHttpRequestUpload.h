@@ -16,13 +16,13 @@ class XMLHttpRequestUpload MOZ_FINAL : public nsXHREventTarget
 {
   nsRefPtr<XMLHttpRequest> mXHR;
 
-  XMLHttpRequestUpload(XMLHttpRequest* aXHR);
+  explicit XMLHttpRequestUpload(XMLHttpRequest* aXHR);
 
   ~XMLHttpRequestUpload();
 
 public:
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   static already_AddRefed<XMLHttpRequestUpload>
   Create(XMLHttpRequest* aXHR);

@@ -43,12 +43,12 @@ public:
                                          WidgetEvent* aEvent)
   {
     if (!aEvent ||
-        (aEvent->eventStructType != NS_MOUSE_EVENT &&
-         aEvent->eventStructType != NS_MOUSE_SCROLL_EVENT &&
-         aEvent->eventStructType != NS_WHEEL_EVENT &&
-         aEvent->eventStructType != NS_DRAG_EVENT &&
-         aEvent->eventStructType != NS_POINTER_EVENT &&
-         aEvent->eventStructType != NS_SIMPLE_GESTURE_EVENT)) {
+        (aEvent->mClass != eMouseEventClass &&
+         aEvent->mClass != eMouseScrollEventClass &&
+         aEvent->mClass != eWheelEventClass &&
+         aEvent->mClass != eDragEventClass &&
+         aEvent->mClass != ePointerEventClass &&
+         aEvent->mClass != eSimpleGestureEventClass)) {
       return nsIntPoint(0, 0);
     }
 
@@ -60,7 +60,7 @@ public:
     LayoutDeviceIntPoint offset = aEvent->refPoint +
       LayoutDeviceIntPoint::FromUntyped(event->widget->WidgetToScreenOffset());
     nscoord factor =
-      aPresContext->DeviceContext()->UnscaledAppUnitsPerDevPixel();
+      aPresContext->DeviceContext()->AppUnitsPerDevPixelAtUnitFullZoom();
     return nsIntPoint(nsPresContext::AppUnitsToIntCSSPixels(offset.x * factor),
                       nsPresContext::AppUnitsToIntCSSPixels(offset.y * factor));
   }
@@ -70,12 +70,12 @@ public:
                                           CSSIntPoint* aDefaultClientPoint)
   {
     if (!aEvent ||
-        (aEvent->eventStructType != NS_MOUSE_EVENT &&
-         aEvent->eventStructType != NS_MOUSE_SCROLL_EVENT &&
-         aEvent->eventStructType != NS_WHEEL_EVENT &&
-         aEvent->eventStructType != NS_DRAG_EVENT &&
-         aEvent->eventStructType != NS_POINTER_EVENT &&
-         aEvent->eventStructType != NS_SIMPLE_GESTURE_EVENT) ||
+        (aEvent->mClass != eMouseEventClass &&
+         aEvent->mClass != eMouseScrollEventClass &&
+         aEvent->mClass != eWheelEventClass &&
+         aEvent->mClass != eDragEventClass &&
+         aEvent->mClass != ePointerEventClass &&
+         aEvent->mClass != eSimpleGestureEventClass) ||
         !aPresContext ||
         !aEvent->AsGUIEvent()->widget) {
       return aDefaultClientPoint
@@ -102,10 +102,9 @@ public:
                                                const UIEventInit& aParam,
                                                ErrorResult& aRv);
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE
+  virtual JSObject* WrapObjectInternal(JSContext* aCx) MOZ_OVERRIDE
   {
-    return UIEventBinding::Wrap(aCx, aScope, this);
+    return UIEventBinding::Wrap(aCx, this);
   }
 
   nsIDOMWindow* GetView() const
@@ -133,9 +132,9 @@ public:
 
   virtual uint32_t Which()
   {
-    MOZ_ASSERT(mEvent->eventStructType != NS_KEY_EVENT,
+    MOZ_ASSERT(mEvent->mClass != eKeyboardEventClass,
                "Key events should override Which()");
-    MOZ_ASSERT(mEvent->eventStructType != NS_MOUSE_EVENT,
+    MOZ_ASSERT(mEvent->mClass != eMouseEventClass,
                "Mouse events should override Which()");
     return 0;
   }
@@ -152,6 +151,8 @@ public:
   bool IsChar() const;
 
 protected:
+  ~UIEvent() {}
+
   // Internal helper functions
   nsIntPoint GetMovementPoint();
   nsIntPoint GetLayerPoint() const;
@@ -176,17 +177,18 @@ protected:
 #define NS_FORWARD_TO_UIEVENT                               \
   NS_FORWARD_NSIDOMUIEVENT(UIEvent::)                       \
   NS_FORWARD_TO_EVENT_NO_SERIALIZATION_NO_DUPLICATION       \
-  NS_IMETHOD DuplicatePrivateData()                         \
+  NS_IMETHOD DuplicatePrivateData() MOZ_OVERRIDE            \
   {                                                         \
     return UIEvent::DuplicatePrivateData();                 \
   }                                                         \
   NS_IMETHOD_(void) Serialize(IPC::Message* aMsg,           \
                               bool aSerializeInterfaceType) \
+    MOZ_OVERRIDE                                            \
   {                                                         \
     UIEvent::Serialize(aMsg, aSerializeInterfaceType);      \
   }                                                         \
   NS_IMETHOD_(bool) Deserialize(const IPC::Message* aMsg,   \
-                                void** aIter)               \
+                                void** aIter) MOZ_OVERRIDE  \
   {                                                         \
     return UIEvent::Deserialize(aMsg, aIter);               \
   }

@@ -6,7 +6,6 @@
 #include "GTestRunner.h"
 #include "gtest/gtest.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/NullPtr.h"
 #ifdef MOZ_CRASHREPORTER
 #include "nsICrashReporter.h"
 #endif
@@ -83,7 +82,7 @@ int RunGTestFunc()
 
   PR_SetEnv("XPCOM_DEBUG_BREAK=stack-and-abort");
 
-  ScopedXPCOM xpcom("AsyncPanZoomController");
+  ScopedXPCOM xpcom("GTest");
 
 #ifdef MOZ_CRASHREPORTER
   nsCOMPtr<nsICrashReporter> crashreporter;
@@ -101,7 +100,7 @@ int RunGTestFunc()
       nsresult rv = dirsvc->Get(NS_OS_CURRENT_WORKING_DIR,
                        NS_GET_IID(nsIFile),
                        getter_AddRefs(cwd));
-      MOZ_ASSERT(NS_SUCCEEDED(rv));
+      MOZ_RELEASE_ASSERT(NS_SUCCEEDED(rv));
       crashreporter->SetEnabled(true);
       crashreporter->SetMinidumpPath(cwd);
     }

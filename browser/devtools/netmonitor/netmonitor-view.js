@@ -1,4 +1,4 @@
-/* -*- Mode: javascript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -118,7 +118,7 @@ let NetMonitorView = {
   /**
    * Destroys the UI for all the displayed panes.
    */
-  _destroyPanes: function() {
+  _destroyPanes: Task.async(function*() {
     dumpn("Destroying the NetMonitorView panes");
 
     Prefs.networkDetailsWidth = this._detailsPane.getAttribute("width");
@@ -126,7 +126,12 @@ let NetMonitorView = {
 
     this._detailsPane = null;
     this._detailsPaneToggleButton = null;
-  },
+
+    for (let p of this._editorPromises.values()) {
+      let editor = yield p;
+      editor.destroy();
+    }
+  }),
 
   /**
    * Gets the visibility state of the network details pane.
@@ -229,6 +234,10 @@ let NetMonitorView = {
     });
   },
 
+  reloadPage: function() {
+    NetMonitorController.triggerActivity(ACTIVITY_TYPE.RELOAD.WITH_CACHE_DEFAULT);
+  },
+
   /**
    * Lazily initializes and returns a promise for a Editor instance.
    *
@@ -327,6 +336,7 @@ function RequestsMenuView() {
   this._byFile = this._byFile.bind(this);
   this._byDomain = this._byDomain.bind(this);
   this._byType = this._byType.bind(this);
+  this._onSecurityIconClick = this._onSecurityIconClick.bind(this);
 }
 
 RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
@@ -361,11 +371,14 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
     this._onContextCopyUrlCommand = this.copyUrl.bind(this);
     this._onContextCopyImageAsDataUriCommand = this.copyImageAsDataUri.bind(this);
     this._onContextResendCommand = this.cloneSelectedRequest.bind(this);
+    this._onContextToggleRawHeadersCommand = this.toggleRawHeaders.bind(this);
     this._onContextPerfCommand = () => NetMonitorView.toggleFrontendMode();
+    this._onReloadCommand = () => NetMonitorView.reloadPage();
 
     this.sendCustomRequestEvent = this.sendCustomRequest.bind(this);
     this.closeCustomRequestEvent = this.closeCustomRequest.bind(this);
     this.cloneSelectedRequestEvent = this.cloneSelectedRequest.bind(this);
+    this.toggleRawHeadersEvent = this.toggleRawHeaders.bind(this);
 
     $("#toolbar-labels").addEventListener("click", this.requestsMenuSortEvent, false);
     $("#requests-menu-footer").addEventListener("click", this.requestsMenuFilterEvent, false);
@@ -374,11 +387,14 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
     $("#request-menu-context-newtab").addEventListener("command", this._onContextNewTabCommand, false);
     $("#request-menu-context-copy-url").addEventListener("command", this._onContextCopyUrlCommand, false);
     $("#request-menu-context-copy-image-as-data-uri").addEventListener("command", this._onContextCopyImageAsDataUriCommand, false);
+    $("#toggle-raw-headers").addEventListener("click", this.toggleRawHeadersEvent, false);
 
     window.once("connected", this._onConnect.bind(this));
   },
 
   _onConnect: function() {
+    $("#requests-menu-reload-notice-button").addEventListener("command", this._onReloadCommand, false);
+
     if (NetMonitorController.supportsCustomRequest) {
       $("#request-menu-context-resend").addEventListener("command", this._onContextResendCommand, false);
       $("#custom-request-send-button").addEventListener("click", this.sendCustomRequestEvent, false);
@@ -394,11 +410,17 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
       $("#requests-menu-perf-notice-button").addEventListener("command", this._onContextPerfCommand, false);
       $("#requests-menu-network-summary-button").addEventListener("command", this._onContextPerfCommand, false);
       $("#requests-menu-network-summary-label").addEventListener("click", this._onContextPerfCommand, false);
+      $("#network-statistics-back-button").addEventListener("command", this._onContextPerfCommand, false);
     } else {
       $("#notice-perf-message").hidden = true;
       $("#request-menu-context-perf").hidden = true;
       $("#requests-menu-network-summary-button").hidden = true;
       $("#requests-menu-network-summary-label").hidden = true;
+    }
+
+    if (!NetMonitorController.supportsTransferredResponseSize) {
+      $("#requests-menu-transferred-header-box").hidden = true;
+      $("#requests-menu-item-template .requests-menu-transferred").hidden = true;
     }
   },
 
@@ -425,13 +447,16 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
     $("#request-menu-context-resend").removeEventListener("command", this._onContextResendCommand, false);
     $("#request-menu-context-perf").removeEventListener("command", this._onContextPerfCommand, false);
 
+    $("#requests-menu-reload-notice-button").removeEventListener("command", this._onReloadCommand, false);
     $("#requests-menu-perf-notice-button").removeEventListener("command", this._onContextPerfCommand, false);
     $("#requests-menu-network-summary-button").removeEventListener("command", this._onContextPerfCommand, false);
     $("#requests-menu-network-summary-label").removeEventListener("click", this._onContextPerfCommand, false);
+    $("#network-statistics-back-button").removeEventListener("command", this._onContextPerfCommand, false);
 
     $("#custom-request-send-button").removeEventListener("click", this.sendCustomRequestEvent, false);
     $("#custom-request-close-button").removeEventListener("click", this.closeCustomRequestEvent, false);
     $("#headers-summary-resend").removeEventListener("click", this.cloneSelectedRequestEvent, false);
+    $("#toggle-raw-headers").removeEventListener("click", this.toggleRawHeadersEvent, false);
   },
 
   /**
@@ -528,6 +553,7 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
    */
   copyAsCurl: function() {
     let selected = this.selectedItem.attachment;
+
     Task.spawn(function*() {
       // Create a sanitized object for the Curl command generator.
       let data = {
@@ -595,8 +621,8 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
     let selected = this.selectedItem.attachment;
 
     let data = {
-      method: selected.method,
       url: selected.url,
+      method: selected.method,
       httpVersion: selected.httpVersion,
     };
     if (selected.requestHeaders) {
@@ -620,6 +646,28 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
   closeCustomRequest: function() {
     this.remove(this.selectedItem);
     NetMonitorView.Sidebar.toggle(false);
+  },
+
+  /**
+   * Shows raw request/response headers in textboxes.
+   */
+  toggleRawHeaders: function() {
+    let requestTextarea = $("#raw-request-headers-textarea");
+    let responseTextare = $("#raw-response-headers-textarea");
+    let rawHeadersHidden = $("#raw-headers").getAttribute("hidden");
+
+    if (rawHeadersHidden) {
+      let selected = this.selectedItem.attachment;
+      let selectedRequestHeaders = selected.requestHeaders.headers;
+      let selectedResponseHeaders = selected.responseHeaders.headers;
+      requestTextarea.value = writeHeaderText(selectedRequestHeaders);
+      responseTextare.value = writeHeaderText(selectedResponseHeaders);
+      $("#raw-headers").hidden = false;
+    } else {
+      requestTextarea.value = null;
+      responseTextare.value = null;
+      $("#raw-headers").hidden = true;
+    }
   },
 
   /**
@@ -757,8 +805,8 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
    * Sorts all network requests in this container by a specified detail.
    *
    * @param string aType
-   *        Either "status", "method", "file", "domain", "type", "size" or
-   *        "waterfall".
+   *        Either "status", "method", "file", "domain", "type", "transferred",
+   *        "size" or "waterfall".
    */
   sortBy: function(aType = "waterfall") {
     let target = $("#requests-menu-" + aType + "-button");
@@ -817,6 +865,13 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
           this.sortContents(this._byType);
         } else {
           this.sortContents((a, b) => !this._byType(a, b));
+        }
+        break;
+      case "transferred":
+        if (direction == "ascending") {
+          this.sortContents(this._byTransferred);
+        } else {
+          this.sortContents((a, b) => !this._byTransferred(a, b));
         }
         break;
       case "size":
@@ -951,8 +1006,13 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
       : firstType > secondType;
   },
 
-  _bySize: function({ attachment: first }, { attachment: second })
-    first.contentSize > second.contentSize,
+  _byTransferred: function({ attachment: first }, { attachment: second }) {
+    return first.transferredSize > second.transferredSize;
+  },
+
+  _bySize: function({ attachment: first }, { attachment: second }) {
+    return first.contentSize > second.contentSize;
+  },
 
   /**
    * Refreshes the status displayed in this container's footer, providing
@@ -1011,6 +1071,17 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
     tooltip.hide();
     tooltip.startTogglingOnHover(aItem.target, this._onHover);
     tooltip.defaultPosition = REQUESTS_TOOLTIP_POSITION;
+  },
+
+  /**
+   * Attaches security icon click listener for the given request menu item.
+   *
+   * @param object item
+   *        The network request item to attach the listener to.
+   */
+  attachSecurityIconClickListener: function ({ target }) {
+    let icon = $(".requests-security-state-icon", target);
+    icon.addEventListener("click", this._onSecurityIconClick);
   },
 
   /**
@@ -1074,22 +1145,29 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
             // a loop, so remember the actual request item we want to modify.
             let currentItem = requestItem;
             let currentStore = { headers: [], headersSize: 0 };
-            gNetwork.getString(value.postData.text).then(aPostData => {
-              for (let section of aPostData.split(/\r\n|\r|\n/)) {
-                // Try to retrieve header tuples from this section of the
-                // POST data. The `parseHeadersText` function will return an
-                // empty array if no headers are found. We're using Array.p.push
-                // to avoid creating a new array when concatenating.
-                let headerTuples = parseHeadersText(section);
-                currentStore.headersSize += headerTuples.length ? section.length : 0;
-                Array.prototype.push.apply(currentStore.headers, headerTuples);
-              }
+
+            Task.spawn(function*() {
+              let postData = yield gNetwork.getString(value.postData.text);
+              let payloadHeaders = CurlUtils.getHeadersFromMultipartText(postData);
+
+              currentStore.headers = payloadHeaders;
+              currentStore.headersSize = payloadHeaders.reduce(
+                (acc, { name, value }) => acc + name.length + value.length + 2, 0);
+
               // The `getString` promise is async, so we need to refresh the
               // information displayed in the network details pane again here.
               refreshNetworkDetailsPaneIfNecessary(currentItem);
             });
+
             requestItem.attachment.requestPostData = value;
             requestItem.attachment.requestHeadersFromUploadStream = currentStore;
+            break;
+          case "securityState":
+            requestItem.attachment.securityState = value;
+            this.updateMenuView(requestItem, key, value);
+            break;
+          case "securityInfo":
+            requestItem.attachment.securityInfo = value;
             break;
           case "responseHeaders":
             requestItem.attachment.responseHeaders = value;
@@ -1115,6 +1193,10 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
             break;
           case "contentSize":
             requestItem.attachment.contentSize = value;
+            this.updateMenuView(requestItem, key, value);
+            break;
+          case "transferredSize":
+            requestItem.attachment.transferredSize = value;
             this.updateMenuView(requestItem, key, value);
             break;
           case "mimeType":
@@ -1196,9 +1278,6 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
     this.updateMenuView(template, 'method', aMethod);
     this.updateMenuView(template, 'url', aUrl);
 
-    let waterfall = $(".requests-menu-waterfall", template);
-    waterfall.style.backgroundImage = this._cachedWaterfallBackground;
-
     // Flatten the DOM by removing one redundant box (the template container).
     for (let node of template.childNodes) {
       fragment.appendChild(node.cloneNode(true));
@@ -1216,8 +1295,10 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
    *        The type of information that is to be updated.
    * @param any aValue
    *        The new value to be shown.
+   * @return object
+   *         A promise that is resolved once the information is displayed.
    */
-  updateMenuView: function(aItem, aKey, aValue) {
+  updateMenuView: Task.async(function*(aItem, aKey, aValue) {
     let target = aItem.target || aItem;
 
     switch (aKey) {
@@ -1245,6 +1326,15 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
         domain.setAttribute("tooltiptext", hostPort);
         break;
       }
+      case "securityState": {
+        let tooltip = L10N.getStr("netmonitor.security.state." + aValue);
+        let icon = $(".requests-security-state-icon", target);
+        icon.classList.add("security-state-" + aValue);
+        icon.setAttribute("tooltiptext", tooltip);
+
+        this.attachSecurityIconClickListener(aItem);
+        break;
+      }
       case "status": {
         let node = $(".requests-menu-status", target);
         let codeNode = $(".requests-menu-status-code", target);
@@ -1266,6 +1356,20 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
         node.setAttribute("tooltiptext", text);
         break;
       }
+      case "transferredSize": {
+        let text;
+        if (aValue === null) {
+          text = L10N.getStr("networkMenu.sizeUnavailable");
+        } else {
+          let kb = aValue / 1024;
+          let size = L10N.numberWithDecimals(kb, CONTENT_SIZE_DECIMALS);
+          text = L10N.getFormatStr("networkMenu.sizeKB", size);
+        }
+        let node = $(".requests-menu-transferred", target);
+        node.setAttribute("value", text);
+        node.setAttribute("tooltiptext", text);
+        break;
+      }
       case "mimeType": {
         let type = this._getAbbreviatedMimeType(aValue);
         let node = $(".requests-menu-type", target);
@@ -1279,13 +1383,13 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
         let { text, encoding } = aValue.content;
 
         if (mimeType.contains("image/")) {
-          gNetwork.getString(text).then(aString => {
-            let node = $(".requests-menu-icon", aItem.target);
-            node.src = "data:" + mimeType + ";" + encoding + "," + aString;
-            node.setAttribute("type", "thumbnail");
-            node.removeAttribute("hidden");
-            window.emit(EVENTS.RESPONSE_IMAGE_THUMBNAIL_DISPLAYED);
-          });
+          let responseBody = yield gNetwork.getString(text);
+          let node = $(".requests-menu-icon", aItem.target);
+          node.src = "data:" + mimeType + ";" + encoding + "," + responseBody;
+          node.setAttribute("type", "thumbnail");
+          node.removeAttribute("hidden");
+
+          window.emit(EVENTS.RESPONSE_IMAGE_THUMBNAIL_DISPLAYED);
         }
         break;
       }
@@ -1297,7 +1401,7 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
         break;
       }
     }
-  },
+  }),
 
   /**
    * Creates a waterfall representing timing information in a network request item view.
@@ -1360,7 +1464,6 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
     // Redraw and set the canvas background for each waterfall view.
     this._showWaterfallDivisionLabels(scale);
     this._drawWaterfallBackground(scale);
-    this._flushWaterfallBackgrounds();
 
     // Apply CSS transforms to each waterfall in this container totalTime
     // accurately translate and resize as needed.
@@ -1479,8 +1582,8 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
     let pixelArray = imageData.data;
 
     let buf = new ArrayBuffer(pixelArray.length);
-    let buf8 = new Uint8ClampedArray(buf);
-    let data32 = new Uint32Array(buf);
+    let view8bit = new Uint8ClampedArray(buf);
+    let view32bit = new Uint32Array(buf);
 
     // Build new millisecond tick lines...
     let timingStep = REQUESTS_WATERFALL_BACKGROUND_TICKS_MULTIPLE;
@@ -1502,26 +1605,16 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
         let increment = scaledStep * Math.pow(2, i);
         for (let x = 0; x < canvasWidth; x += increment) {
           let position = (window.isRTL ? canvasWidth - x : x) | 0;
-          data32[position] = (alphaComponent << 24) | (b << 16) | (g << 8) | r;
+          view32bit[position] = (alphaComponent << 24) | (b << 16) | (g << 8) | r;
         }
         alphaComponent += REQUESTS_WATERFALL_BACKGROUND_TICKS_OPACITY_ADD;
       }
     }
 
     // Flush the image data and cache the waterfall background.
-    pixelArray.set(buf8);
+    pixelArray.set(view8bit);
     ctx.putImageData(imageData, 0, 0);
-    this._cachedWaterfallBackground = "url(" + canvas.toDataURL() + ")";
-  },
-
-  /**
-   * Reapplies the current waterfall background on all request items.
-   */
-  _flushWaterfallBackgrounds: function() {
-    for (let { target } of this) {
-      let waterfallNode = $(".requests-menu-waterfall", target);
-      waterfallNode.style.backgroundImage = this._cachedWaterfallBackground;
-    }
+    document.mozSetImageElement("waterfall-background", canvas);
   },
 
   /**
@@ -1545,6 +1638,11 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
     // in this container, so it's necessary to refresh the Tooltip instances.
     this.refreshTooltip(firstItem);
     this.refreshTooltip(secondItem);
+
+    // Reattach click listener to the security icons
+    this.attachSecurityIconClickListener(firstItem);
+    this.attachSecurityIconClickListener(secondItem);
+
   },
 
   /**
@@ -1580,6 +1678,18 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
   },
 
   /**
+   * A handler that opens the security tab in the details view if secure or
+   * broken security indicator is clicked.
+   */
+  _onSecurityIconClick: function(e) {
+    let state = this.selectedItem.attachment.securityState;
+    if (state !== "insecure") {
+      // Choose the security tab.
+      NetMonitorView.NetworkDetails.widget.selectedIndex = 5;
+    }
+  },
+
+  /**
    * The resize listener for this container's window.
    */
   _onResize: function(e) {
@@ -1596,7 +1706,7 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
 
     let resendElement = $("#request-menu-context-resend");
     resendElement.hidden = !NetMonitorController.supportsCustomRequest ||
-                           !selectedItem || selectedItem.attachment.isCustom;
+      !selectedItem || selectedItem.attachment.isCustom;
 
     let copyUrlElement = $("#request-menu-context-copy-url");
     copyUrlElement.hidden = !selectedItem;
@@ -1608,6 +1718,9 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
     copyImageAsDataUriElement.hidden = !selectedItem ||
       !selectedItem.attachment.responseContent ||
       !selectedItem.attachment.responseContent.content.mimeType.contains("image/");
+
+    let separator = $("#request-menu-context-separator");
+    separator.hidden = !selectedItem;
 
     let newTabElement = $("#request-menu-context-newtab");
     newTabElement.hidden = !selectedItem;
@@ -1741,7 +1854,6 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
   _canvas: null,
   _ctx: null,
   _cachedWaterfallWidth: 0,
-  _cachedWaterfallBackground: "",
   _firstRequestStartedMillis: -1,
   _lastRequestEndedMillis: -1,
   _updateQueue: [],
@@ -1777,17 +1889,17 @@ SidebarView.prototype = {
    * @return object
    *        Returns a promise that resolves upon population of the subview.
    */
-  populate: function(aData) {
+  populate: Task.async(function*(aData) {
     let isCustom = aData.isCustom;
     let view = isCustom ?
       NetMonitorView.CustomRequest :
       NetMonitorView.NetworkDetails;
 
-    return view.populate(aData).then(() => {
-      $("#details-pane").selectedIndex = isCustom ? 0 : 1;
-      window.emit(EVENTS.SIDEBAR_POPULATED);
-    });
-  }
+    yield view.populate(aData);
+    $("#details-pane").selectedIndex = isCustom ? 0 : 1;
+
+    window.emit(EVENTS.SIDEBAR_POPULATED);
+  })
 }
 
 /**
@@ -1825,29 +1937,22 @@ CustomRequestView.prototype = {
    * @return object
    *        Returns a promise that resolves upon population the view.
    */
-  populate: function(aData) {
+  populate: Task.async(function*(aData) {
     $("#custom-url-value").value = aData.url;
     $("#custom-method-value").value = aData.method;
-    $("#custom-headers-value").value =
-       writeHeaderText(aData.requestHeaders.headers);
+    this.updateCustomQuery(aData.url);
 
-    let view = this;
-    let postDataPromise = null;
-
+    if (aData.requestHeaders) {
+      let headers = aData.requestHeaders.headers;
+      $("#custom-headers-value").value = writeHeaderText(headers);
+    }
     if (aData.requestPostData) {
-      let body = aData.requestPostData.postData.text;
-
-      postDataPromise = gNetwork.getString(body).then(aString => {
-        $("#custom-postdata-value").value =  aString;
-      });
-    } else {
-      postDataPromise = promise.resolve();
+      let postData = aData.requestPostData.postData.text;
+      $("#custom-postdata-value").value = yield gNetwork.getString(postData);
     }
 
-    return postDataPromise
-      .then(() => view.updateCustomQuery(aData.url))
-      .then(() => window.emit(EVENTS.CUSTOMREQUESTVIEW_POPULATED));
-  },
+    window.emit(EVENTS.CUSTOMREQUESTVIEW_POPULATED);
+  }),
 
   /**
    * Handle user input in the custom request form.
@@ -1895,7 +2000,7 @@ CustomRequestView.prototype = {
    * Update the query string field based on the url.
    *
    * @param object aUrl
-   *        url to extract query string from.
+   *        The URL to extract query string from.
    */
   updateCustomQuery: function(aUrl) {
     let paramsArray = parseQueryString(nsIURL(aUrl).query);
@@ -1911,7 +2016,7 @@ CustomRequestView.prototype = {
    * Update the url based on the query string field.
    *
    * @param object aQueryText
-   *        contents of the query string field.
+   *        The contents of the query string field.
    */
   updateCustomUrl: function(aQueryText) {
     let params = parseQueryText(aQueryText);
@@ -1931,10 +2036,26 @@ CustomRequestView.prototype = {
 function NetworkDetailsView() {
   dumpn("NetworkDetailsView was instantiated");
 
+  // The ToolSidebar requires the panel object to be able to emit events.
+  EventEmitter.decorate(this);
+
   this._onTabSelect = this._onTabSelect.bind(this);
 };
 
 NetworkDetailsView.prototype = {
+  /**
+   * An object containing the state of tabs.
+   */
+  _viewState: {
+    // if updating[tab] is true a task is currently updating the given tab.
+    updating: [],
+    // if dirty[tab] is true, the tab needs to be repopulated once current
+    // update task finishes
+    dirty: [],
+    // the most recently received attachment data for the request
+    latestData: null,
+  },
+
   /**
    * Initialization function, called when the network monitor is started.
    */
@@ -1942,6 +2063,10 @@ NetworkDetailsView.prototype = {
     dumpn("Initializing the NetworkDetailsView");
 
     this.widget = $("#event-details-pane");
+    this.sidebar = new ToolSidebar(this.widget, this, "netmonitor", {
+      disableTelemetry: true,
+      showAllTabsMenu: true
+    });
 
     this._headers = new VariablesView($("#all-headers"),
       Heritage.extend(GENERIC_VARIABLES_VIEW_SETTINGS, {
@@ -1982,6 +2107,8 @@ NetworkDetailsView.prototype = {
    */
   destroy: function() {
     dumpn("Destroying the NetworkDetailsView");
+    this.sidebar.destroy();
+    $("tabpanels", this.widget).removeEventListener("select", this._onTabSelect);
   },
 
   /**
@@ -1999,17 +2126,27 @@ NetworkDetailsView.prototype = {
     $("#response-content-info-header").hidden = true;
     $("#response-content-json-box").hidden = true;
     $("#response-content-textarea-box").hidden = true;
+    $("#raw-headers").hidden = true;
     $("#response-content-image-box").hidden = true;
 
     let isHtml = RequestsMenuView.prototype.isHtml({ attachment: aData });
 
     // Show the "Preview" tabpanel only for plain HTML responses.
-    $("#preview-tab").hidden = !isHtml;
-    $("#preview-tabpanel").hidden = !isHtml;
+    this.sidebar.toggleTab(isHtml, "preview-tab", "preview-tabpanel");
+
+    // Show the "Security" tab only for requests that
+    //   1) are https (state != insecure)
+    //   2) come from a target that provides security information.
+    let hasSecurityInfo = aData.securityState &&
+                          aData.securityState !== "insecure";
+    this.sidebar.toggleTab(hasSecurityInfo, "security-tab", "security-tabpanel");
 
     // Switch to the "Headers" tabpanel if the "Preview" previously selected
-    // and this is not an HTML response.
-    if (!isHtml && this.widget.selectedIndex == 5) {
+    // and this is not an HTML response or "Security" was selected but this
+    // request has no security information.
+
+    if (!isHtml && this.widget.selectedPanel === $("#preview-tabpanel") ||
+        !hasSecurityInfo && this.widget.selectedPanel === $("#security-tabpanel")) {
       this.widget.selectedIndex = 0;
     }
 
@@ -2038,7 +2175,19 @@ NetworkDetailsView.prototype = {
       return;
     }
 
+    let viewState = this._viewState;
+    if (viewState.updating[tab]) {
+      // A task is currently updating this tab. If we started another update
+      // task now it would result in a duplicated content as described in bugs
+      // 997065 and 984687. As there's no way to stop the current task mark the
+      // tab dirty and refresh the panel once the current task finishes.
+      viewState.dirty[tab] = true;
+      viewState.latestData = src;
+      return;
+    }
+
     Task.spawn(function*() {
+      viewState.updating[tab] = true;
       switch (tab) {
         case 0: // "Headers"
           yield view._setSummary(src);
@@ -2064,14 +2213,39 @@ NetworkDetailsView.prototype = {
         case 4: // "Timings"
           yield view._setTimingsInformation(src.eventTimings);
           break;
-        case 5: // "Preview"
+        case 5: // "Security"
+          yield view._setSecurityInfo(src.securityInfo, src.url);
+          break;
+        case 6: // "Preview"
           yield view._setHtmlPreview(src.responseContent);
           break;
       }
-      populated[tab] = true;
-      window.emit(EVENTS.TAB_UPDATED);
-      NetMonitorView.RequestsMenu.ensureSelectedItemIsVisible();
-    });
+      viewState.updating[tab] = false;
+    }).then(() => {
+      if (tab == this.widget.selectedIndex) {
+        if (viewState.dirty[tab]) {
+          // The request information was updated while the task was running.
+          viewState.dirty[tab] = false;
+          view.populate(viewState.latestData);
+        }
+        else {
+          // Tab is selected but not dirty. We're done here.
+          populated[tab] = true;
+          window.emit(EVENTS.TAB_UPDATED);
+
+          if (NetMonitorController.isConnected()) {
+            NetMonitorView.RequestsMenu.ensureSelectedItemIsVisible();
+          }
+        }
+      }
+      else {
+        if (viewState.dirty[tab]) {
+          // Tab is dirty but no longer selected. Don't refresh it now, it'll be
+          // done if the tab is shown again.
+          viewState.dirty[tab] = false;
+        }
+      }
+    }, Cu.reportError);
   },
 
   /**
@@ -2123,20 +2297,14 @@ NetworkDetailsView.prototype = {
    * @return object
    *        A promise that resolves when request headers are set.
    */
-  _setRequestHeaders: function(aHeadersResponse, aHeadersFromUploadStream) {
-    let outstanding = [];
-
+  _setRequestHeaders: Task.async(function*(aHeadersResponse, aHeadersFromUploadStream) {
     if (aHeadersResponse && aHeadersResponse.headers.length) {
-      outstanding.push(
-        this._addHeaders(this._requestHeaders, aHeadersResponse));
+      yield this._addHeaders(this._requestHeaders, aHeadersResponse);
     }
     if (aHeadersFromUploadStream && aHeadersFromUploadStream.headers.length) {
-      outstanding.push(
-        this._addHeaders(this._requestHeadersFromUpload, aHeadersFromUploadStream));
+      yield this._addHeaders(this._requestHeadersFromUpload, aHeadersFromUploadStream);
     }
-
-    return promise.all(outstanding);
-  },
+  }),
 
   /**
    * Sets the network response headers shown in this view.
@@ -2146,13 +2314,12 @@ NetworkDetailsView.prototype = {
    * @return object
    *        A promise that resolves when response headers are set.
    */
-  _setResponseHeaders: function(aResponse) {
+  _setResponseHeaders: Task.async(function*(aResponse) {
     if (aResponse && aResponse.headers.length) {
       aResponse.headers.sort((a, b) => a.name > b.name);
-      return this._addHeaders(this._responseHeaders, aResponse);
+      yield this._addHeaders(this._responseHeaders, aResponse);
     }
-    return promise.resolve();
-  },
+  }),
 
   /**
    * Populates the headers container in this view with the specified data.
@@ -2164,18 +2331,20 @@ NetworkDetailsView.prototype = {
    * @return object
    *        A promise that resolves when headers are added.
    */
-  _addHeaders: function(aName, aResponse) {
+  _addHeaders: Task.async(function*(aName, aResponse) {
     let kb = aResponse.headersSize / 1024;
     let size = L10N.numberWithDecimals(kb, HEADERS_SIZE_DECIMALS);
     let text = L10N.getFormatStr("networkMenu.sizeKB", size);
+
     let headersScope = this._headers.addScope(aName + " (" + text + ")");
     headersScope.expanded = true;
 
-    return promise.all(aResponse.headers.map(header => {
+    for (let header of aResponse.headers) {
       let headerVar = headersScope.addItem(header.name, {}, true);
-      return gNetwork.getString(header.value).then(aString => headerVar.setGrip(aString));
-    }));
-  },
+      let headerValue = yield gNetwork.getString(header.value);
+      headerVar.setGrip(headerValue);
+    }
+  }),
 
   /**
    * Sets the network request cookies shown in this view.
@@ -2185,13 +2354,12 @@ NetworkDetailsView.prototype = {
    * @return object
    *        A promise that is resolved when the request cookies are set.
    */
-  _setRequestCookies: function(aResponse) {
+  _setRequestCookies: Task.async(function*(aResponse) {
     if (aResponse && aResponse.cookies.length) {
       aResponse.cookies.sort((a, b) => a.name > b.name);
-      return this._addCookies(this._requestCookies, aResponse);
+      yield this._addCookies(this._requestCookies, aResponse);
     }
-    return promise.resolve();
-  },
+  }),
 
   /**
    * Sets the network response cookies shown in this view.
@@ -2201,12 +2369,11 @@ NetworkDetailsView.prototype = {
    * @return object
    *        A promise that is resolved when the response cookies are set.
    */
-  _setResponseCookies: function(aResponse) {
+  _setResponseCookies: Task.async(function*(aResponse) {
     if (aResponse && aResponse.cookies.length) {
-      return this._addCookies(this._responseCookies, aResponse);
+      yield this._addCookies(this._responseCookies, aResponse);
     }
-    return promise.resolve();
-  },
+  }),
 
   /**
    * Populates the cookies container in this view with the specified data.
@@ -2218,35 +2385,34 @@ NetworkDetailsView.prototype = {
    * @return object
    *        Returns a promise that resolves upon the adding of cookies.
    */
-  _addCookies: function(aName, aResponse) {
+  _addCookies: Task.async(function*(aName, aResponse) {
     let cookiesScope = this._cookies.addScope(aName);
     cookiesScope.expanded = true;
 
-    return promise.all(aResponse.cookies.map(cookie => {
+    for (let cookie of aResponse.cookies) {
       let cookieVar = cookiesScope.addItem(cookie.name, {}, true);
-      return gNetwork.getString(cookie.value).then(aString => {
-        cookieVar.setGrip(aString);
+      let cookieValue = yield gNetwork.getString(cookie.value);
+      cookieVar.setGrip(cookieValue);
 
-        // By default the cookie name and value are shown. If this is the only
-        // information available, then nothing else is to be displayed.
-        let cookieProps = Object.keys(cookie);
-        if (cookieProps.length == 2) {
-          return;
-        }
+      // By default the cookie name and value are shown. If this is the only
+      // information available, then nothing else is to be displayed.
+      let cookieProps = Object.keys(cookie);
+      if (cookieProps.length == 2) {
+        continue;
+      }
 
-        // Display any other information other than the cookie name and value
-        // which may be available.
-        let rawObject = Object.create(null);
-        let otherProps = cookieProps.filter(e => e != "name" && e != "value");
-        for (let prop of otherProps) {
-          rawObject[prop] = cookie[prop];
-        }
-        cookieVar.populate(rawObject);
-        cookieVar.twisty = true;
-        cookieVar.expanded = true;
-      });
-    }));
-  },
+      // Display any other information other than the cookie name and value
+      // which may be available.
+      let rawObject = Object.create(null);
+      let otherProps = cookieProps.filter(e => e != "name" && e != "value");
+      for (let prop of otherProps) {
+        rawObject[prop] = cookie[prop];
+      }
+      cookieVar.populate(rawObject);
+      cookieVar.twisty = true;
+      cookieVar.expanded = true;
+    }
+  }),
 
   /**
    * Sets the network request get params shown in this view.
@@ -2273,59 +2439,58 @@ NetworkDetailsView.prototype = {
    * @return object
    *        A promise that is resolved when the request post params are set.
    */
-  _setRequestPostParams: function(aHeadersResponse, aHeadersFromUploadStream, aPostDataResponse) {
+  _setRequestPostParams: Task.async(function*(aHeadersResponse, aHeadersFromUploadStream, aPostDataResponse) {
     if (!aHeadersResponse || !aHeadersFromUploadStream || !aPostDataResponse) {
-      return promise.resolve();
+      return;
     }
+
     let { headers: requestHeaders } = aHeadersResponse;
     let { headers: payloadHeaders } = aHeadersFromUploadStream;
     let allHeaders = [...payloadHeaders, ...requestHeaders];
 
-    let contentTypeHeader = allHeaders.filter(e => e.name.toLowerCase() == "content-type")[0];
+    let contentTypeHeader = allHeaders.find(e => e.name.toLowerCase() == "content-type");
     let contentTypeLongString = contentTypeHeader ? contentTypeHeader.value : "";
     let postDataLongString = aPostDataResponse.postData.text;
 
-    return promise.all([
-      gNetwork.getString(postDataLongString),
-      gNetwork.getString(contentTypeLongString)
-    ])
-    .then(([aPostData, aContentType]) => {
-      // Handle query strings (e.g. "?foo=bar&baz=42").
-      if (aContentType.contains("x-www-form-urlencoded")) {
-        for (let section of aPostData.split(/\r\n|\r|\n/)) {
-          // Before displaying it, make sure this section of the POST data
-          // isn't a line containing upload stream headers.
-          if (payloadHeaders.every(header => !section.startsWith(header.name))) {
-            this._addParams(this._paramsFormData, section);
-          }
+    let postData = yield gNetwork.getString(postDataLongString);
+    let contentType = yield gNetwork.getString(contentTypeLongString);
+
+    // Handle query strings (e.g. "?foo=bar&baz=42").
+    if (contentType.contains("x-www-form-urlencoded")) {
+      for (let section of postData.split(/\r\n|\r|\n/)) {
+        // Before displaying it, make sure this section of the POST data
+        // isn't a line containing upload stream headers.
+        if (payloadHeaders.every(header => !section.startsWith(header.name))) {
+          this._addParams(this._paramsFormData, section);
         }
       }
-      // Handle actual forms ("multipart/form-data" content type).
-      else {
-        // This is really awkward, but hey, it works. Let's show an empty
-        // scope in the params view and place the source editor containing
-        // the raw post data directly underneath.
-        $("#request-params-box").removeAttribute("flex");
-        let paramsScope = this._params.addScope(this._paramsPostPayload);
-        paramsScope.expanded = true;
-        paramsScope.locked = true;
+    }
+    // Handle actual forms ("multipart/form-data" content type).
+    else {
+      // This is really awkward, but hey, it works. Let's show an empty
+      // scope in the params view and place the source editor containing
+      // the raw post data directly underneath.
+      $("#request-params-box").removeAttribute("flex");
+      let paramsScope = this._params.addScope(this._paramsPostPayload);
+      paramsScope.expanded = true;
+      paramsScope.locked = true;
 
-        $("#request-post-data-textarea-box").hidden = false;
-        return NetMonitorView.editor("#request-post-data-textarea").then(aEditor => {
-          // Most POST bodies are usually JSON, so they can be neatly
-          // syntax highlighted as JS. Otheriwse, fall back to plain text.
-          try {
-            JSON.parse(aPostData);
-            aEditor.setMode(Editor.modes.js);
-          } catch (e) {
-            aEditor.setMode(Editor.modes.text);
-          } finally {
-            aEditor.setText(aPostData);
-          }
-        });
+      $("#request-post-data-textarea-box").hidden = false;
+      let editor = yield NetMonitorView.editor("#request-post-data-textarea");
+      // Most POST bodies are usually JSON, so they can be neatly
+      // syntax highlighted as JS. Otheriwse, fall back to plain text.
+      try {
+        JSON.parse(postData);
+        editor.setMode(Editor.modes.js);
+      } catch (e) {
+        editor.setMode(Editor.modes.text);
+      } finally {
+        editor.setText(postData);
       }
-    }).then(() => window.emit(EVENTS.REQUEST_POST_PARAMS_DISPLAYED));
-  },
+    }
+
+    window.emit(EVENTS.REQUEST_POST_PARAMS_DISPLAYED);
+  }),
 
   /**
    * Populates the params container in this view with the specified data.
@@ -2357,118 +2522,112 @@ NetworkDetailsView.prototype = {
    * @param object aResponse
    *        The message received from the server.
    * @return object
-   *        A promise that is resolved when the response body is set
+   *         A promise that is resolved when the response body is set.
    */
-  _setResponseBody: function(aUrl, aResponse) {
+  _setResponseBody: Task.async(function*(aUrl, aResponse) {
     if (!aResponse) {
-      return promise.resolve();
+      return;
     }
     let { mimeType, text, encoding } = aResponse.content;
+    let responseBody = yield gNetwork.getString(text);
 
-    return gNetwork.getString(text).then(aString => {
-      // Handle json, which we tentatively identify by checking the MIME type
-      // for "json" after any word boundary. This works for the standard
-      // "application/json", and also for custom types like "x-bigcorp-json".
-      // Additionally, we also directly parse the response text content to
-      // verify whether it's json or not, to handle responses incorrectly
-      // labeled as text/plain instead.
-      let jsonMimeType, jsonObject, jsonObjectParseError;
-      try {
-        // Test the mime type *and* parse the string, because "JSONP" responses
-        // (json with callback) aren't actually valid json.
-        jsonMimeType = /\bjson/.test(mimeType);
-        jsonObject = JSON.parse(aString);
-      } catch (e) {
-        jsonObjectParseError = e;
-      }
-      if (jsonMimeType || jsonObject) {
-        // Extract the actual json substring in case this might be a "JSONP".
-        // This regex basically parses a function call and captures the
-        // function name and arguments in two separate groups.
-        let jsonpRegex = /^\s*([\w$]+)\s*\(\s*([^]*)\s*\)\s*;?\s*$/;
-        let [_, callbackPadding, jsonpString] = aString.match(jsonpRegex) || [];
+    // Handle json, which we tentatively identify by checking the MIME type
+    // for "json" after any word boundary. This works for the standard
+    // "application/json", and also for custom types like "x-bigcorp-json".
+    // Additionally, we also directly parse the response text content to
+    // verify whether it's json or not, to handle responses incorrectly
+    // labeled as text/plain instead.
+    let jsonMimeType, jsonObject, jsonObjectParseError;
+    try {
+      jsonMimeType = /\bjson/.test(mimeType);
+      jsonObject = JSON.parse(responseBody);
+    } catch (e) {
+      jsonObjectParseError = e;
+    }
+    if (jsonMimeType || jsonObject) {
+      // Extract the actual json substring in case this might be a "JSONP".
+      // This regex basically parses a function call and captures the
+      // function name and arguments in two separate groups.
+      let jsonpRegex = /^\s*([\w$]+)\s*\(\s*([^]*)\s*\)\s*;?\s*$/;
+      let [_, callbackPadding, jsonpString] = responseBody.match(jsonpRegex) || [];
 
-        // Make sure this is a valid JSON object first. If so, nicely display
-        // the parsing results in a variables view. Otherwise, simply show
-        // the contents as plain text.
-        if (callbackPadding && jsonpString) {
-          try {
-            jsonObject = JSON.parse(jsonpString);
-          } catch (e) {
-            jsonObjectParseError = e;
-          }
-        }
-
-        // Valid JSON or JSONP.
-        if (jsonObject) {
-          $("#response-content-json-box").hidden = false;
-          let jsonScopeName = callbackPadding
-            ? L10N.getFormatStr("jsonpScopeName", callbackPadding)
-            : L10N.getStr("jsonScopeName");
-
-          return this._json.controller.setSingleVariable({
-            label: jsonScopeName,
-            rawObject: jsonObject,
-          }).expanded;
-        }
-        // Malformed JSON.
-        else {
-          $("#response-content-textarea-box").hidden = false;
-          let infoHeader = $("#response-content-info-header");
-          infoHeader.setAttribute("value", jsonObjectParseError);
-          infoHeader.setAttribute("tooltiptext", jsonObjectParseError);
-          infoHeader.hidden = false;
-          return NetMonitorView.editor("#response-content-textarea").then(aEditor => {
-            aEditor.setMode(Editor.modes.js);
-            aEditor.setText(aString);
-          });
+      // Make sure this is a valid JSON object first. If so, nicely display
+      // the parsing results in a variables view. Otherwise, simply show
+      // the contents as plain text.
+      if (callbackPadding && jsonpString) {
+        try {
+          jsonObject = JSON.parse(jsonpString);
+        } catch (e) {
+          jsonObjectParseError = e;
         }
       }
-      // Handle images.
-      else if (mimeType.contains("image/")) {
-        $("#response-content-image-box").setAttribute("align", "center");
-        $("#response-content-image-box").setAttribute("pack", "center");
-        $("#response-content-image-box").hidden = false;
-        $("#response-content-image").src =
-          "data:" + mimeType + ";" + encoding + "," + aString;
 
-        // Immediately display additional information about the image:
-        // file name, mime type and encoding.
-        $("#response-content-image-name-value").setAttribute("value", nsIURL(aUrl).fileName);
-        $("#response-content-image-mime-value").setAttribute("value", mimeType);
-        $("#response-content-image-encoding-value").setAttribute("value", encoding);
+      // Valid JSON or JSONP.
+      if (jsonObject) {
+        $("#response-content-json-box").hidden = false;
+        let jsonScopeName = callbackPadding
+          ? L10N.getFormatStr("jsonpScopeName", callbackPadding)
+          : L10N.getStr("jsonScopeName");
 
-        // Wait for the image to load in order to display the width and height.
-        $("#response-content-image").onload = e => {
-          // XUL images are majestic so they don't bother storing their dimensions
-          // in width and height attributes like the rest of the folk. Hack around
-          // this by getting the bounding client rect and subtracting the margins.
-          let { width, height } = e.target.getBoundingClientRect();
-          let dimensions = (width - 2) + " x " + (height - 2);
-          $("#response-content-image-dimensions-value").setAttribute("value", dimensions);
-        };
+        let jsonVar = { label: jsonScopeName, rawObject: jsonObject };
+        yield this._json.controller.setSingleVariable(jsonVar).expanded;
       }
-      // Handle anything else.
+      // Malformed JSON.
       else {
         $("#response-content-textarea-box").hidden = false;
-        return NetMonitorView.editor("#response-content-textarea").then(aEditor => {
-          aEditor.setMode(Editor.modes.text);
-          aEditor.setText(aString);
+        let infoHeader = $("#response-content-info-header");
+        infoHeader.setAttribute("value", jsonObjectParseError);
+        infoHeader.setAttribute("tooltiptext", jsonObjectParseError);
+        infoHeader.hidden = false;
 
-          // Maybe set a more appropriate mode in the Source Editor if possible,
-          // but avoid doing this for very large files.
-          if (aString.length < SOURCE_SYNTAX_HIGHLIGHT_MAX_FILE_SIZE) {
-            for (let key in CONTENT_MIME_TYPE_MAPPINGS) {
-              if (mimeType.contains(key)) {
-                aEditor.setMode(CONTENT_MIME_TYPE_MAPPINGS[key]);
-                break;
-              }
-            }
-          }
-        });
+        let editor = yield NetMonitorView.editor("#response-content-textarea");
+        editor.setMode(Editor.modes.js);
+        editor.setText(responseBody);
       }
-    }).then(() => window.emit(EVENTS.RESPONSE_BODY_DISPLAYED));
-  },
+    }
+    // Handle images.
+    else if (mimeType.contains("image/")) {
+      $("#response-content-image-box").setAttribute("align", "center");
+      $("#response-content-image-box").setAttribute("pack", "center");
+      $("#response-content-image-box").hidden = false;
+      $("#response-content-image").src =
+        "data:" + mimeType + ";" + encoding + "," + responseBody;
+
+      // Immediately display additional information about the image:
+      // file name, mime type and encoding.
+      $("#response-content-image-name-value").setAttribute("value", nsIURL(aUrl).fileName);
+      $("#response-content-image-mime-value").setAttribute("value", mimeType);
+      $("#response-content-image-encoding-value").setAttribute("value", encoding);
+
+      // Wait for the image to load in order to display the width and height.
+      $("#response-content-image").onload = e => {
+        // XUL images are majestic so they don't bother storing their dimensions
+        // in width and height attributes like the rest of the folk. Hack around
+        // this by getting the bounding client rect and subtracting the margins.
+        let { width, height } = e.target.getBoundingClientRect();
+        let dimensions = (width - 2) + " \u00D7 " + (height - 2);
+        $("#response-content-image-dimensions-value").setAttribute("value", dimensions);
+      };
+    }
+    // Handle anything else.
+    else {
+      $("#response-content-textarea-box").hidden = false;
+      let editor = yield NetMonitorView.editor("#response-content-textarea");
+      editor.setMode(Editor.modes.text);
+      editor.setText(responseBody);
+
+      // Maybe set a more appropriate mode in the Source Editor if possible,
+      // but avoid doing this for very large files.
+      if (responseBody.length < SOURCE_SYNTAX_HIGHLIGHT_MAX_FILE_SIZE) {
+        let mapping = Object.keys(CONTENT_MIME_TYPE_MAPPINGS).find(key => mimeType.contains(key));
+        if (mapping) {
+          editor.setMode(CONTENT_MIME_TYPE_MAPPINGS[mapping]);
+        }
+      }
+    }
+
+    window.emit(EVENTS.RESPONSE_BODY_DISPLAYED);
+  }),
 
   /**
    * Sets the timings information shown in this view.
@@ -2545,23 +2704,126 @@ NetworkDetailsView.prototype = {
    * @param object aResponse
    *        The message received from the server.
    * @return object
-   *        A promise that is resolved when the response body is set
+   *        A promise that is resolved when the html preview is rendered.
    */
-  _setHtmlPreview: function(aResponse) {
+  _setHtmlPreview: Task.async(function*(aResponse) {
     if (!aResponse) {
       return promise.resolve();
     }
     let { text } = aResponse.content;
+    let responseBody = yield gNetwork.getString(text);
+
+    // Always disable JS when previewing HTML responses.
     let iframe = $("#response-preview");
+    iframe.contentDocument.docShell.allowJavascript = false;
+    iframe.contentDocument.documentElement.innerHTML = responseBody;
 
-    return gNetwork.getString(text).then(aString => {
-      // Always disable JS when previewing HTML responses.
-      iframe.contentDocument.docShell.allowJavascript = false;
-      iframe.contentDocument.documentElement.innerHTML = aString;
+    window.emit(EVENTS.RESPONSE_HTML_PREVIEW_DISPLAYED);
+  }),
 
-      window.emit(EVENTS.RESPONSE_HTML_PREVIEW_DISPLAYED);
-    });
-  },
+  /**
+   * Sets the security information shown in this view.
+   *
+   * @param object securityInfo
+   *        The data received from server
+   * @param string url
+   *        The URL of this request
+   * @return object
+   *        A promise that is resolved when the security info is rendered.
+   */
+  _setSecurityInfo: Task.async(function* (securityInfo, url) {
+    if (!securityInfo) {
+      // We don't have security info. This could mean one of two things:
+      // 1) This connection is not secure and this tab is not visible and thus
+      //    we shouldn't be here.
+      // 2) We have already received securityState and the tab is visible BUT
+      //    the rest of the information is still on its way. Once it arrives
+      //    this method is called again.
+      return;
+    }
+
+    /**
+     * A helper that sets label text to specified value.
+     *
+     * @param string selector
+     *        A selector for the label.
+     * @param string value
+     *        The value label should have. If this evaluates to false a
+     *        placeholder string <Not Available> is used instead.
+     */
+    function setLabel(selector, value) {
+      let label = $(selector);
+      if (!value) {
+        label.value = L10N.getStr("netmonitor.security.notAvailable");
+        label.setAttribute("tooltiptext", label.value);
+      } else {
+        label.value = value;
+        label.setAttribute("tooltiptext", value);
+      }
+    }
+
+    let errorbox = $("#security-error");
+    let infobox = $("#security-information");
+
+    if (securityInfo.state === "secure" || securityInfo.state === "weak") {
+      infobox.hidden = false;
+      errorbox.hidden = true;
+
+      // Warning icons
+      let cipher = $("#security-warning-cipher");
+      let sslv3 = $("#security-warning-sslv3");
+
+      if (securityInfo.state === "weak") {
+        cipher.hidden = securityInfo.weaknessReasons.indexOf("cipher") === -1;
+        sslv3.hidden = securityInfo.weaknessReasons.indexOf("sslv3") === -1;
+      } else {
+        cipher.hidden = true;
+        sslv3.hidden = true;
+      }
+
+      let enabledLabel = L10N.getStr("netmonitor.security.enabled");
+      let disabledLabel = L10N.getStr("netmonitor.security.disabled");
+
+      // Connection parameters
+      setLabel("#security-protocol-version-value", securityInfo.protocolVersion);
+      setLabel("#security-ciphersuite-value", securityInfo.cipherSuite);
+
+      // Host header
+      let domain = NetMonitorView.RequestsMenu._getUriHostPort(url);
+      let hostHeader = L10N.getFormatStr("netmonitor.security.hostHeader", domain);
+      setLabel("#security-info-host-header", hostHeader);
+
+      // Parameters related to the domain
+      setLabel("#security-http-strict-transport-security-value",
+                securityInfo.hsts ? enabledLabel : disabledLabel);
+
+      setLabel("#security-public-key-pinning-value",
+                securityInfo.hpkp ? enabledLabel : disabledLabel);
+
+      // Certificate parameters
+      let cert = securityInfo.cert;
+      setLabel("#security-cert-subject-cn", cert.subject.commonName);
+      setLabel("#security-cert-subject-o", cert.subject.organization);
+      setLabel("#security-cert-subject-ou", cert.subject.organizationalUnit);
+
+      setLabel("#security-cert-issuer-cn", cert.issuer.commonName);
+      setLabel("#security-cert-issuer-o", cert.issuer.organization);
+      setLabel("#security-cert-issuer-ou", cert.issuer.organizationalUnit);
+
+      setLabel("#security-cert-validity-begins", cert.validity.start);
+      setLabel("#security-cert-validity-expires", cert.validity.end);
+
+      setLabel("#security-cert-sha1-fingerprint", cert.fingerprint.sha1);
+      setLabel("#security-cert-sha256-fingerprint", cert.fingerprint.sha256);
+    } else {
+      infobox.hidden = true;
+      errorbox.hidden = false;
+
+      // Strip any HTML from the message.
+      let plain = DOMParser.parseFromString(securityInfo.errorMessage, "text/html");
+      $("#security-error-message").textContent = plain.body.textContent;
+    }
+  }),
 
   _dataSrc: null,
   _headers: null,
@@ -2794,11 +3056,12 @@ function parseQueryString(aQueryString) {
     return;
   }
   // Turn the params string into an array containing { name: value } tuples.
-  let paramsArray = aQueryString.replace(/^[?&]/, "").split("&").map(e =>
-    let (param = e.split("=")) {
+  let paramsArray = aQueryString.replace(/^[?&]/, "").split("&").map(e => {
+    let param = e.split("=");
+    return {
       name: param[0] ? NetworkHelper.convertToUnicode(unescape(param[0])) : "",
       value: param[1] ? NetworkHelper.convertToUnicode(unescape(param[1])) : ""
-    });
+    }});
   return paramsArray;
 }
 

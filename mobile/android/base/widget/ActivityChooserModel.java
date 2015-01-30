@@ -20,6 +20,11 @@
 //package android.widget;
 package org.mozilla.gecko.widget;
 
+// Mozilla: New import
+import org.mozilla.gecko.distribution.Distribution;
+import org.mozilla.gecko.GeckoProfile;
+import java.io.File;
+
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
@@ -168,7 +173,7 @@ public class ActivityChooserModel extends DataSetObservable {
     /**
      * Tag used for logging.
      */
-    private static final String LOG_TAG = ActivityChooserModel.class.getSimpleName();
+    static final String LOG_TAG = ActivityChooserModel.class.getSimpleName();
 
     /**
      * The root tag in the history file.
@@ -194,12 +199,6 @@ public class ActivityChooserModel extends DataSetObservable {
      * Attribute for the choice weight.
      */
     private static final String ATTRIBUTE_WEIGHT = "weight";
-
-    /**
-     * The default name of the choice history file.
-     */
-    public static final String DEFAULT_HISTORY_FILE_NAME =
-        "activity_choser_model_history.xml";
 
     /**
      * The default maximal length of the choice history.
@@ -263,12 +262,12 @@ public class ActivityChooserModel extends DataSetObservable {
     /**
      * Context for accessing resources.
      */
-    private final Context mContext;
+    final Context mContext;
 
     /**
      * The name of the history file that backs this model.
      */
-    private final String mHistoryFileName;
+    final String mHistoryFileName;
 
     /**
      * The intent for which a activity is being chosen.
@@ -293,7 +292,7 @@ public class ActivityChooserModel extends DataSetObservable {
      * only after a call to {@link #persistHistoricalDataIfNeeded()} followed by change
      * of the share records.
      */
-    private boolean mCanReadHistoricalData = true;
+    boolean mCanReadHistoricalData = true;
 
     /**
      * Flag whether the choice history was read. This is used to enforce that
@@ -304,7 +303,7 @@ public class ActivityChooserModel extends DataSetObservable {
      * full and the file is rewritten. This is necessary since we need to
      * purge old records that are outside of the sliding window of past choices.
      */
-    private boolean mReadShareHistoryCalled = false;
+    private boolean mReadShareHistoryCalled;
 
     /**
      * Flag whether the choice records have changed. In general many clients can
@@ -317,24 +316,18 @@ public class ActivityChooserModel extends DataSetObservable {
     /**
      * Flag whether to reload the activities for the current intent.
      */
-    private boolean mReloadActivities = false;
+    boolean mReloadActivities;
 
     /**
      * Policy for controlling how the model handles chosen activities.
      */
-    private OnChooseActivityListener mActivityChoserModelPolicy;
+    private OnChooseActivityListener mActivityChooserModelPolicy;
 
     /**
      * Gets the data model backed by the contents of the provided file with historical data.
      * Note that only one data model is backed by a given file, thus multiple calls with
      * the same file name will return the same model instance. If no such instance is present
      * it is created.
-     * <p>
-     * <strong>Note:</strong> To use the default historical data file clients should explicitly
-     * pass as file name {@link #DEFAULT_HISTORY_FILE_NAME}. If no persistence of the choice
-     * history is desired clients should pass <code>null</code> for the file name. In such
-     * case a new model is returned for each invocation.
-     * </p>
      *
      * <p>
      * <strong>Always use difference historical data files for semantically different actions.
@@ -497,10 +490,10 @@ public class ActivityChooserModel extends DataSetObservable {
             Intent choiceIntent = new Intent(mIntent);
             choiceIntent.setComponent(chosenName);
 
-            if (mActivityChoserModelPolicy != null) {
+            if (mActivityChooserModelPolicy != null) {
                 // Do not allow the policy to change the intent.
                 Intent choiceIntentCopy = new Intent(choiceIntent);
-                final boolean handled = mActivityChoserModelPolicy.onChooseActivity(this,
+                final boolean handled = mActivityChooserModelPolicy.onChooseActivity(this,
                         choiceIntentCopy);
                 if (handled) {
                     return null;
@@ -522,7 +515,7 @@ public class ActivityChooserModel extends DataSetObservable {
      */
     public void setOnChooseActivityListener(OnChooseActivityListener listener) {
         synchronized (mInstanceLock) {
-            mActivityChoserModelPolicy = listener;
+            mActivityChooserModelPolicy = listener;
         }
     }
 
@@ -794,7 +787,7 @@ public class ActivityChooserModel extends DataSetObservable {
      * @param historicalRecord The pkg to delete records for.
      * @return True if the record was added.
      */
-    private boolean removeHistoricalRecordsForPackage(final String pkg) {
+    boolean removeHistoricalRecordsForPackage(final String pkg) {
         boolean removed = false;
 
         for (Iterator<HistoricalRecord> i = mHistoricalRecords.iterator(); i.hasNext();) {
@@ -974,6 +967,7 @@ public class ActivityChooserModel extends DataSetObservable {
             return true;
         }
 
+        @Override
         public int compareTo(ActivityResolveInfo another) {
              return  Float.floatToIntBits(another.weight) - Float.floatToIntBits(weight);
         }
@@ -998,6 +992,7 @@ public class ActivityChooserModel extends DataSetObservable {
         private final Map<String, ActivityResolveInfo> mPackageNameToActivityMap =
             new HashMap<String, ActivityResolveInfo>();
 
+        @Override
         public void sort(Intent intent, List<ActivityResolveInfo> activities,
                 List<HistoricalRecord> historicalRecords) {
             Map<String, ActivityResolveInfo> packageNameToActivityMap =
@@ -1043,15 +1038,50 @@ public class ActivityChooserModel extends DataSetObservable {
      * Command for reading the historical records from a file off the UI thread.
      */
     private void readHistoricalDataImpl() {
-        FileInputStream fis = null;
         try {
-            fis = mContext.openFileInput(mHistoryFileName);
-        } catch (FileNotFoundException fnfe) {
-            if (DEBUG) {
-                Log.i(LOG_TAG, "Could not open historical records file: " + mHistoryFileName);
+            GeckoProfile profile = GeckoProfile.get(mContext);
+            File f = profile.getFile(mHistoryFileName);
+            if (!f.exists()) {
+                // Fall back to the non-profile aware file if it exists...
+                File oldFile = new File(mHistoryFileName);
+                oldFile.renameTo(f);
             }
-            return;
+            readHistoricalDataFromStream(new FileInputStream(f));
+        } catch (FileNotFoundException fnfe) {
+            final Distribution dist = Distribution.getInstance(mContext);
+            dist.addOnDistributionReadyCallback(new Distribution.ReadyCallback() {
+                @Override
+                public void distributionNotFound() {
+                }
+
+                @Override
+                public void distributionFound(Distribution distribution) {
+                    try {
+                        File distFile = dist.getDistributionFile("quickshare/" + mHistoryFileName);
+                        if (distFile == null) {
+                            if (DEBUG) {
+                                Log.i(LOG_TAG, "Could not open historical records file: " + mHistoryFileName);
+                            }
+                            return;
+                        }
+                        readHistoricalDataFromStream(new FileInputStream(distFile));
+                    } catch (Exception ex) {
+                        if (DEBUG) {
+                            Log.i(LOG_TAG, "Could not open historical records file: " + mHistoryFileName);
+                        }
+                        return;
+                    }
+                }
+
+                @Override
+                public void distributionArrivedLate(Distribution distribution) {
+                    distributionFound(distribution);
+                }
+            });
         }
+    }
+
+    void readHistoricalDataFromStream(FileInputStream fis) {
         try {
             XmlPullParser parser = Xml.newPullParser();
             parser.setInput(fis, null);
@@ -1098,10 +1128,8 @@ public class ActivityChooserModel extends DataSetObservable {
             if (DEBUG) {
                 Log.i(LOG_TAG, "Read " + historicalRecords.size() + " historical records.");
             }
-        } catch (XmlPullParserException xppe) {
-            Log.e(LOG_TAG, "Error reading historical recrod file: " + mHistoryFileName, xppe);
-        } catch (IOException ioe) {
-            Log.e(LOG_TAG, "Error reading historical recrod file: " + mHistoryFileName, ioe);
+        } catch (XmlPullParserException | IOException xppe) {
+            Log.e(LOG_TAG, "Error reading historical record file: " + mHistoryFileName, xppe);
         } finally {
             if (fis != null) {
                 try {
@@ -1122,14 +1150,17 @@ public class ActivityChooserModel extends DataSetObservable {
         @SuppressWarnings("unchecked")
         public Void doInBackground(Object... args) {
             List<HistoricalRecord> historicalRecords = (List<HistoricalRecord>) args[0];
-            String hostoryFileName = (String) args[1];
+            String historyFileName = (String) args[1];
 
             FileOutputStream fos = null;
 
             try {
-                fos = mContext.openFileOutput(hostoryFileName, Context.MODE_PRIVATE);
+                // Mozilla - Update the location we save files to
+                GeckoProfile profile = GeckoProfile.get(mContext);
+                File file = profile.getFile(historyFileName);
+                fos = new FileOutputStream(file);
             } catch (FileNotFoundException fnfe) {
-                Log.e(LOG_TAG, "Error writing historical recrod file: " + hostoryFileName, fnfe);
+                Log.e(LOG_TAG, "Error writing historical record file: " + historyFileName, fnfe);
                 return null;
             }
 
@@ -1160,12 +1191,8 @@ public class ActivityChooserModel extends DataSetObservable {
                 if (DEBUG) {
                     Log.i(LOG_TAG, "Wrote " + recordCount + " historical records.");
                 }
-            } catch (IllegalArgumentException iae) {
-                Log.e(LOG_TAG, "Error writing historical recrod file: " + mHistoryFileName, iae);
-            } catch (IllegalStateException ise) {
-                Log.e(LOG_TAG, "Error writing historical recrod file: " + mHistoryFileName, ise);
-            } catch (IOException ioe) {
-                Log.e(LOG_TAG, "Error writing historical recrod file: " + mHistoryFileName, ioe);
+            } catch (IllegalArgumentException | IOException | IllegalStateException e) {
+                Log.e(LOG_TAG, "Error writing historical record file: " + mHistoryFileName, e);
             } finally {
                 mCanReadHistoricalData = true;
                 if (fos != null) {
@@ -1188,7 +1215,7 @@ public class ActivityChooserModel extends DataSetObservable {
      */
     private static final String LOGTAG = "GeckoActivityChooserModel";
     private final class DataModelPackageMonitor extends BroadcastReceiver {
-        private Context mContext;
+        Context mContext;
 
         public DataModelPackageMonitor() { }
 

@@ -1,7 +1,6 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99 ft=cpp:
- *
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* vim: set ts=8 sts=4 et sw=4 tw=99: */
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -32,41 +31,30 @@ class WrapperFactory {
         return HasWrapperFlag(wrapper, WAIVE_XRAY_WRAPPER_FLAG);
     }
 
-    static bool IsSecurityWrapper(JSObject *obj) {
-        return !js::CheckedUnwrap(obj);
-    }
-
     static bool IsCOW(JSObject *wrapper);
 
     static JSObject *GetXrayWaiver(JS::HandleObject obj);
     static JSObject *CreateXrayWaiver(JSContext *cx, JS::HandleObject obj);
     static JSObject *WaiveXray(JSContext *cx, JSObject *obj);
 
-    static JSObject *DoubleWrap(JSContext *cx, JS::HandleObject obj, unsigned flags);
-
     // Prepare a given object for wrapping in a new compartment.
     static JSObject *PrepareForWrapping(JSContext *cx,
                                         JS::HandleObject scope,
                                         JS::HandleObject obj,
-                                        unsigned flags);
+                                        JS::HandleObject objectPassedToWrap);
 
     // Rewrap an object that is about to cross compartment boundaries.
     static JSObject *Rewrap(JSContext *cx,
                             JS::HandleObject existing,
                             JS::HandleObject obj,
-                            JS::HandleObject wrappedProto,
-                            JS::HandleObject parent,
-                            unsigned flags);
+                            JS::HandleObject parent);
 
     // Wrap wrapped object into a waiver wrapper and then re-wrap it.
     static bool WaiveXrayAndWrap(JSContext *cx, JS::MutableHandleValue vp);
     static bool WaiveXrayAndWrap(JSContext *cx, JS::MutableHandleObject object);
-
-    // Returns true if the wrapper is in not shadowing mode for the id.
-    static bool XrayWrapperNotShadowing(JSObject *wrapper, jsid id);
 };
 
-extern js::Wrapper XrayWaiver;
+extern const js::Wrapper XrayWaiver;
 
 }
 

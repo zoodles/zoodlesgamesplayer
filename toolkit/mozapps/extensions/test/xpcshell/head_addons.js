@@ -26,6 +26,7 @@ Components.utils.import("resource://gre/modules/NetUtil.jsm");
 Components.utils.import("resource://gre/modules/Promise.jsm");
 Components.utils.import("resource://gre/modules/Task.jsm");
 Components.utils.import("resource://gre/modules/osfile.jsm");
+Components.utils.import("resource://gre/modules/AsyncShutdown.jsm");
 
 Services.prefs.setBoolPref("toolkit.osfile.log", true);
 
@@ -37,13 +38,18 @@ let AddonManagerInternal = AMscope.AddonManagerInternal;
 // down AddonManager from the test
 let MockAsyncShutdown = {
   hook: null,
+  status: null,
   profileBeforeChange: {
-    addBlocker: function(aName, aBlocker) {
+    addBlocker: function(aName, aBlocker, aOptions) {
       do_print("Mock profileBeforeChange blocker for '" + aName + "'");
       MockAsyncShutdown.hook = aBlocker;
+      MockAsyncShutdown.status = aOptions.fetchState;
     }
-  }
+  },
+  // We can use the real Barrier
+  Barrier: AsyncShutdown.Barrier
 };
+
 AMscope.AsyncShutdown = MockAsyncShutdown;
 
 var gInternalManager = null;
@@ -399,6 +405,25 @@ function startupManager(aAppChanged) {
 }
 
 /**
+ * Helper to spin the event loop until a promise resolves or rejects
+ */
+function loopUntilPromise(aPromise) {
+  let done = false;
+  aPromise.then(
+    () => done = true,
+    err => {
+      do_report_unexpected_exception(err);
+      done = true;
+    });
+
+  let thr = Services.tm.mainThread;
+
+  while (!done) {
+    thr.processNextEvent(true);
+  }
+}
+
+/**
  * Restarts the add-on manager as if the host application was restarted.
  *
  * @param  aNewVersion
@@ -407,51 +432,58 @@ function startupManager(aAppChanged) {
  *         the application version has changed.
  */
 function restartManager(aNewVersion) {
-  shutdownManager();
-  if (aNewVersion) {
-    gAppInfo.version = aNewVersion;
-    startupManager(true);
-  }
-  else {
-    startupManager(false);
-  }
+  loopUntilPromise(promiseRestartManager(aNewVersion));
+}
+
+function promiseRestartManager(aNewVersion) {
+  return promiseShutdownManager()
+    .then(null, err => do_report_unexpected_exception(err))
+    .then(() => {
+      if (aNewVersion) {
+        gAppInfo.version = aNewVersion;
+        startupManager(true);
+      }
+      else {
+        startupManager(false);
+      }
+    });
 }
 
 function shutdownManager() {
-  if (!gInternalManager)
-    return;
+  loopUntilPromise(promiseShutdownManager());
+}
 
-  let shutdownDone = false;
-
-  Services.obs.notifyObservers(null, "quit-application-granted", null);
-  MockAsyncShutdown.hook().then(
-    () => shutdownDone = true,
-    err => shutdownDone = true);
-
-  let thr = Services.tm.mainThread;
-
-  // Wait until we observe the shutdown notifications
-  while (!shutdownDone) {
-    thr.processNextEvent(true);
+function promiseShutdownManager() {
+  if (!gInternalManager) {
+    return Promise.resolve(false);
   }
 
-  gInternalManager = null;
+  let hookErr = null;
+  Services.obs.notifyObservers(null, "quit-application-granted", null);
+  return MockAsyncShutdown.hook()
+    .then(null, err => hookErr = err)
+    .then( () => {
+      gInternalManager = null;
 
-  // Load the add-ons list as it was after application shutdown
-  loadAddonsList();
+      // Load the add-ons list as it was after application shutdown
+      loadAddonsList();
 
-  // Clear any crash report annotations
-  gAppInfo.annotations = {};
+      // Clear any crash report annotations
+      gAppInfo.annotations = {};
 
-  // Force the XPIProvider provider to reload to better
-  // simulate real-world usage.
-  let XPIscope = Components.utils.import("resource://gre/modules/addons/XPIProvider.jsm");
-  // This would be cleaner if I could get it as the rejection reason from
-  // the AddonManagerInternal.shutdown() promise
-  gXPISaveError = XPIscope.XPIProvider._shutdownError;
-  do_print("gXPISaveError set to: " + gXPISaveError);
-  AddonManagerPrivate.unregisterProvider(XPIscope.XPIProvider);
-  Components.utils.unload("resource://gre/modules/addons/XPIProvider.jsm");
+      // Force the XPIProvider provider to reload to better
+      // simulate real-world usage.
+      let XPIscope = Components.utils.import("resource://gre/modules/addons/XPIProvider.jsm");
+      // This would be cleaner if I could get it as the rejection reason from
+      // the AddonManagerInternal.shutdown() promise
+      gXPISaveError = XPIscope.XPIProvider._shutdownError;
+      do_print("gXPISaveError set to: " + gXPISaveError);
+      AddonManagerPrivate.unregisterProvider(XPIscope.XPIProvider);
+      Components.utils.unload("resource://gre/modules/addons/XPIProvider.jsm");
+      if (hookErr) {
+        throw hookErr;
+      }
+    });
 }
 
 function loadAddonsList() {
@@ -608,7 +640,7 @@ function createInstallRDF(aData) {
 /**
  * Writes an install.rdf manifest into a directory using the properties passed
  * in a JS object. The objects should contain a property for each property to
- * appear in the RDFThe object may contain an array of objects with id,
+ * appear in the RDF. The object may contain an array of objects with id,
  * minVersion and maxVersion in the targetApplications property to give target
  * application compatibility.
  *
@@ -616,14 +648,22 @@ function createInstallRDF(aData) {
  *          The object holding data about the add-on
  * @param   aDir
  *          The directory to add the install.rdf to
+ * @param   aId
+ *          An optional string to override the default installation aId
  * @param   aExtraFile
  *          An optional dummy file to create in the directory
+ * @return  An nsIFile for the directory in which the add-on is installed.
  */
-function writeInstallRDFToDir(aData, aDir, aExtraFile) {
+function writeInstallRDFToDir(aData, aDir, aId, aExtraFile) {
+  var id = aId ? aId : aData.id
+
+  var dir = aDir.clone();
+  dir.append(id);
+
   var rdf = createInstallRDF(aData);
-  if (!aDir.exists())
-    aDir.create(AM_Ci.nsIFile.DIRECTORY_TYPE, FileUtils.PERMS_DIRECTORY);
-  var file = aDir.clone();
+  if (!dir.exists())
+    dir.create(AM_Ci.nsIFile.DIRECTORY_TYPE, FileUtils.PERMS_DIRECTORY);
+  var file = dir.clone();
   file.append("install.rdf");
   if (file.exists())
     file.remove(true);
@@ -636,17 +676,18 @@ function writeInstallRDFToDir(aData, aDir, aExtraFile) {
   fos.close();
 
   if (!aExtraFile)
-    return;
+    return dir;
 
-  file = aDir.clone();
+  file = dir.clone();
   file.append(aExtraFile);
   file.create(AM_Ci.nsIFile.NORMAL_FILE_TYPE, FileUtils.PERMS_FILE);
+  return dir;
 }
 
 /**
  * Writes an install.rdf manifest into an extension using the properties passed
  * in a JS object. The objects should contain a property for each property to
- * appear in the RDFThe object may contain an array of objects with id,
+ * appear in the RDF. The object may contain an array of objects with id,
  * minVersion and maxVersion in the targetApplications property to give target
  * application compatibility.
  *
@@ -661,15 +702,33 @@ function writeInstallRDFToDir(aData, aDir, aExtraFile) {
  * @return  A file pointing to where the extension was installed
  */
 function writeInstallRDFForExtension(aData, aDir, aId, aExtraFile) {
+  if (TEST_UNPACKED) {
+    return writeInstallRDFToDir(aData, aDir, aId, aExtraFile);
+  }
+  return writeInstallRDFToXPI(aData, aDir, aId, aExtraFile);
+}
+
+/**
+ * Writes an install.rdf manifest into a packed extension using the properties passed
+ * in a JS object. The objects should contain a property for each property to
+ * appear in the RDF. The object may contain an array of objects with id,
+ * minVersion and maxVersion in the targetApplications property to give target
+ * application compatibility.
+ *
+ * @param   aData
+ *          The object holding data about the add-on
+ * @param   aDir
+ *          The install directory to add the extension to
+ * @param   aId
+ *          An optional string to override the default installation aId
+ * @param   aExtraFile
+ *          An optional dummy file to create in the extension
+ * @return  A file pointing to where the extension was installed
+ */
+function writeInstallRDFToXPI(aData, aDir, aId, aExtraFile) {
   var id = aId ? aId : aData.id
 
   var dir = aDir.clone();
-
-  if (TEST_UNPACKED) {
-    dir.append(id);
-    writeInstallRDFToDir(aData, dir, aExtraFile);
-    return dir;
-  }
 
   if (!dir.exists())
     dir.create(AM_Ci.nsIFile.DIRECTORY_TYPE, FileUtils.PERMS_DIRECTORY);
@@ -852,6 +911,7 @@ function getExpectedInstall(aAddon) {
 
 const AddonListener = {
   onPropertyChanged: function(aAddon, aProperties) {
+    do_print(`Got onPropertyChanged event for ${aAddon.id}`);
     let [event, properties] = getExpectedEvent(aAddon.id);
     do_check_eq("onPropertyChanged", event);
     do_check_eq(aProperties.length, properties.length);
@@ -865,6 +925,7 @@ const AddonListener = {
   },
 
   onEnabling: function(aAddon, aRequiresRestart) {
+    do_print(`Got onEnabling event for ${aAddon.id}`);
     let [event, expectedRestart] = getExpectedEvent(aAddon.id);
     do_check_eq("onEnabling", event);
     do_check_eq(aRequiresRestart, expectedRestart);
@@ -875,6 +936,7 @@ const AddonListener = {
   },
 
   onEnabled: function(aAddon) {
+    do_print(`Got onEnabled event for ${aAddon.id}`);
     let [event, expectedRestart] = getExpectedEvent(aAddon.id);
     do_check_eq("onEnabled", event);
     do_check_false(hasFlag(aAddon.permissions, AddonManager.PERM_CAN_ENABLE));
@@ -882,6 +944,7 @@ const AddonListener = {
   },
 
   onDisabling: function(aAddon, aRequiresRestart) {
+    do_print(`Got onDisabling event for ${aAddon.id}`);
     let [event, expectedRestart] = getExpectedEvent(aAddon.id);
     do_check_eq("onDisabling", event);
     do_check_eq(aRequiresRestart, expectedRestart);
@@ -892,6 +955,7 @@ const AddonListener = {
   },
 
   onDisabled: function(aAddon) {
+    do_print(`Got onDisabled event for ${aAddon.id}`);
     let [event, expectedRestart] = getExpectedEvent(aAddon.id);
     do_check_eq("onDisabled", event);
     do_check_false(hasFlag(aAddon.permissions, AddonManager.PERM_CAN_DISABLE));
@@ -899,6 +963,7 @@ const AddonListener = {
   },
 
   onInstalling: function(aAddon, aRequiresRestart) {
+    do_print(`Got onInstalling event for ${aAddon.id}`);
     let [event, expectedRestart] = getExpectedEvent(aAddon.id);
     do_check_eq("onInstalling", event);
     do_check_eq(aRequiresRestart, expectedRestart);
@@ -908,12 +973,14 @@ const AddonListener = {
   },
 
   onInstalled: function(aAddon) {
+    do_print(`Got onInstalled event for ${aAddon.id}`);
     let [event, expectedRestart] = getExpectedEvent(aAddon.id);
     do_check_eq("onInstalled", event);
     return check_test_completed(arguments);
   },
 
   onUninstalling: function(aAddon, aRequiresRestart) {
+    do_print(`Got onUninstalling event for ${aAddon.id}`);
     let [event, expectedRestart] = getExpectedEvent(aAddon.id);
     do_check_eq("onUninstalling", event);
     do_check_eq(aRequiresRestart, expectedRestart);
@@ -923,12 +990,14 @@ const AddonListener = {
   },
 
   onUninstalled: function(aAddon) {
+    do_print(`Got onUninstalled event for ${aAddon.id}`);
     let [event, expectedRestart] = getExpectedEvent(aAddon.id);
     do_check_eq("onUninstalled", event);
     return check_test_completed(arguments);
   },
 
   onOperationCancelled: function(aAddon) {
+    do_print(`Got onOperationCancelled event for ${aAddon.id}`);
     let [event, expectedRestart] = getExpectedEvent(aAddon.id);
     do_check_eq("onOperationCancelled", event);
     return check_test_completed(arguments);
@@ -1312,6 +1381,16 @@ var data = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
 stream.write(data, data.length);
 stream.close();
 
+// Copies blocklistFile (an nsIFile) to gProfD/blocklist.xml.
+function copyBlocklistToProfile(blocklistFile) {
+  var dest = gProfD.clone();
+  dest.append("blocklist.xml");
+  if (dest.exists())
+    dest.remove(false);
+  blocklistFile.copyTo(gProfD, "blocklist.xml");
+  dest.lastModifiedTime = Date.now();
+}
+
 // Throw a failure and attempt to abandon the test if it looks like it is going
 // to timeout
 function timeout() {
@@ -1521,7 +1600,16 @@ function callback_soon(aFunction) {
  * its callback.
  */
 function promiseAddonsByIDs(list) {
-  let deferred = Promise.defer();
-  AddonManager.getAddonsByIDs(list, deferred.resolve);
-  return deferred.promise;
+  return new Promise((resolve, reject) => AddonManager.getAddonsByIDs(list, resolve));
+}
+
+/**
+ * A promise-based variant of AddonManager.getAddonByID.
+ *
+ * @param {string} aId The ID of the add-on.
+ * @return {promise}
+ * @resolve {AddonWrapper} The corresponding add-on, or null.
+ */
+function promiseAddonByID(aId) {
+  return new Promise((resolve, reject) => AddonManager.getAddonByID(aId, resolve));
 }

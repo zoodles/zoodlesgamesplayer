@@ -27,11 +27,10 @@ public:
     myDNSListener(const char *host, int32_t index)
         : mHost(host)
         , mIndex(index) {}
-    virtual ~myDNSListener() {}
 
     NS_IMETHOD OnLookupComplete(nsICancelable *request,
                                 nsIDNSRecord  *rec,
-                                nsresult       status)
+                                nsresult       status) MOZ_OVERRIDE
     {
         printf("%d: OnLookupComplete called [host=%s status=%x rec=%p]\n",
             mIndex, mHost.get(), static_cast<uint32_t>(status), (void*)rec);
@@ -53,11 +52,14 @@ public:
     }
 
 private:
+    virtual ~myDNSListener() {}
+
     nsCString mHost;
     int32_t   mIndex;
 };
 
-NS_IMPL_ISUPPORTS1(myDNSListener, nsIDNSListener)
+
+NS_IMPL_ISUPPORTS(myDNSListener, nsIDNSListener)
 
 static bool IsAscii(const char *s)
 {

@@ -20,6 +20,7 @@ const events = require('../system/events');
 const { getInnerId } = require("../window/utils");
 const { WorkerSandbox } = require('./sandbox');
 const { getTabForWindow } = require('../tabs/helpers');
+const { isPrivate } = require('../private-browsing/utils');
 
 // A weak map of workers to hold private attributes that
 // should not be exposed
@@ -37,7 +38,7 @@ const ERR_FROZEN = "The page is currently hidden and can no longer be used " +
 /**
  * Message-passing facility for communication between code running
  * in the content and add-on process.
- * @see https://addons.mozilla.org/en-US/developers/docs/sdk/latest/modules/sdk/content/worker.html
+ * @see https://developer.mozilla.org/en-US/Add-ons/SDK/Low-Level_APIs/content_worker
  */
 const Worker = Class({
   implements: [EventTarget],
@@ -137,13 +138,13 @@ attach.define(Worker, function (worker, window) {
   model.windowID = getInnerId(model.window);
   events.on("inner-window-destroyed", model.documentUnload);
 
+  // will set model.contentWorker pointing to the private API:
+  model.contentWorker = WorkerSandbox(worker, model.window);
+
   // Listen to pagehide event in order to freeze the content script
   // while the document is frozen in bfcache:
   model.window.addEventListener("pageshow", model.pageShow, true);
   model.window.addEventListener("pagehide", model.pageHide, true);
-
-  // will set model.contentWorker pointing to the private API:
-  model.contentWorker = WorkerSandbox(worker, model.window);
 
   // Mainly enable worker.port.emit to send event to the content worker
   model.inited = true;
@@ -186,6 +187,8 @@ detach.define(Worker, function (worker, reason) {
   model.inited = false;
 });
 
+isPrivate.define(Worker, ({ tab }) => isPrivate(tab));
+
 /**
  * Tells content worker to unload itself and
  * removes all the references from itself.
@@ -196,6 +199,7 @@ destroy.define(Worker, function (worker, reason) {
   // Specifying no type or listener removes all listeners
   // from target
   off(worker);
+  off(worker.port);
 });
 
 /**

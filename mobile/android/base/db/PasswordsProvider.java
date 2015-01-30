@@ -4,19 +4,19 @@
 
 package org.mozilla.gecko.db;
 
-import java.lang.IllegalArgumentException;
 import java.util.HashMap;
+
 import org.mozilla.gecko.GeckoApp;
 import org.mozilla.gecko.GeckoAppShell;
 import org.mozilla.gecko.GeckoEvent;
 import org.mozilla.gecko.NSSBridge;
-import org.mozilla.gecko.db.DBUtils;
-import org.mozilla.gecko.db.BrowserContract.Passwords;
 import org.mozilla.gecko.db.BrowserContract.DeletedPasswords;
-import org.mozilla.gecko.db.BrowserContract;
+import org.mozilla.gecko.db.BrowserContract.Passwords;
+import org.mozilla.gecko.mozglue.GeckoLoader;
 import org.mozilla.gecko.sqlite.MatrixBlobCursor;
 import org.mozilla.gecko.sqlite.SQLiteBridge;
 import org.mozilla.gecko.sync.Utils;
+
 import android.content.ContentValues;
 import android.content.Intent;
 import android.content.UriMatcher;
@@ -29,6 +29,8 @@ public class PasswordsProvider extends SQLiteBridgeContentProvider {
     static final String TABLE_PASSWORDS = "moz_logins";
     static final String TABLE_DELETED_PASSWORDS = "moz_deleted_logins";
 
+    private static final String TELEMETRY_TAG = "SQLITEBRIDGE_PROVIDER_PASSWORDS";
+
     private static final int PASSWORDS = 100;
     private static final int DELETED_PASSWORDS = 101;
 
@@ -37,8 +39,8 @@ public class PasswordsProvider extends SQLiteBridgeContentProvider {
 
     private static final UriMatcher URI_MATCHER;
 
-    private static HashMap<String, String> PASSWORDS_PROJECTION_MAP;
-    private static HashMap<String, String> DELETED_PASSWORDS_PROJECTION_MAP;
+    private static final HashMap<String, String> PASSWORDS_PROJECTION_MAP;
+    private static final HashMap<String, String> DELETED_PASSWORDS_PROJECTION_MAP;
 
     // this should be kept in sync with the version in toolkit/components/passwordmgr/storage-mozStorage.js
     private static final int DB_VERSION = 5;
@@ -76,16 +78,24 @@ public class PasswordsProvider extends SQLiteBridgeContentProvider {
         DELETED_PASSWORDS_PROJECTION_MAP.put(DeletedPasswords.ID, DeletedPasswords.ID);
         DELETED_PASSWORDS_PROJECTION_MAP.put(DeletedPasswords.GUID, DeletedPasswords.GUID);
         DELETED_PASSWORDS_PROJECTION_MAP.put(DeletedPasswords.TIME_DELETED, DeletedPasswords.TIME_DELETED);
-        System.loadLibrary("mozglue");
     }
 
     public PasswordsProvider() {
         super(LOG_TAG);
+
+        // We don't use .loadMozGlue because we're in a different process,
+        // and we just want to reuse code rather than use the loader lock etc.
+        GeckoLoader.doLoadLibrary(getContext(), "mozglue");
     }
 
     @Override
     protected String getDBName(){
         return DB_FILENAME;
+    }
+
+    @Override
+    protected String getTelemetryPrefix() {
+        return TELEMETRY_TAG;
     }
 
     @Override
@@ -166,7 +176,7 @@ public class PasswordsProvider extends SQLiteBridgeContentProvider {
                     String guid = Utils.generateGuid();
                     values.put(Passwords.GUID, guid);
                 }
-                String nowString = new Long(now).toString();
+                String nowString = Long.toString(now);
                 DBUtils.replaceKey(values, null, Passwords.HOSTNAME, "");
                 DBUtils.replaceKey(values, null, Passwords.HTTP_REALM, "");
                 DBUtils.replaceKey(values, null, Passwords.FORM_SUBMIT_URL, "");

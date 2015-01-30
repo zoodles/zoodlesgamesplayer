@@ -36,11 +36,13 @@ public:
   NS_DECL_QUERYFRAME
   NS_DECL_FRAMEARENA_HELPERS
 
-  nsHTMLCanvasFrame(nsStyleContext* aContext) : nsContainerFrame(aContext) {}
+  explicit nsHTMLCanvasFrame(nsStyleContext* aContext)
+  : nsContainerFrame(aContext)
+    , mBorderPadding(GetWritingMode()) {}
 
-  virtual void Init(nsIContent* aContent,
-                    nsIFrame*   aParent,
-                    nsIFrame*   aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
 
   virtual void BuildDisplayList(nsDisplayListBuilder*   aBuilder,
                                 const nsRect&           aDirtyRect,
@@ -54,19 +56,25 @@ public:
   /* get the size of the canvas's image */
   nsIntSize GetCanvasSize();
 
-  virtual nscoord GetMinWidth(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
-  virtual nscoord GetPrefWidth(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
+  virtual nscoord GetMinISize(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
+  virtual nscoord GetPrefISize(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
+  virtual mozilla::IntrinsicSize GetIntrinsicSize() MOZ_OVERRIDE;
   virtual nsSize GetIntrinsicRatio() MOZ_OVERRIDE;
 
-  virtual nsSize ComputeSize(nsRenderingContext *aRenderingContext,
-                             nsSize aCBSize, nscoord aAvailableWidth,
-                             nsSize aMargin, nsSize aBorder, nsSize aPadding,
-                             uint32_t aFlags) MOZ_OVERRIDE;
+  virtual mozilla::LogicalSize
+  ComputeSize(nsRenderingContext *aRenderingContext,
+              mozilla::WritingMode aWritingMode,
+              const mozilla::LogicalSize& aCBSize,
+              nscoord aAvailableISize,
+              const mozilla::LogicalSize& aMargin,
+              const mozilla::LogicalSize& aBorder,
+              const mozilla::LogicalSize& aPadding,
+              ComputeSizeFlags aFlags) MOZ_OVERRIDE;
 
-  virtual nsresult Reflow(nsPresContext*           aPresContext,
-                          nsHTMLReflowMetrics&     aDesiredSize,
-                          const nsHTMLReflowState& aReflowState,
-                          nsReflowStatus&          aStatus) MOZ_OVERRIDE;
+  virtual void Reflow(nsPresContext*           aPresContext,
+                      nsHTMLReflowMetrics&     aDesiredSize,
+                      const nsHTMLReflowState& aReflowState,
+                      nsReflowStatus&          aStatus) MOZ_OVERRIDE;
 
   nsRect GetInnerArea() const;
 
@@ -86,7 +94,7 @@ public:
 #endif
 
   // Inserted child content gets its frames parented by our child block
-  virtual nsIFrame* GetContentInsertionFrame() MOZ_OVERRIDE {
+  virtual nsContainerFrame* GetContentInsertionFrame() MOZ_OVERRIDE {
     return GetFirstPrincipalChild()->GetContentInsertionFrame();
   }
 
@@ -95,7 +103,7 @@ protected:
 
   nscoord GetContinuationOffset(nscoord* aWidth = 0) const;
 
-  nsMargin mBorderPadding;
+  mozilla::LogicalMargin mBorderPadding;
 };
 
 #endif /* nsHTMLCanvasFrame_h___ */

@@ -12,6 +12,8 @@
 #include <nsAutoPtr.h>
 
 class nsISupports;
+class nsIEventTarget;
+class nsIThread;
 
 namespace mozilla {
 namespace net {
@@ -33,19 +35,17 @@ class ChannelEvent
 
 class AutoEventEnqueuerBase;
 
-class ChannelEventQueue
+class ChannelEventQueue MOZ_FINAL
 {
-  NS_INLINE_DECL_REFCOUNTING(ChannelEventQueue)
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(ChannelEventQueue)
 
  public:
-  ChannelEventQueue(nsISupports *owner)
+  explicit ChannelEventQueue(nsISupports *owner)
     : mSuspendCount(0)
     , mSuspended(false)
     , mForced(false)
     , mFlushing(false)
     , mOwner(owner) {}
-
-  ~ChannelEventQueue() {}
 
   // Checks to determine if an IPDL-generated channel event can be processed
   // immediately, or needs to be queued using Enqueue().
@@ -71,7 +71,15 @@ class ChannelEventQueue
   // dispatched in a new event on the current thread.
   void Resume();
 
+  // Retargets delivery of events to the target thread specified.
+  nsresult RetargetDeliveryTo(nsIEventTarget* aTargetThread);
+
  private:
+  // Private destructor, to discourage deletion outside of Release():
+  ~ChannelEventQueue()
+  {
+  }
+
   inline void MaybeFlushQueue();
   void FlushQueue();
   inline void CompleteResume();
@@ -85,6 +93,9 @@ class ChannelEventQueue
 
   // Keep ptr to avoid refcount cycle: only grab ref during flushing.
   nsISupports *mOwner;
+
+  // EventTarget for delivery of events to the correct thread.
+  nsCOMPtr<nsIEventTarget> mTargetThread;
 
   friend class AutoEventEnqueuer;
 };
@@ -151,17 +162,17 @@ ChannelEventQueue::MaybeFlushQueue()
 // Ensures that ShouldEnqueue() will be true during its lifetime (letting
 // caller know incoming IPDL msgs should be queued). Flushes the queue when it
 // goes out of scope.
-class AutoEventEnqueuer
+class MOZ_STACK_CLASS AutoEventEnqueuer
 {
  public:
-  AutoEventEnqueuer(ChannelEventQueue *queue) : mEventQueue(queue) {
+  explicit AutoEventEnqueuer(ChannelEventQueue *queue) : mEventQueue(queue) {
     mEventQueue->StartForcedQueueing();
   }
   ~AutoEventEnqueuer() {
     mEventQueue->EndForcedQueueing();
   }
  private:
-  ChannelEventQueue* mEventQueue;
+  nsRefPtr<ChannelEventQueue> mEventQueue;
 };
 
 }

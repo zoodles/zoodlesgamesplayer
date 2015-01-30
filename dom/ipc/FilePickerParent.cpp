@@ -6,7 +6,6 @@
 
 #include "FilePickerParent.h"
 #include "nsComponentManagerUtils.h"
-#include "nsDOMFile.h"
 #include "nsNetCID.h"
 #include "nsIDocument.h"
 #include "nsIDOMFile.h"
@@ -14,16 +13,17 @@
 #include "nsIFile.h"
 #include "nsISimpleEnumerator.h"
 #include "mozilla/unused.h"
+#include "mozilla/dom/File.h"
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/TabParent.h"
-#include "mozilla/dom/ipc/Blob.h"
+#include "mozilla/dom/ipc/BlobParent.h"
 
 using mozilla::unused;
 using namespace mozilla::dom;
 
-NS_IMPL_ISUPPORTS1(FilePickerParent::FilePickerShownCallback,
-                   nsIFilePickerShownCallback);
+NS_IMPL_ISUPPORTS(FilePickerParent::FilePickerShownCallback,
+                  nsIFilePickerShownCallback);
 
 NS_IMETHODIMP
 FilePickerParent::FilePickerShownCallback::Done(int16_t aResult)
@@ -95,7 +95,7 @@ FilePickerParent::FileSizeAndDateRunnable::Run()
   }
 
   // Dispatch ourselves back on the main thread.
-  if (NS_FAILED(NS_DispatchToMainThread(this, NS_DISPATCH_NORMAL))) {
+  if (NS_FAILED(NS_DispatchToMainThread(this))) {
     // It's hard to see how we can recover gracefully in this case. The child
     // process is waiting for an IPC, but that can only happen on the main
     // thread.
@@ -113,11 +113,12 @@ FilePickerParent::FileSizeAndDateRunnable::Destroy()
 void
 FilePickerParent::SendFiles(const nsCOMArray<nsIDOMFile>& aDomfiles)
 {
-  ContentParent* parent = static_cast<ContentParent*>(Manager()->Manager());
+  nsIContentParent* parent = static_cast<TabParent*>(Manager())->Manager();
   InfallibleTArray<PBlobParent*> files;
 
   for (unsigned i = 0; i < aDomfiles.Length(); i++) {
-    BlobParent* blob = parent->GetOrCreateActorForBlob(aDomfiles[i]);
+    BlobParent* blob = parent->GetOrCreateActorForBlob(
+      static_cast<File*>(aDomfiles[i]));
     if (blob) {
       files.AppendElement(blob);
     }
@@ -133,26 +134,38 @@ FilePickerParent::Done(int16_t aResult)
 {
   mResult = aResult;
 
-  nsCOMArray<nsIDOMFile> domfiles;
+  if (mResult != nsIFilePicker::returnOK) {
+    unused << Send__delete__(this, void_t(), mResult);
+    return;
+  }
 
+  nsCOMArray<nsIDOMFile> domfiles;
   if (mMode == nsIFilePicker::modeOpenMultiple) {
     nsCOMPtr<nsISimpleEnumerator> iter;
     NS_ENSURE_SUCCESS_VOID(mFilePicker->GetFiles(getter_AddRefs(iter)));
 
     nsCOMPtr<nsISupports> supports;
-    nsCOMPtr<nsIFile> file;
     bool loop = true;
     while (NS_SUCCEEDED(iter->HasMoreElements(&loop)) && loop) {
       iter->GetNext(getter_AddRefs(supports));
-      file = do_QueryInterface(supports);
-      nsCOMPtr<nsIDOMFile> domfile = new nsDOMFileFile(file);
-      domfiles.AppendElement(domfile);
+      if (supports) {
+        nsCOMPtr<nsIFile> file = do_QueryInterface(supports);
+
+        // A null parent is fine because File are not used in this process
+        // but only in the child.
+        nsCOMPtr<nsIDOMFile> domfile = File::CreateFromFile(nullptr, file);
+        domfiles.AppendElement(domfile);
+      }
     }
   } else {
     nsCOMPtr<nsIFile> file;
     mFilePicker->GetFile(getter_AddRefs(file));
-    nsCOMPtr<nsIDOMFile> domfile = new nsDOMFileFile(file);
-    domfiles.AppendElement(domfile);
+    if (file) {
+      // A null parent is fine because File are not used in this process
+      // but only in the child.
+      nsCOMPtr<nsIDOMFile> domfile = File::CreateFromFile(nullptr, file);
+      domfiles.AppendElement(domfile);
+    }
   }
 
   MOZ_ASSERT(!mRunnable);
@@ -188,8 +201,9 @@ FilePickerParent::RecvOpen(const int16_t& aSelectedType,
                            const bool& aAddToRecentDocs,
                            const nsString& aDefaultFile,
                            const nsString& aDefaultExtension,
-                           const InfallibleTArray<nsString>& aFilters,
-                           const InfallibleTArray<nsString>& aFilterNames)
+                           InfallibleTArray<nsString>&& aFilters,
+                           InfallibleTArray<nsString>&& aFilterNames,
+                           const nsString& aDisplayDirectory)
 {
   if (!CreateFilePicker()) {
     unused << Send__delete__(this, void_t(), nsIFilePicker::returnCancel);
@@ -205,6 +219,14 @@ FilePickerParent::RecvOpen(const int16_t& aSelectedType,
   mFilePicker->SetDefaultString(aDefaultFile);
   mFilePicker->SetDefaultExtension(aDefaultExtension);
   mFilePicker->SetFilterIndex(aSelectedType);
+
+  if (!aDisplayDirectory.IsEmpty()) {
+    nsCOMPtr<nsIFile> localFile = do_CreateInstance(NS_LOCAL_FILE_CONTRACTID);
+    if (localFile) {
+      localFile->InitWithPath(aDisplayDirectory);
+      mFilePicker->SetDisplayDirectory(localFile);
+    }
+  }
 
   mCallback = new FilePickerShownCallback(this);
 

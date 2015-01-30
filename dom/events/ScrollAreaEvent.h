@@ -31,37 +31,36 @@ public:
   NS_FORWARD_NSIDOMUIEVENT(UIEvent::)
 
   NS_FORWARD_TO_EVENT_NO_SERIALIZATION_NO_DUPLICATION
-  NS_IMETHOD DuplicatePrivateData()
+  NS_IMETHOD DuplicatePrivateData() MOZ_OVERRIDE
   {
     return Event::DuplicatePrivateData();
   }
   NS_IMETHOD_(void) Serialize(IPC::Message* aMsg, bool aSerializeInterfaceType) MOZ_OVERRIDE;
   NS_IMETHOD_(bool) Deserialize(const IPC::Message* aMsg, void** aIter) MOZ_OVERRIDE;
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE
+  virtual JSObject* WrapObjectInternal(JSContext* aCx) MOZ_OVERRIDE
   {
-    return ScrollAreaEventBinding::Wrap(aCx, aScope, this);
+    return ScrollAreaEventBinding::Wrap(aCx, this);
   }
 
   float X() const
   {
-    return mClientArea.Left();
+    return mClientArea->Left();
   }
 
   float Y() const
   {
-    return mClientArea.Top();
+    return mClientArea->Top();
   }
 
   float Width() const
   {
-    return mClientArea.Width();
+    return mClientArea->Width();
   }
 
   float Height() const
   {
-    return mClientArea.Height();
+    return mClientArea->Height();
   }
 
   void InitScrollAreaEvent(const nsAString& aType,
@@ -78,7 +77,9 @@ public:
   }
 
 protected:
-  DOMRect mClientArea;
+  ~ScrollAreaEvent() {}
+
+  nsRefPtr<DOMRect> mClientArea;
 };
 
 } // namespace dom

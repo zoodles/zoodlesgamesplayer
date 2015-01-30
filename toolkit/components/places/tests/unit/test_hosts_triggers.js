@@ -16,9 +16,9 @@ XPCOMUtils.defineLazyServiceGetter(this, "gHistory",
 function isHostInMozPlaces(aURI)
 {
   let stmt = DBConn().createStatement(
-    "SELECT url "
-    + "FROM moz_places "
-    + "WHERE url = :host"
+    `SELECT url
+       FROM moz_places
+       WHERE url = :host`
   );
   let result = false;
   stmt.params.host = aURI.spec;
@@ -35,10 +35,10 @@ function isHostInMozPlaces(aURI)
 function isHostInMozHosts(aURI, aTyped, aPrefix)
 {
   let stmt = DBConn().createStatement(
-    "SELECT host, typed, prefix "
-    + "FROM moz_hosts "
-    + "WHERE host = fixup_url(:host) "
-    + "AND frecency NOTNULL "
+    `SELECT host, typed, prefix
+       FROM moz_hosts
+       WHERE host = fixup_url(:host)
+       AND frecency NOTNULL`
   );
   let result = false;
   stmt.params.host = aURI.host;
@@ -91,7 +91,7 @@ add_task(function test_remove_places()
     PlacesUtils.history.removePage(urls[idx].uri);
   }
 
-  yield promiseClearHistory();
+  yield PlacesTestUtils.clearHistory();
 
   for (let idx in urls) {
     do_check_false(isHostInMozHosts(urls[idx].uri, urls[idx].typed, urls[idx].prefix));
@@ -112,7 +112,7 @@ add_task(function test_bookmark_changes()
   // Change the hostname
   PlacesUtils.bookmarks.changeBookmarkURI(itemId, NetUtil.newURI(NEW_URL));
 
-  yield promiseClearHistory();
+  yield PlacesTestUtils.clearHistory();
 
   let newUri = NetUtil.newURI(NEW_URL);
   do_check_true(isHostInMozPlaces(newUri));
@@ -126,7 +126,7 @@ add_task(function test_bookmark_removal()
                                                     PlacesUtils.bookmarks.DEFAULT_INDEX);
   let newUri = NetUtil.newURI(NEW_URL);
   PlacesUtils.bookmarks.removeItem(itemId);
-  yield promiseClearHistory();
+  yield PlacesTestUtils.clearHistory();
 
   do_check_false(isHostInMozHosts(newUri, false, null));
 });
@@ -145,7 +145,7 @@ add_task(function test_moz_hosts_typed_update()
   yield promiseAddVisits(places);
 
   do_check_true(isHostInMozHosts(TEST_URI, true, null));
-  yield promiseClearHistory();
+  yield PlacesTestUtils.clearHistory();
 });
 
 add_task(function test_moz_hosts_www_remove()
@@ -175,7 +175,7 @@ add_task(function test_moz_hosts_www_remove()
   const TEST_WWW_URI = NetUtil.newURI("http://www.rem.mozilla.com");
   yield test_removal(TEST_URI, TEST_WWW_URI);
   yield test_removal(TEST_WWW_URI, TEST_URI);
-  yield promiseClearHistory();
+  yield PlacesTestUtils.clearHistory();
 });
 
 add_task(function test_moz_hosts_ftp_matchall()

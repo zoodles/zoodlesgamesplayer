@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/ipc/MessageChannel.h"
+#include "mozilla/ipc/WindowsMessageLoop.h"
 #include "nsAppShell.h"
 #include "nsToolkit.h"
 #include "nsThreadUtils.h"
@@ -18,6 +19,9 @@
 #include "nsIDOMWakeLockListener.h"
 #include "nsIPowerManagerService.h"
 #include "mozilla/StaticPtr.h"
+#include "nsTHashtable.h"
+#include "nsHashKeys.h"
+#include "GeckoProfiler.h"
 
 using namespace mozilla;
 using namespace mozilla::widget;
@@ -30,19 +34,26 @@ public:
   NS_DECL_ISUPPORTS;
 
 private:
+  ~WinWakeLockListener() {}
+
   NS_IMETHOD Callback(const nsAString& aTopic, const nsAString& aState) {
-    if (aState.Equals(NS_LITERAL_STRING("locked-foreground"))) {
+    if (!aTopic.EqualsASCII("screen")) {
+      return NS_OK;
+    }
+    // Note the wake lock code ensures that we're not sent duplicate
+    // "locked-foreground" notifications when multipe wake locks are held.
+    if (aState.EqualsASCII("locked-foreground")) {
       // Prevent screen saver.
       SetThreadExecutionState(ES_DISPLAY_REQUIRED|ES_CONTINUOUS);
     } else {
       // Re-enable screen saver.
       SetThreadExecutionState(ES_CONTINUOUS);
-   }
+    }
     return NS_OK;
   }
 };
 
-NS_IMPL_ISUPPORTS1(WinWakeLockListener, nsIDOMMozWakeLockListener)
+NS_IMPL_ISUPPORTS(WinWakeLockListener, nsIDOMMozWakeLockListener)
 StaticRefPtr<WinWakeLockListener> sWakeLockListener;
 
 static void
@@ -122,6 +133,8 @@ nsAppShell::Init()
 #endif
 
   mLastNativeEventScheduled = TimeStamp::NowLoRes();
+
+  mozilla::ipc::windows::InitUIThread();
 
   sTaskbarButtonCreatedMsg = ::RegisterWindowMessageW(kTaskbarButtonEventId);
   NS_ASSERTION(sTaskbarButtonCreatedMsg, "Could not register taskbar button creation message");
@@ -282,7 +295,10 @@ nsAppShell::ProcessNextNativeEvent(bool mayWait)
     } else if (mayWait) {
       // Block and wait for any posted application message
       mozilla::HangMonitor::Suspend();
-      ::WaitMessage();
+      {
+        GeckoProfilerSleepRAII profiler_sleep;
+        WinUtils::WaitForMessage();
+      }
     }
   } while (!gotMessage && mayWait);
 

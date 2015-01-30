@@ -133,6 +133,7 @@ typedef struct {
   unsigned int crop_top;       /**< Pixels to crop from the top of the frame. */
   unsigned int crop_left;      /**< Pixels to crop from the left of the frame. */
   unsigned int crop_right;     /**< Pixels to crop from the right of the frame. */
+  unsigned int alpha_mode;     /**< 1 if an additional opacity stream is available, otherwise 0. */
 } nestegg_video_params;
 
 /** Parameters specific to an audio track. */
@@ -170,8 +171,8 @@ void nestegg_destroy(nestegg * context);
 int nestegg_duration(nestegg * context, uint64_t * duration);
 
 /** Query the tstamp scale of the media stream in nanoseconds.
-    Timecodes presented by nestegg have been scaled by this value
-    before presentation to the caller.
+    @note Timecodes presented by nestegg have been scaled by this value
+          before presentation to the caller.
     @param context Stream context initialized by #nestegg_init.
     @param scale   Storage for the queried scale factor.
     @retval  0 Success.
@@ -200,8 +201,8 @@ int nestegg_get_cue_point(nestegg * context, unsigned int cluster_num,
                           int64_t * end_pos, uint64_t * tstamp);
 
 /** Seek to @a offset.  Stream will seek directly to offset.
-    Should be used to seek to the start of a resync point, i.e. cluster; the
-    parser will not be able to understand other offsets.
+    Must be used to seek to the start of a cluster; the parser will not be
+    able to understand other offsets.
     @param context Stream context initialized by #nestegg_init.
     @param offset  Absolute offset in bytes.
     @retval  0 Success.
@@ -276,6 +277,16 @@ int nestegg_track_video_params(nestegg * context, unsigned int track,
 int nestegg_track_audio_params(nestegg * context, unsigned int track,
                                nestegg_audio_params * params);
 
+/** Query the default frame duration for @a track.  For a video track, this
+    is typically the inverse of the video frame rate.
+    @param context  Stream context initialized by #nestegg_init.
+    @param track    Zero based track number.
+    @param duration Storage for the default duration in nanoseconds.
+    @retval  0 Success.
+    @retval -1 Error. */
+int nestegg_track_default_duration(nestegg * context, unsigned int track,
+                                   uint64_t * duration);
+
 /** Read a packet of media data.  A packet consists of one or more chunks of
     data associated with a single track.  nestegg_read_packet should be
     called in a loop while the return value is 1 to drive the stream parser
@@ -305,6 +316,13 @@ int nestegg_packet_track(nestegg_packet * packet, unsigned int * track);
     @retval -1 Error. */
 int nestegg_packet_tstamp(nestegg_packet * packet, uint64_t * tstamp);
 
+/** Query the duration in nanoseconds of @a packet.
+    @param packet Packet initialized by #nestegg_read_packet.
+    @param duration Storage for the queried duration in nanoseconds.
+    @retval  0 Success.
+    @retval -1 Error. */
+int nestegg_packet_duration(nestegg_packet * packet, uint64_t * duration);
+
 /** Query the number of data chunks contained in @a packet.
     @param packet Packet initialized by #nestegg_read_packet.
     @param count  Storage for the queried timestamp in nanoseconds.
@@ -323,6 +341,19 @@ int nestegg_packet_count(nestegg_packet * packet, unsigned int * count);
 int nestegg_packet_data(nestegg_packet * packet, unsigned int item,
                         unsigned char ** data, size_t * length);
 
+/** Get a pointer to additional data with identifier @a id of additional packet
+    data. If @a id isn't present in the packet, returns -1.
+    @param packet  Packet initialized by #nestegg_read_packet.
+    @param id      Codec specific identifer. For VP8, use 1 to get a VP8 encoded
+                   frame containing an alpha channel in its Y plane.
+    @param data    Storage for the queried data pointer.
+                   The data is owned by the #nestegg_packet packet.
+    @param length  Storage for the queried data size.
+    @retval  0 Success.
+    @retval -1 Error. */
+int nestegg_packet_additional_data(nestegg_packet * packet, unsigned int id,
+                                   unsigned char ** data, size_t * length);
+
 /** Returns discard_padding for given packet
     @param packet  Packet initialized by #nestegg_read_packet.
     @param discard_padding pointer to store discard padding in.
@@ -337,14 +368,19 @@ int nestegg_packet_discard_padding(nestegg_packet * packet,
     @retval 1 The media has cues. */
 int nestegg_has_cues(nestegg * context);
 
-/**
- * Try to determine if the buffer looks like the beginning of a WebM file.
- *
- * @param buffer A buffer containing the beginning of a media file.
- * @param length The size of the buffer.
- * @retval 0 The file is not a WebM file.
- * @retval 1 The file is a WebM file. */
+/** Try to determine if the buffer looks like the beginning of a WebM file.
+    @param buffer A buffer containing the beginning of a media file.
+    @param length The size of the buffer.
+    @retval 0 The file is not a WebM file.
+    @retval 1 The file is a WebM file. */
 int nestegg_sniff(unsigned char const * buffer, size_t length);
+
+/** Set the underlying allocation function for library allocations.
+    @param realloc_func The desired function.
+    @retval 1 Success.  realloc_func(p, 0) acts as free()
+    @retval 0 Failure. realloc_func(p, 0) does not act as free()
+    @retval -1 Failure. realloc_func(NULL, 1) failed. */
+int nestegg_set_halloc_func(void * (* realloc_func)(void *, size_t));
 
 #if defined(__cplusplus)
 }

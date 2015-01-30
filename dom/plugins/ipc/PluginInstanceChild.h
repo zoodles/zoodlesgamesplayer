@@ -33,7 +33,7 @@
 
 #include <map>
 
-#if (MOZ_WIDGET_GTK == 2)
+#ifdef MOZ_WIDGET_GTK
 #include "gtk2xtbin.h"
 #endif
 
@@ -55,7 +55,8 @@ class PluginInstanceChild : public PPluginInstanceChild
 {
     friend class BrowserStreamChild;
     friend class PluginStreamChild;
-    friend class StreamNotifyChild; 
+    friend class StreamNotifyChild;
+    friend class PluginScriptableObjectChild;
 
 #ifdef OS_WIN
     friend LRESULT CALLBACK PluginWindowProc(HWND hWnd,
@@ -88,7 +89,7 @@ protected:
     AnswerNPP_HandleEvent(const NPRemoteEvent& event, int16_t* handled) MOZ_OVERRIDE;
     virtual bool
     AnswerNPP_HandleEvent_Shmem(const NPRemoteEvent& event,
-                                Shmem& mem,
+                                Shmem&& mem,
                                 int16_t* handled,
                                 Shmem* rtnmem) MOZ_OVERRIDE;
     virtual bool
@@ -142,29 +143,31 @@ protected:
     virtual bool
     RecvPPluginScriptableObjectConstructor(PPluginScriptableObjectChild* aActor) MOZ_OVERRIDE;
 
+    virtual bool
+    RecvPBrowserStreamConstructor(PBrowserStreamChild* aActor, const nsCString& aURL,
+                                  const uint32_t& aLength, const uint32_t& aLastmodified,
+                                  PStreamNotifyChild* aNotifyData, const nsCString& aHeaders) MOZ_OVERRIDE;
+
+    virtual bool
+    AnswerNPP_NewStream(
+            PBrowserStreamChild* actor,
+            const nsCString& mimeType,
+            const bool& seekable,
+            NPError* rv,
+            uint16_t* stype) MOZ_OVERRIDE;
+
+    virtual bool
+    RecvAsyncNPP_NewStream(
+            PBrowserStreamChild* actor,
+            const nsCString& mimeType,
+            const bool& seekable) MOZ_OVERRIDE;
+
     virtual PBrowserStreamChild*
     AllocPBrowserStreamChild(const nsCString& url,
                              const uint32_t& length,
                              const uint32_t& lastmodified,
                              PStreamNotifyChild* notifyData,
-                             const nsCString& headers,
-                             const nsCString& mimeType,
-                             const bool& seekable,
-                             NPError* rv,
-                             uint16_t *stype) MOZ_OVERRIDE;
-
-    virtual bool
-    AnswerPBrowserStreamConstructor(
-            PBrowserStreamChild* aActor,
-            const nsCString& url,
-            const uint32_t& length,
-            const uint32_t& lastmodified,
-            PStreamNotifyChild* notifyData,
-            const nsCString& headers,
-            const nsCString& mimeType,
-            const bool& seekable,
-            NPError* rv,
-            uint16_t* stype) MOZ_OVERRIDE;
+                             const nsCString& headers) MOZ_OVERRIDE;
 
     virtual bool
     DeallocPBrowserStreamChild(PBrowserStreamChild* stream) MOZ_OVERRIDE;
@@ -201,9 +204,21 @@ protected:
 #endif
 
 public:
-    PluginInstanceChild(const NPPluginFuncs* aPluginIface);
+    PluginInstanceChild(const NPPluginFuncs* aPluginIface,
+                        const nsCString& aMimeType,
+                        const uint16_t& aMode,
+                        const InfallibleTArray<nsCString>& aNames,
+                        const InfallibleTArray<nsCString>& aValues);
 
     virtual ~PluginInstanceChild();
+
+    NPError DoNPP_New();
+
+    // Common sync+async implementation of NPP_NewStream
+    NPError DoNPP_NewStream(BrowserStreamChild* actor,
+                            const nsCString& mimeType,
+                            const bool& seekable,
+                            uint16_t* stype);
 
     bool Initialize();
 
@@ -240,12 +255,6 @@ public:
 
     void NPN_URLRedirectResponse(void* notifyData, NPBool allow);
 
-    NPError NPN_InitAsyncSurface(NPSize *size, NPImageFormat format,
-                                 void *initData, NPAsyncSurface *surface);
-    NPError NPN_FinalizeAsyncSurface(NPAsyncSurface *surface);
-
-    void NPN_SetCurrentAsyncSurface(NPAsyncSurface *surface, NPRect *changed);
-
     void DoAsyncRedraw();
 private:
     friend class PluginModuleChild;
@@ -255,8 +264,6 @@ private:
                                 NPObject** aObject);
 
     bool IsAsyncDrawing();
-
-    NPError DeallocateAsyncBitmapSurface(NPAsyncSurface *aSurface);
 
     virtual bool RecvUpdateBackground(const SurfaceDescriptor& aBackground,
                                       const nsIntRect& aRect) MOZ_OVERRIDE;
@@ -359,23 +366,17 @@ private:
 
 #endif
     const NPPluginFuncs* mPluginIface;
+    nsCString                   mMimeType;
+    uint16_t                    mMode;
+    InfallibleTArray<nsCString> mNames;
+    InfallibleTArray<nsCString> mValues;
     NPP_t mData;
     NPWindow mWindow;
 #if defined(XP_MACOSX)
     double mContentsScaleFactor;
 #endif
     int16_t               mDrawingModel;
-    NPAsyncSurface* mCurrentAsyncSurface;
-    struct AsyncBitmapData {
-      void *mRemotePtr;
-      Shmem mShmem;
-    };
 
-    static PLDHashOperator DeleteSurface(NPAsyncSurface* surf, nsAutoPtr<AsyncBitmapData> &data, void* userArg);
-    nsClassHashtable<nsPtrHashKey<NPAsyncSurface>, AsyncBitmapData> mAsyncBitmaps;
-    Shmem mRemoteImageDataShmem;
-    mozilla::layers::RemoteImageData *mRemoteImageData;
-    nsAutoPtr<CrossProcessMutex> mRemoteImageDataMutex;
     mozilla::Mutex mAsyncInvalidateMutex;
     CancelableTask *mAsyncInvalidateTask;
 
@@ -385,7 +386,7 @@ private:
 
 #if defined(MOZ_X11) && defined(XP_UNIX) && !defined(XP_MACOSX)
     NPSetWindowCallbackStruct mWsInfo;
-#if (MOZ_WIDGET_GTK == 2)
+#ifdef MOZ_WIDGET_GTK
     bool mXEmbed;
     XtClient mXtClient;
 #endif
@@ -542,6 +543,10 @@ private:
     // Clear all surfaces in response to NPP_Destroy
     void ClearAllSurfaces();
 
+    void Destroy();
+
+    void ActorDestroy(ActorDestroyReason aWhy) MOZ_OVERRIDE;
+
     // Set as true when SetupLayer called
     // and go with different path in InvalidateRect function
     bool mLayersRendering;
@@ -615,6 +620,9 @@ private:
     // Used for reading back to current surface and syncing data,
     // in plugin coordinates.
     nsIntRect mSurfaceDifferenceRect;
+
+    // Has this instance been destroyed, either by ActorDestroy or NPP_Destroy?
+    bool mDestroyed;
 };
 
 } // namespace plugins

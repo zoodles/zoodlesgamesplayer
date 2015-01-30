@@ -3,19 +3,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/.
  *
- * The origin of this IDL file is:
- * http://dom.spec.whatwg.org/#interface-document
- * http://www.whatwg.org/specs/web-apps/current-work/#the-document-object
- * http://dvcs.w3.org/hg/fullscreen/raw-file/tip/Overview.html#api
- * http://dvcs.w3.org/hg/pointerlock/raw-file/default/index.html#extensions-to-the-document-interface
- * http://dvcs.w3.org/hg/webperf/raw-file/tip/specs/PageVisibility/Overview.html#sec-document-interface
- * http://dev.w3.org/csswg/cssom/#extensions-to-the-document-interface
- * http://dev.w3.org/csswg/cssom-view/#extensions-to-the-document-interface
- *
  * http://mxr.mozilla.org/mozilla-central/source/dom/interfaces/core/nsIDOMDocument.idl
  */
 
-interface StyleSheetList;
 interface WindowProxy;
 interface nsISupports;
 interface URI;
@@ -239,7 +229,7 @@ partial interface Document {
 
 //http://dvcs.w3.org/hg/webcomponents/raw-file/tip/spec/custom/index.html#dfn-document-register
 partial interface Document {
-    [Throws, Func="nsDocument::IsRegisterElementEnabled"]
+    [Throws, Func="nsDocument::IsWebComponentsEnabled"]
     object registerElement(DOMString name, optional ElementRegistrationOptions options);
 };
 
@@ -293,6 +283,12 @@ partial interface Document {
 
   //(Not implemented)Element?  find(DOMString selectors, optional (Element or sequence<Node>)? refNodes);
   //(Not implemented)NodeList  findAll(DOMString selectors, optional (Element or sequence<Node>)? refNodes);
+};
+
+// http://dev.w3.org/fxtf/web-animations/#extensions-to-the-document-interface
+partial interface Document {
+  [Func="nsDocument::IsWebAnimationsEnabled"]
+  readonly attribute AnimationTimeline timeline;
 };
 
 //  Mozilla extensions of various sorts
@@ -359,8 +355,34 @@ partial interface Document {
   [ChromeOnly] readonly attribute boolean isSrcdocDocument;
 };
 
+/**
+ * Chrome document anonymous content management.
+ * This is a Chrome-only API that allows inserting fixed positioned anonymous
+ * content on top of the current page displayed in the document.
+ * The supplied content is cloned and inserted into the document's CanvasFrame.
+ * Note that this only works for HTML documents.
+ */
+partial interface Document {
+  /**
+   * Deep-clones the provided element and inserts it into the CanvasFrame.
+   * Returns an AnonymousContent instance that can be used to manipulate the
+   * inserted element.
+   */
+  [ChromeOnly, NewObject, Throws]
+  AnonymousContent insertAnonymousContent(Element aElement);
+
+  /**
+   * Removes the element inserted into the CanvasFrame given an AnonymousContent
+   * instance.
+   */
+  [ChromeOnly, Throws]
+  void removeAnonymousContent(AnonymousContent aContent);
+};
+
 Document implements XPathEvaluator;
 Document implements GlobalEventHandlers;
 Document implements TouchEventHandlers;
 Document implements ParentNode;
 Document implements OnErrorEventHandlerForNodes;
+Document implements GeometryUtils;
+Document implements FontFaceSource;

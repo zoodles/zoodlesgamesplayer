@@ -11,8 +11,8 @@
 # include "jit/x86/MacroAssembler-x86.h"
 #elif defined(JS_CODEGEN_X64)
 # include "jit/x64/MacroAssembler-x64.h"
-#elif defined(JS_CODEGEN_ARM)
-# include "jit/arm/MacroAssembler-arm.h"
+#else
+# error "Wrong architecture. Only x86 and x64 should build this file!"
 #endif
 #include "jit/MoveResolver.h"
 
@@ -47,11 +47,13 @@ class MoveEmitterX86
     void emitGeneralMove(const MoveOperand &from, const MoveOperand &to);
     void emitFloat32Move(const MoveOperand &from, const MoveOperand &to);
     void emitDoubleMove(const MoveOperand &from, const MoveOperand &to);
+    void emitFloat32X4Move(const MoveOperand &from, const MoveOperand &to);
+    void emitInt32X4Move(const MoveOperand &from, const MoveOperand &to);
     void breakCycle(const MoveOperand &to, MoveOp::Type type);
     void completeCycle(const MoveOperand &to, MoveOp::Type type);
 
   public:
-    MoveEmitterX86(MacroAssemblerSpecific &masm);
+    explicit MoveEmitterX86(MacroAssemblerSpecific &masm);
     ~MoveEmitterX86();
     void emit(const MoveResolver &moves);
     void finish();

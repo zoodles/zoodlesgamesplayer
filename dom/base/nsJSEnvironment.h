@@ -14,7 +14,9 @@
 #include "nsIXPConnect.h"
 #include "nsIArray.h"
 #include "mozilla/Attributes.h"
+#include "nsPIDOMWindow.h"
 #include "nsThreadUtils.h"
+#include "xpcpublic.h"
 
 class nsICycleCollectorListener;
 class nsIXPConnectJSObjectHolder;
@@ -34,11 +36,12 @@ struct CycleCollectorResults;
 // a page) and doing the actual GC.
 #define NS_GC_DELAY                 4000 // ms
 
+#define NS_MAJOR_FORGET_SKIPPABLE_CALLS 5
+
 class nsJSContext : public nsIScriptContext
 {
 public:
   nsJSContext(bool aGCOnDestruction, nsIScriptGlobalObject* aGlobalObject);
-  virtual ~nsJSContext();
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_AMBIGUOUS(nsJSContext,
@@ -68,11 +71,6 @@ public:
   static void LoadStart();
   static void LoadEnd();
 
-  enum IsCompartment {
-    CompartmentGC,
-    NonCompartmentGC
-  };
-
   enum IsShrinking {
     ShrinkingGC,
     NonShrinkingGC
@@ -88,7 +86,6 @@ public:
 
   static void GarbageCollectNow(JS::gcreason::Reason reason,
                                 IsIncremental aIncremental = NonIncrementalGC,
-                                IsCompartment aCompartment = NonCompartmentGC,
                                 IsShrinking aShrinking = NonShrinkingGC,
                                 int64_t aSliceMillis = 0);
   static void ShrinkGCBuffersNow();
@@ -101,8 +98,17 @@ public:
   // Run a cycle collector slice, using a heuristic to decide how long to run it.
   static void RunCycleCollectorSlice();
 
+  // Run a cycle collector slice, using the given work budget.
+  static void RunCycleCollectorWorkSlice(int64_t aWorkBudget);
+
   static void BeginCycleCollectionCallback();
   static void EndCycleCollectionCallback(mozilla::CycleCollectorResults &aResults);
+
+  // Return the longest CC slice time since ClearMaxCCSliceTime() was last called.
+  static uint32_t GetMaxCCSliceTimeSinceClear();
+  static void ClearMaxCCSliceTime();
+
+  static void RunNextCollectorTimer();
 
   static void PokeGC(JS::gcreason::Reason aReason, int aDelay = 0);
   static void KillGCTimer();
@@ -119,8 +125,6 @@ public:
   // Calling LikelyShortLivingObjectCreated() makes a GC more likely.
   static void LikelyShortLivingObjectCreated();
 
-  virtual void GC(JS::gcreason::Reason aReason) MOZ_OVERRIDE;
-
   static uint32_t CleanupsSinceLastGC();
 
   nsIScriptGlobalObject* GetCachedGlobalObject()
@@ -130,8 +134,10 @@ public:
     JSObject* global = GetWindowProxy();
     return global ? mGlobalObjectRef.get() : nullptr;
   }
+
+  static void NotifyDidPaint();
 protected:
-  nsresult InitializeExternalClasses();
+  virtual ~nsJSContext();
 
   // Helper to convert xpcom datatypes to jsvals.
   nsresult ConvertSupportsTojsvals(nsISupports *aArgs,
@@ -139,11 +145,6 @@ protected:
                                    JS::AutoValueVector &aArgsOut);
 
   nsresult AddSupportsPrimitiveTojsvals(nsISupports *aArg, JS::Value *aArgv);
-
-  // Report the pending exception on our mContext, if any.  This
-  // function will set aside the frame chain on mContext before
-  // reporting.
-  void ReportPendingException();
 
 private:
   void DestroyJSContext();
@@ -159,9 +160,6 @@ private:
 
   PRTime mModalStateTime;
   uint32_t mModalStateDepth;
-
-  nsJSContext *mNext;
-  nsJSContext **mPrev;
 
   // mGlobalObjectRef ensures that the outer window stays alive as long as the
   // context does. It is eventually collected by the cycle collector.
@@ -190,30 +188,18 @@ class AsyncErrorReporter : public nsRunnable
 {
 public:
   // aWindow may be null if this error report is not associated with a window
-  AsyncErrorReporter(JSRuntime* aRuntime,
-                     JSErrorReport* aErrorReport,
-                     const char* aFallbackMessage,
-                     bool aIsChromeError, // To determine category
-                     nsPIDOMWindow* aWindow);
+  AsyncErrorReporter(JSRuntime* aRuntime, xpc::ErrorReport* aReport)
+    : mReport(aReport)
+  {}
 
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() MOZ_OVERRIDE
   {
-    ReportError();
+    mReport->LogToConsole();
     return NS_OK;
   }
 
 protected:
-  // Do the actual error reporting
-  void ReportError();
-
-  nsString mErrorMsg;
-  nsString mFileName;
-  nsString mSourceLine;
-  nsCString mCategory;
-  uint32_t mLineNumber;
-  uint32_t mColumn;
-  uint32_t mFlags;
-  uint64_t mInnerWindowID;
+  nsRefPtr<xpc::ErrorReport> mReport;
 };
 
 } // namespace dom
@@ -238,9 +224,6 @@ public:
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(nsIJSArgArray, NS_IJSARGARRAY_IID)
-
-/* prototypes */
-void NS_ScriptErrorReporter(JSContext *cx, const char *message, JSErrorReport *report);
 
 JSObject* NS_DOMReadStructuredClone(JSContext* cx,
                                     JSStructuredCloneReader* reader, uint32_t tag,

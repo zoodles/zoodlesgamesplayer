@@ -21,7 +21,7 @@ nsScreenManagerQt::~nsScreenManagerQt()
 }
 
 // addref, release, QI
-NS_IMPL_ISUPPORTS1(nsScreenManagerQt, nsIScreenManager)
+NS_IMPL_ISUPPORTS(nsScreenManagerQt, nsIScreenManager)
 
 void nsScreenManagerQt::init()
 {
@@ -67,6 +67,21 @@ nsScreenManagerQt::ScreenForRect(int32_t inLeft, int32_t inTop,
 
     NS_IF_ADDREF(*outScreen = screens[best]);
     return NS_OK;
+}
+
+NS_IMETHODIMP
+nsScreenManagerQt::ScreenForId(uint32_t aId, nsIScreen** aOutScreen)
+{
+    if (!mInitialized) {
+        init();
+    }
+
+    if (aId < nScreens) {
+        NS_IF_ADDREF(*aOutScreen = screens[aId]);
+        return NS_OK;
+    }
+
+    return NS_ERROR_FAILURE;
 }
 
 //

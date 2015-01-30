@@ -25,6 +25,8 @@ class TestGonkCameraHardware : public android::GonkCameraHardware
 {
 public:
   virtual int AutoFocus() MOZ_OVERRIDE;
+  virtual int StartFaceDetection() MOZ_OVERRIDE;
+  virtual int StopFaceDetection() MOZ_OVERRIDE;
   virtual int TakePicture() MOZ_OVERRIDE;
   virtual int StartPreview() MOZ_OVERRIDE;
   virtual int PushParameters(const mozilla::GonkCameraParameters& aParams) MOZ_OVERRIDE;
@@ -59,9 +61,12 @@ protected:
   bool IsTestCaseInternal(const char* aTest, const char* aFile, int aLine);
   int TestCaseError(int aDefaultError);
 
+  int StartAutoFocusMoving(bool aIsMoving);
+  void InjectFakeSystemFailure();
+
 private:
-  TestGonkCameraHardware(const TestGonkCameraHardware&) MOZ_DELETE;
-  TestGonkCameraHardware& operator=(const TestGonkCameraHardware&) MOZ_DELETE;
+  TestGonkCameraHardware(const TestGonkCameraHardware&) = delete;
+  TestGonkCameraHardware& operator=(const TestGonkCameraHardware&) = delete;
 };
 
 #define IsTestCase(test)  IsTestCaseInternal((test), __FILE__, __LINE__)

@@ -7,11 +7,6 @@
 Cu.import("resource:///modules/experiments/Experiments.jsm");
 
 const FILE_MANIFEST            = "experiments.manifest";
-const PREF_EXPERIMENTS_ENABLED = "experiments.enabled";
-const PREF_LOGGING_LEVEL       = "experiments.logging.level";
-const PREF_LOGGING_DUMP        = "experiments.logging.dump";
-const PREF_MANIFEST_URI        = "experiments.manifest.uri";
-
 const SEC_IN_ONE_DAY = 24 * 60 * 60;
 const MS_IN_ONE_DAY  = SEC_IN_ONE_DAY * 1000;
 
@@ -60,7 +55,7 @@ add_task(function* test_setup() {
 
   gReporter = yield getReporter("json_payload_simple");
   yield gReporter.collectMeasurements();
-  let payload = yield gReporter.getJSONPayload(true);
+  let payload = yield gReporter.getJSONPayload(false);
   do_register_cleanup(() => gReporter._shutdown());
 
   patchPolicy(gPolicy, {
@@ -73,8 +68,6 @@ add_task(function* test_setup() {
   Services.prefs.setBoolPref(PREF_EXPERIMENTS_ENABLED, true);
   Services.prefs.setIntPref(PREF_LOGGING_LEVEL, 0);
   Services.prefs.setBoolPref(PREF_LOGGING_DUMP, true);
-
-  let experiments = new Experiments.Experiments();
 });
 
 function arraysEqual(a, b) {

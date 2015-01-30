@@ -1,8 +1,11 @@
+/* vim: set ts=2 sw=2 sts=2 et tw=80: */
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 Components.utils.import("resource://gre/modules/PrivateBrowsingUtils.jsm");
+Components.utils.import("resource://gre/modules/InlineSpellChecker.jsm");
+Components.utils.import("resource://gre/modules/BrowserUtils.jsm");
 
 var gContextMenuContentData = null;
 
@@ -22,8 +25,14 @@ nsContextMenu.prototype = {
 
     this.hasPageMenu = false;
     if (!aIsShift) {
-      this.hasPageMenu = PageMenu.maybeBuildAndAttachMenu(this.target,
-                                                          aXulMenu);
+      if (this.isRemote) {
+        this.hasPageMenu =
+          PageMenuParent.addToPopup(gContextMenuContentData.customMenuItems,
+                                    this.browser, aXulMenu);
+      }
+      else {
+        this.hasPageMenu = PageMenuParent.buildAndAddToPopup(this.target, aXulMenu);
+      }
     }
 
     this.isFrameImage = document.getElementById("isFrameImage");
@@ -38,6 +47,9 @@ nsContextMenu.prototype = {
 
     // Initialize (disable/remove) menu items.
     this.initItems();
+
+    // Register this opening of the menu with telemetry:
+    this._checkTelemetryForMenu(aXulMenu);
   },
 
   hiding: function CM_hiding() {
@@ -45,6 +57,11 @@ nsContextMenu.prototype = {
     InlineSpellCheckerUI.clearSuggestionsFromMenu();
     InlineSpellCheckerUI.clearDictionaryListFromMenu();
     InlineSpellCheckerUI.uninit();
+
+    // This handler self-deletes, only run it if it is still there:
+    if (this._onPopupHiding) {
+      this._onPopupHiding();
+    }
   },
 
   initItems: function CM_initItems() {
@@ -151,8 +168,8 @@ nsContextMenu.prototype = {
     var shouldShow = !(this.isContentSelected || this.onLink || this.onImage ||
                        this.onCanvas || this.onVideo || this.onAudio ||
                        this.onTextInput || this.onSocial);
-    this.showItem("context-back", shouldShow);
-    this.showItem("context-forward", shouldShow);
+    this.showItem("context-navigation", shouldShow);
+    this.showItem("context-sep-navigation", shouldShow);
 
     let stopped = XULBrowserWindow.stopCommand.getAttribute("disabled") == "true";
 
@@ -163,7 +180,6 @@ nsContextMenu.prototype = {
 
     this.showItem("context-reload", stopReloadItem == "reload");
     this.showItem("context-stop", stopReloadItem == "stop");
-    this.showItem("context-sep-stop", !!stopReloadItem);
 
     // XXX: Stop is determined in browser.js; the canStop broadcaster is broken
     //this.setItemAttrFromNode( "context-stop", "disabled", "canStop" );
@@ -198,9 +214,19 @@ nsContextMenu.prototype = {
     // Send media URL (but not for canvas, since it's a big data: URL)
     this.showItem("context-sendimage", this.onImage);
     this.showItem("context-sendvideo", this.onVideo);
+    this.showItem("context-castvideo", this.onVideo);
     this.showItem("context-sendaudio", this.onAudio);
     this.setItemAttr("context-sendvideo", "disabled", !this.mediaURL);
     this.setItemAttr("context-sendaudio", "disabled", !this.mediaURL);
+    // getServicesForVideo alone would be sufficient here (it depends on
+    // SimpleServiceDiscovery.services), but SimpleServiceDiscovery is garanteed
+    // to be already loaded, since we load it on startup, and CastingApps isn't,
+    // so check SimpleServiceDiscovery.services first to avoid needing to load
+    // CastingApps.jsm if we don't need to.
+    let shouldShowCast = this.mediaURL &&
+                         SimpleServiceDiscovery.services.length > 0 &&
+                         CastingApps.getServicesForVideo(this.target).length > 0;
+    this.setItemAttr("context-castvideo", "disabled", !shouldShowCast);
   },
 
   initViewItems: function CM_initViewItems() {
@@ -270,7 +296,8 @@ nsContextMenu.prototype = {
     // Use "Bookmark This Link" if on a link.
     this.showItem("context-bookmarkpage",
                   !(this.isContentSelected || this.onTextInput || this.onLink ||
-                    this.onImage || this.onVideo || this.onAudio || this.onSocial));
+                    this.onImage || this.onVideo || this.onAudio || this.onSocial ||
+                    this.onCanvas));
     this.showItem("context-bookmarklink", (this.onLink && !this.onMailtoLink &&
                                            !this.onSocial) || this.onPlainTextLink);
     this.showItem("context-keywordfield",
@@ -334,7 +361,7 @@ nsContextMenu.prototype = {
     let shareEnabled = shareButton && !shareButton.disabled && !this.onSocial;
     let pageShare = shareEnabled && !(this.isContentSelected ||
                             this.onTextInput || this.onLink || this.onImage ||
-                            this.onVideo || this.onAudio);
+                            this.onVideo || this.onAudio || this.onCanvas);
     this.showItem("context-sharepage", pageShare);
     this.showItem("context-shareselect", shareEnabled && this.isContentSelected);
     this.showItem("context-sharelink", shareEnabled && (this.onLink || this.onPlainTextLink) && !this.onMailtoLink);
@@ -344,7 +371,9 @@ nsContextMenu.prototype = {
   },
 
   initSpellingItems: function() {
-    var canSpell = InlineSpellCheckerUI.canSpellCheck && this.canSpellCheck;
+    var canSpell = InlineSpellCheckerUI.canSpellCheck &&
+                   !InlineSpellCheckerUI.initialSpellCheckPending &&
+                   this.canSpellCheck;
     var onMisspelling = InlineSpellCheckerUI.overMisspelling;
     var showUndo = canSpell && InlineSpellCheckerUI.canUndo();
     this.showItem("spell-check-enabled", canSpell);
@@ -373,7 +402,8 @@ nsContextMenu.prototype = {
     if (canSpell) {
       var dictMenu = document.getElementById("spell-dictionaries-menu");
       var dictSep = document.getElementById("spell-language-separator");
-      InlineSpellCheckerUI.addDictionaryListToMenu(dictMenu, dictSep);
+      let count = InlineSpellCheckerUI.addDictionaryListToMenu(dictMenu, dictSep);
+      this.showItem(dictSep, count > 0);
       this.showItem("spell-add-dictionaries-main", false);
     }
     else if (this.onEditableArea) {
@@ -445,7 +475,7 @@ nsContextMenu.prototype = {
     this.showItem("context-media-showcontrols", onMedia && !this.target.controls);
     this.showItem("context-media-hidecontrols", onMedia && this.target.controls);
     this.showItem("context-video-fullscreen", this.onVideo && this.target.ownerDocument.mozFullScreenElement == null);
-    var statsShowing = this.onVideo && XPCNativeWrapper.unwrap(this.target).mozMediaStatisticsShowing;
+    var statsShowing = this.onVideo && this.target.mozMediaStatisticsShowing;
     this.showItem("context-video-showstats", this.onVideo && this.target.controls && !statsShowing);
     this.showItem("context-video-hidestats", this.onVideo && this.target.controls && statsShowing);
 
@@ -491,19 +521,29 @@ nsContextMenu.prototype = {
     let tt = devtools.TargetFactory.forTab(gBrowser.selectedTab);
     return gDevTools.showToolbox(tt, "inspector").then(function(toolbox) {
       let inspector = toolbox.getCurrentPanel();
-      inspector.selection.setNode(this.target, "browser-context-menu");
+      if (this.isRemote) {
+        this.browser.messageManager.sendAsyncMessage("debug:inspect", {}, {node: this.target});
+        inspector.walker.findInspectingNode().then(nodeFront => {
+          inspector.selection.setNodeFront(nodeFront, "browser-context-menu");
+        });
+      } else {
+        inspector.selection.setNode(this.target, "browser-context-menu");
+      }
     }.bind(this));
   },
 
   // Set various context menu attributes based on the state of the world.
   setTarget: function (aNode, aRangeParent, aRangeOffset) {
-    // If gContextMenuContentData is not null, this event was forwarded from a
-    // child process, so use that information instead.
-    if (gContextMenuContentData) {
-      this.isRemote = true;
+    // gContextMenuContentData.isRemote tells us if the event came from a remote
+    // process. gContextMenuContentData can be null if something (like tests)
+    // opens the context menu directly.
+    let editFlags;
+    this.isRemote = gContextMenuContentData && gContextMenuContentData.isRemote;
+    if (this.isRemote) {
       aNode = gContextMenuContentData.event.target;
-    } else {
-      this.isRemote = false;
+      aRangeParent = gContextMenuContentData.event.rangeParent;
+      aRangeOffset = gContextMenuContentData.event.rangeOffset;
+      editFlags = gContextMenuContentData.editFlags;
     }
 
     const xulNS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
@@ -557,6 +597,7 @@ nsContextMenu.prototype = {
     if (this.isRemote) {
       this.browser = gContextMenuContentData.browser;
     } else {
+      editFlags = SpellCheckHelper.isEditable(this.target, window);
       this.browser = this.target.ownerDocument.defaultView
                                   .QueryInterface(Ci.nsIInterfaceRequestor)
                                   .getInterface(Ci.nsIWebNavigation)
@@ -592,7 +633,10 @@ nsContextMenu.prototype = {
         this.onCanvas = true;
       }
       else if (this.target instanceof HTMLVideoElement) {
-        this.mediaURL = this.target.currentSrc || this.target.src;
+        let mediaURL = this.target.currentSrc || this.target.src;
+        if (this.isMediaURLReusable(mediaURL)) {
+          this.mediaURL = mediaURL;
+        }
         // Firefox always creates a HTMLVideoElement when loading an ogg file
         // directly. If the media is actually audio, be smarter and provide a
         // context menu with audio operations.
@@ -605,26 +649,24 @@ nsContextMenu.prototype = {
       }
       else if (this.target instanceof HTMLAudioElement) {
         this.onAudio = true;
-        this.mediaURL = this.target.currentSrc || this.target.src;
-      }
-      else if (this.target instanceof HTMLInputElement ) {
-        this.onTextInput = this.isTargetATextBox(this.target);
-        // Allow spellchecking UI on all text and search inputs.
-        if (this.onTextInput && ! this.target.readOnly &&
-            (this.target.type == "text" || this.target.type == "search")) {
-          this.onEditableArea = true;
-          InlineSpellCheckerUI.init(this.target.QueryInterface(Ci.nsIDOMNSEditableElement).editor);
-          InlineSpellCheckerUI.initFromEvent(aRangeParent, aRangeOffset);
+        let mediaURL = this.target.currentSrc || this.target.src;
+        if (this.isMediaURLReusable(mediaURL)) {
+          this.mediaURL = mediaURL;
         }
-        this.onKeywordField = this.isTargetAKeywordField(this.target);
       }
-      else if (this.target instanceof HTMLTextAreaElement) {
-        this.onTextInput = true;
-        if (!this.target.readOnly) {
-          this.onEditableArea = true;
-          InlineSpellCheckerUI.init(this.target.QueryInterface(Ci.nsIDOMNSEditableElement).editor);
-          InlineSpellCheckerUI.initFromEvent(aRangeParent, aRangeOffset);
+      else if (editFlags & (SpellCheckHelper.INPUT | SpellCheckHelper.TEXTAREA)) {
+        this.onTextInput = (editFlags & SpellCheckHelper.TEXTINPUT) !== 0;
+        this.onEditableArea = (editFlags & SpellCheckHelper.EDITABLE) !== 0;
+        if (this.onEditableArea) {
+          if (this.isRemote) {
+            InlineSpellCheckerUI.initFromRemote(gContextMenuContentData.spellInfo);
+          }
+          else {
+            InlineSpellCheckerUI.init(this.target.QueryInterface(Ci.nsIDOMNSEditableElement).editor);
+            InlineSpellCheckerUI.initFromEvent(aRangeParent, aRangeOffset);
+          }
         }
+        this.onKeywordField = (editFlags & SpellCheckHelper.KEYWORD);
       }
       else if (this.target instanceof HTMLHtmlElement) {
         var bodyElt = this.target.ownerDocument.body;
@@ -646,7 +688,7 @@ nsContextMenu.prototype = {
       else if ((this.target instanceof HTMLEmbedElement ||
                 this.target instanceof HTMLObjectElement ||
                 this.target instanceof HTMLAppletElement) &&
-               this.target.mozMatchesSelector(":-moz-handler-clicktoplay")) {
+               this.target.matches(":-moz-handler-clicktoplay")) {
         this.onCTPPlugin = true;
       }
 
@@ -727,41 +769,35 @@ nsContextMenu.prototype = {
 
     // if the document is editable, show context menu like in text inputs
     if (!this.onEditableArea) {
-      var win = this.target.ownerDocument.defaultView;
-      if (win) {
-        var isEditable = false;
-        try {
-          var editingSession = win.QueryInterface(Ci.nsIInterfaceRequestor)
-                                  .getInterface(Ci.nsIWebNavigation)
-                                  .QueryInterface(Ci.nsIInterfaceRequestor)
-                                  .getInterface(Ci.nsIEditingSession);
-          if (editingSession.windowIsEditable(win) &&
-              this.getComputedStyle(this.target, "-moz-user-modify") == "read-write") {
-            isEditable = true;
-          }
+      if (editFlags & SpellCheckHelper.CONTENTEDITABLE) {
+        // If this.onEditableArea is false but editFlags is CONTENTEDITABLE, then
+        // the document itself must be editable.
+        this.onTextInput       = true;
+        this.onKeywordField    = false;
+        this.onImage           = false;
+        this.onLoadedImage     = false;
+        this.onCompletedImage  = false;
+        this.onMathML          = false;
+        this.inFrame           = false;
+        this.inSrcdocFrame     = false;
+        this.hasBGImage        = false;
+        this.isDesignMode      = true;
+        this.onEditableArea = true;
+        if (this.isRemote) {
+          InlineSpellCheckerUI.initFromRemote(gContextMenuContentData.spellInfo);
         }
-        catch(ex) {
-          // If someone built with composer disabled, we can't get an editing session.
-        }
-
-        if (isEditable) {
-          this.onTextInput       = true;
-          this.onKeywordField    = false;
-          this.onImage           = false;
-          this.onLoadedImage     = false;
-          this.onCompletedImage  = false;
-          this.onMathML          = false;
-          this.inFrame           = false;
-          this.inSrcdocFrame     = false;
-          this.hasBGImage        = false;
-          this.isDesignMode      = true;
-          this.onEditableArea = true;
-          InlineSpellCheckerUI.init(editingSession.getEditorForWindow(win));
-          var canSpell = InlineSpellCheckerUI.canSpellCheck && this.canSpellCheck;
+        else {
+          var targetWin = this.target.ownerDocument.defaultView;
+          var editingSession = targetWin.QueryInterface(Ci.nsIInterfaceRequestor)
+                                        .getInterface(Ci.nsIWebNavigation)
+                                        .QueryInterface(Ci.nsIInterfaceRequestor)
+                                        .getInterface(Ci.nsIEditingSession);
+          InlineSpellCheckerUI.init(editingSession.getEditorForWindow(targetWin));
           InlineSpellCheckerUI.initFromEvent(aRangeParent, aRangeOffset);
-          this.showItem("spell-check-enabled", canSpell);
-          this.showItem("spell-separator", canSpell);
         }
+        var canSpell = InlineSpellCheckerUI.canSpellCheck && this.canSpellCheck;
+        this.showItem("spell-check-enabled", canSpell);
+        this.showItem("spell-separator", canSpell);
       }
     }
   },
@@ -827,13 +863,20 @@ nsContextMenu.prototype = {
     return aNode.spellcheck;
   },
 
+  _openLinkInParameters : function (doc, extra) {
+    let params = { charset: doc.characterSet };
+    if (!BrowserUtils.linkHasNoReferrer(this.link))
+      params.referrerURI = document.documentURIObject;
+    for (let p in extra)
+      params[p] = extra[p];
+    return params;
+  },
+
   // Open linked-to URL in a new window.
   openLink : function () {
     var doc = this.target.ownerDocument;
     urlSecurityCheck(this.linkURL, this._unremotePrincipal(doc.nodePrincipal));
-    openLinkIn(this.linkURL, "window",
-               { charset: doc.characterSet,
-                 referrerURI: doc.documentURIObject });
+    openLinkIn(this.linkURL, "window", this._openLinkInParameters(doc));
   },
 
   // Open linked-to URL in a new private window.
@@ -841,9 +884,7 @@ nsContextMenu.prototype = {
     var doc = this.target.ownerDocument;
     urlSecurityCheck(this.linkURL, this._unremotePrincipal(doc.nodePrincipal));
     openLinkIn(this.linkURL, "window",
-               { charset: doc.characterSet,
-                 referrerURI: doc.documentURIObject,
-                 private: true });
+               this._openLinkInParameters(doc, { private: true }));
   },
 
   // Open linked-to URL in a new tab.
@@ -855,31 +896,29 @@ nsContextMenu.prototype = {
     // if the mixedContentChannel is present and the referring URI passes
     // a same origin check with the target URI, we can preserve the users
     // decision of disabling MCB on a page for it's child tabs.
-    var persistDisableMCBInChildTab = false;
+    var persistAllowMixedContentInChildTab = false;
 
     if (this.browser.docShell && this.browser.docShell.mixedContentChannel) {
       const sm = Services.scriptSecurityManager;
       try {
         var targetURI = this.linkURI;
         sm.checkSameOriginURI(referrerURI, targetURI, false);
-        persistDisableMCBInChildTab = true;
+        persistAllowMixedContentInChildTab = true;
       }
       catch (e) { }
     }
 
-    openLinkIn(this.linkURL, "tab",
-               { charset: doc.characterSet,
-                 referrerURI: referrerURI,
-                 disableMCB:  persistDisableMCBInChildTab});
+    let params = this._openLinkInParameters(doc, {
+      allowMixedContent: persistAllowMixedContentInChildTab,
+    });
+    openLinkIn(this.linkURL, "tab", params);
   },
 
   // open URL in current tab
   openLinkInCurrent: function() {
     var doc = this.target.ownerDocument;
     urlSecurityCheck(this.linkURL, this._unremotePrincipal(doc.nodePrincipal));
-    openLinkIn(this.linkURL, "current",
-               { charset: doc.characterSet,
-                 referrerURI: doc.documentURIObject });
+    openLinkIn(this.linkURL, "current", this._openLinkInParameters(doc));
   },
 
   // Open frame in a new tab.
@@ -913,7 +952,7 @@ nsContextMenu.prototype = {
     var frameURL = doc.location.href;
 
     urlSecurityCheck(frameURL,
-                     this._unremotePrincipal(this.browser.contentPrincipal),
+                     this.browser.contentPrincipal,
                      Ci.nsIScriptSecurityManager.DISALLOW_SCRIPT);
     var referrer = doc.referrer;
     openUILinkIn(frameURL, "current", { disallowInheritPrincipal: true,
@@ -933,7 +972,7 @@ nsContextMenu.prototype = {
   viewPartialSource: function(aContext) {
     var focusedWindow = document.commandDispatcher.focusedWindow;
     if (focusedWindow == window)
-      focusedWindow = content;
+      focusedWindow = gBrowser.selectedBrowser.contentWindowAsCPOW;
 
     var docCharset = null;
     if (focusedWindow)
@@ -974,7 +1013,7 @@ nsContextMenu.prototype = {
   viewImageDesc: function(e) {
     var doc = this.target.ownerDocument;
     urlSecurityCheck(this.imageDescURL,
-                     this._unremotePrincipal(this.browser.contentPrincipal),
+                     this.browser.contentPrincipal,
                      Ci.nsIScriptSecurityManager.DISALLOW_SCRIPT);
     openUILink(this.imageDescURL, e, { disallowInheritPrincipal: true,
                              referrerURI: doc.documentURIObject });
@@ -986,7 +1025,7 @@ nsContextMenu.prototype = {
 
   reloadImage: function(e) {
     urlSecurityCheck(this.mediaURL,
-                     this._unremotePrincipal(this.browser.contentPrincipal),
+                     this.browser.contentPrincipal,
                      Ci.nsIScriptSecurityManager.DISALLOW_SCRIPT);
 
     if (this.target instanceof Ci.nsIImageLoadingContent)
@@ -1002,7 +1041,7 @@ nsContextMenu.prototype = {
     else {
       viewURL = this.mediaURL;
       urlSecurityCheck(viewURL,
-                       this._unremotePrincipal(this.browser.contentPrincipal),
+                       this.browser.contentPrincipal,
                        Ci.nsIScriptSecurityManager.DISALLOW_SCRIPT);
     }
 
@@ -1012,6 +1051,7 @@ nsContextMenu.prototype = {
   },
 
   saveVideoFrameAsImage: function () {
+    let mm = this.browser.messageManager;
     let name = "";
     if (this.mediaURL) {
       try {
@@ -1023,13 +1063,18 @@ nsContextMenu.prototype = {
     }
     if (!name)
       name = "snapshot.jpg";
-    var video = this.target;
-    var canvas = document.createElementNS("http://www.w3.org/1999/xhtml", "canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    var ctxDraw = canvas.getContext("2d");
-    ctxDraw.drawImage(video, 0, 0);
-    saveImageURL(canvas.toDataURL("image/jpeg", ""), name, "SaveImageTitle", true, false, document.documentURIObject, this.target.ownerDocument);
+
+    mm.sendAsyncMessage("ContextMenu:SaveVideoFrameAsImage", {}, {
+      target: this.target,
+    });
+
+    let onMessage = (message) => {
+      mm.removeMessageListener("ContextMenu:SaveVideoFrameAsImage:Result", onMessage);
+      let dataURL = message.data.dataURL;
+      saveImageURL(dataURL, name, "SaveImageTitle", true, false,
+                   document.documentURIObject, document);
+    };
+    mm.addMessageListener("ContextMenu:SaveVideoFrameAsImage:Result", onMessage);
   },
 
   fullScreenVideo: function () {
@@ -1045,7 +1090,7 @@ nsContextMenu.prototype = {
   // Change current window to the URL of the background image.
   viewBGImage: function(e) {
     urlSecurityCheck(this.bgImageURL,
-                     this._unremotePrincipal(this.browser.contentPrincipal),
+                     this.browser.contentPrincipal,
                      Ci.nsIScriptSecurityManager.DISALLOW_SCRIPT);
     var doc = this.target.ownerDocument;
     openUILink(this.bgImageURL, e, { disallowInheritPrincipal: true,
@@ -1156,13 +1201,13 @@ nsContextMenu.prototype = {
           return;
         }
 
-        var extHelperAppSvc = 
+        let extHelperAppSvc = 
           Cc["@mozilla.org/uriloader/external-helper-app-service;1"].
           getService(Ci.nsIExternalHelperAppService);
-        var channel = aRequest.QueryInterface(Ci.nsIChannel);
-        this.extListener = 
+        let channel = aRequest.QueryInterface(Ci.nsIChannel);
+        this.extListener =
           extHelperAppSvc.doContent(channel.contentType, aRequest, 
-                                    doc.defaultView, true);
+                                    doc.defaultView, true, window);
         this.extListener.onStartRequest(aRequest, aContext);
       }, 
 
@@ -1301,12 +1346,31 @@ nsContextMenu.prototype = {
     MailIntegration.sendMessage(this.mediaURL, "");
   },
 
+  castVideo: function() {
+    CastingApps.openExternal(this.target, window);
+  },
+
+  populateCastVideoMenu: function(popup) {
+    let videoEl = this.target;
+    popup.innerHTML = null;
+    let doc = popup.ownerDocument;
+    let services = CastingApps.getServicesForVideo(videoEl);
+    services.forEach(service => {
+      let item = doc.createElement("menuitem");
+      item.setAttribute("label", service.friendlyName);
+      item.addEventListener("command", event => {
+        CastingApps.sendVideoToService(videoEl, service);
+      });
+      popup.appendChild(item);
+    });
+  },
+
   playPlugin: function() {
-    gPluginHandler._showClickToPlayNotification(this.browser, this.target, true);
+    gPluginHandler.contextMenuCommand(this.browser, this.target, "play");
   },
 
   hidePlugin: function() {
-    gPluginHandler.hideClickToPlayOverlay(this.target);
+    gPluginHandler.contextMenuCommand(this.browser, this.target, "hide");
   },
 
   // Generate email address and put it on clipboard.
@@ -1455,6 +1519,10 @@ nsContextMenu.prototype = {
     return !this.focusedWindow.getSelection().isCollapsed;
   },
 
+  isMediaURLReusable: function(aURL) {
+    return !/^(?:blob|mediasource):/.test(aURL);
+  },
+
   toString: function () {
     return "contextMenu.target     = " + this.target + "\n" +
            "contextMenu.onImage    = " + this.onImage + "\n" +
@@ -1479,30 +1547,6 @@ nsContextMenu.prototype = {
       return node.mozIsTextField(false);
 
     return (node instanceof HTMLTextAreaElement);
-  },
-
-  isTargetAKeywordField: function(aNode) {
-    if (!(aNode instanceof HTMLInputElement))
-      return false;
-
-    var form = aNode.form;
-    if (!form || aNode.type == "password")
-      return false;
-
-    var method = form.method.toUpperCase();
-
-    // These are the following types of forms we can create keywords for:
-    //
-    // method   encoding type       can create keyword
-    // GET      *                                 YES
-    //          *                                 YES
-    // POST                                       YES
-    // POST     application/x-www-form-urlencoded YES
-    // POST     text/plain                        NO (a little tricky to do)
-    // POST     multipart/form-data               NO
-    // POST     everything else                   YES
-    return (method == "GET" || method == "") ||
-           (form.enctype != "text/plain") && (form.enctype != "multipart/form-data");
   },
 
   // Determines whether or not the separator with the specified ID should be
@@ -1589,26 +1633,26 @@ nsContextMenu.prototype = {
   },
   markLink: function CM_markLink(origin) {
     // send link to social, if it is the page url linkURI will be null
-    SocialMarks.markLink(origin, this.linkURI ? this.linkURI.spec : null);
+    SocialMarks.markLink(origin, this.linkURI ? this.linkURI.spec : null, this.target);
   },
   shareLink: function CM_shareLink() {
-    SocialShare.sharePage(null, { url: this.linkURI.spec });
+    SocialShare.sharePage(null, { url: this.linkURI.spec }, this.target);
   },
 
   shareImage: function CM_shareImage() {
-    SocialShare.sharePage(null, { url: this.imageURL, previews: [ this.mediaURL ] });
+    SocialShare.sharePage(null, { url: this.imageURL, previews: [ this.mediaURL ] }, this.target);
   },
 
   shareVideo: function CM_shareVideo() {
-    SocialShare.sharePage(null, { url: this.mediaURL, source: this.mediaURL });
+    SocialShare.sharePage(null, { url: this.mediaURL, source: this.mediaURL }, this.target);
   },
 
   shareSelect: function CM_shareSelect(selection) {
-    SocialShare.sharePage(null, { url: this.browser.currentURI.spec, text: selection });
+    SocialShare.sharePage(null, { url: this.browser.currentURI.spec, text: selection }, this.target);
   },
 
   savePageAs: function CM_savePageAs() {
-    saveDocument(this.browser.contentDocument);
+    saveDocument(this.browser.contentDocumentAsCPOW);
   },
 
   printFrame: function CM_printFrame() {
@@ -1616,7 +1660,7 @@ nsContextMenu.prototype = {
   },
 
   switchPageDirection: function CM_switchPageDirection() {
-    SwitchDocumentDirection(this.browser.contentWindow);
+    SwitchDocumentDirection(this.browser.contentWindowAsCPOW);
   },
 
   mediaCommand : function CM_mediaCommand(command, data) {
@@ -1668,13 +1712,20 @@ nsContextMenu.prototype = {
   // Formats the 'Search <engine> for "<selection or link text>"' context menu.
   formatSearchContextItem: function() {
     var menuItem = document.getElementById("context-searchselect");
-    var selectedText = this.onLink ? this.linkText() : this.textSelected;
+    var selectedText = this.isTextSelected ? this.textSelected : this.linkText();
 
     // Store searchTerms in context menu item so we know what to search onclick
     menuItem.searchTerms = selectedText;
 
-    if (selectedText.length > 15)
-      selectedText = selectedText.substr(0,15) + this.ellipsis;
+    // If the JS character after our truncation point is a trail surrogate,
+    // include it in the truncated string to avoid splitting a surrogate pair.
+    if (selectedText.length > 15) {
+      let truncLength = 15;
+      let truncChar = selectedText[15].charCodeAt(0);
+      if (truncChar >= 0xDC00 && truncChar <= 0xDFFF)
+        truncLength++;
+      selectedText = selectedText.substr(0,truncLength) + this.ellipsis;
+    }
 
     // Use the current engine if the search bar is visible, the default
     // engine otherwise.
@@ -1692,5 +1743,63 @@ nsContextMenu.prototype = {
                                                          selectedText]);
     menuItem.label = menuLabel;
     menuItem.accessKey = gNavigatorBundle.getString("contextMenuSearch.accesskey");
-  }
+  },
+
+  _getTelemetryClickInfo: function(aXulMenu) {
+    this._onPopupHiding = () => {
+      aXulMenu.ownerDocument.removeEventListener("command", activationHandler, true);
+      aXulMenu.removeEventListener("popuphiding", this._onPopupHiding, true);
+      delete this._onPopupHiding;
+
+      let eventKey = [
+          this._telemetryPageContext,
+          this._telemetryHadCustomItems ? "withcustom" : "withoutcustom"
+      ];
+      let target = this._telemetryClickID || "close-without-interaction";
+      BrowserUITelemetry.registerContextMenuInteraction(eventKey, target);
+    };
+    let activationHandler = (e) => {
+      // Deal with command events being routed to command elements; figure out
+      // what triggered the event (which will have the right e.target)
+      if (e.sourceEvent) {
+        e = e.sourceEvent;
+      }
+      // Target should be in the menu (this catches using shortcuts for items
+      // not in the menu while the menu is up)
+      if (!aXulMenu.contains(e.target)) {
+        return;
+      }
+
+      // Check if this is a page menu item:
+      if (e.target.hasAttribute(PageMenuParent.GENERATEDITEMID_ATTR)) {
+        this._telemetryClickID = "custom-page-item";
+      } else {
+        this._telemetryClickID = (e.target.id || "unknown").replace(/^context-/i, "");
+      }
+    };
+    aXulMenu.ownerDocument.addEventListener("command", activationHandler, true);
+    aXulMenu.addEventListener("popuphiding", this._onPopupHiding, true);
+  },
+
+  _getTelemetryPageContextInfo: function() {
+    let rv = [];
+    for (let k of ["isContentSelected", "onLink", "onImage", "onCanvas", "onVideo", "onAudio",
+                   "onTextInput", "onSocial"]) {
+      if (this[k]) {
+        rv.push(k.replace(/^(?:is|on)(.)/, (match, firstLetter) => firstLetter.toLowerCase()));
+      }
+    }
+    if (!rv.length) {
+      rv.push('other');
+    }
+
+    return JSON.stringify(rv);
+  },
+
+  _checkTelemetryForMenu: function(aXulMenu) {
+    this._telemetryClickID = null;
+    this._telemetryPageContext = this._getTelemetryPageContextInfo();
+    this._telemetryHadCustomItems = this.hasPageMenu;
+    this._getTelemetryClickInfo(aXulMenu);
+  },
 };

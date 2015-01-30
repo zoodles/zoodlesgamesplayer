@@ -174,7 +174,7 @@ let UI = {
       });
 
       // ___ setup DOMWillOpenModalDialog message handler
-      let mm = gWindow.messageManager;
+      let mm = gWindow.getGroupMessageManager("browsers");
       let callback = this._onDOMWillOpenModalDialog.bind(this);
       mm.addMessageListener("Panorama:DOMWillOpenModalDialog", callback);
 
@@ -235,7 +235,7 @@ let UI = {
 
       // ___ load frame script
       let frameScript = "chrome://browser/content/tabview-content.js";
-      gWindow.messageManager.loadFrameScript(frameScript, true);
+      mm.loadFrameScript(frameScript, true);
 
       // ___ Done
       this._frameInitialized = true;
@@ -527,11 +527,15 @@ let UI = {
     if (!this.isTabViewVisible() || this._isChangingVisibility)
       return;
 
-    this._isChangingVisibility = true;
-
     // another tab might be select if user decides to stay on a page when
     // a onclose confirmation prompts.
     GroupItems.removeHiddenGroups();
+
+    // We need to set this after removing the hidden groups because doing so
+    // might show prompts which will cause us to be called again, and we'd get
+    // stuck if we prevent re-entrancy before doing that.
+    this._isChangingVisibility = true;
+
     TabItems.pausePainting();
 
     this._reorderTabsOnHide.forEach(function(groupItem) {
@@ -793,10 +797,11 @@ let UI = {
         if (this.restoredClosedTab) {
           // when the tab view UI is being displayed, update the thumb for the 
           // restored closed tab after the page load
-          tab.linkedBrowser.addEventListener("load", function onLoad(event) {
-            tab.linkedBrowser.removeEventListener("load", onLoad, true);
+          tab.linkedBrowser.messageManager.addMessageListener("Panorama:documentLoaded", function onLoad() {
+            tab.linkedBrowser.messageManager.removeMessageListener("Panorama:documentLoaded", onLoad);
             TabItems._update(tab);
-          }, true);
+          });
+          tab.linkedBrowser.messageManager.sendAsyncMessage("Panorama:waitForDocumentLoad");
         }
         this._closedLastVisibleTab = false;
         this._closedSelectedTabInTabView = false;

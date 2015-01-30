@@ -9,8 +9,8 @@
 
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/Date.h"
+#include "mozilla/dom/MozMap.h"
 #include "mozilla/dom/TypedArray.h"
-#include "mozilla/dom/UnionTypes.h"
 #include "mozilla/ErrorResult.h"
 #include "nsCOMPtr.h"
 #include "nsGenericHTMLElement.h"
@@ -48,6 +48,8 @@ public:
   virtual nsISupports* GetParentObject();
 };
 
+NS_DEFINE_STATIC_IID_ACCESSOR(nsRenamedInterface, NS_RENAMED_INTERFACE_IID)
+
 // IID for the IndirectlyImplementedInterface
 #define NS_INDIRECTLY_IMPLEMENTED_INTERFACE_IID \
 { 0xfed55b69, 0x7012, 0x4849, \
@@ -68,6 +70,8 @@ public:
   void IndirectlyImplementedMethod();
 };
 
+NS_DEFINE_STATIC_IID_ACCESSOR(IndirectlyImplementedInterface, NS_INDIRECTLY_IMPLEMENTED_INTERFACE_IID)
+
 // IID for the TestExternalInterface
 #define NS_TEST_EXTERNAL_INTERFACE_IID \
 { 0xd5ba0c99, 0x9b1d, 0x4e71, \
@@ -79,12 +83,14 @@ public:
   NS_DECL_ISUPPORTS
 };
 
+NS_DEFINE_STATIC_IID_ACCESSOR(TestExternalInterface, NS_TEST_EXTERNAL_INTERFACE_IID)
+
 class TestNonWrapperCacheInterface : public nsISupports
 {
 public:
   NS_DECL_ISUPPORTS
 
-  virtual JSObject* WrapObject(JSContext* cx, JS::Handle<JSObject*> scope);
+  bool WrapObject(JSContext* aCx, JS::MutableHandle<JSObject*> aReflector);
 };
 
 class OnlyForUseInConstructor : public nsISupports,
@@ -144,7 +150,6 @@ public:
 
   static
   already_AddRefed<TestInterface> Test2(const GlobalObject&,
-                                        JSContext*,
                                         const DictForConstructor&,
                                         JS::Handle<JS::Value>,
                                         JS::Handle<JSObject*>,
@@ -153,6 +158,11 @@ public:
                                         JS::Handle<JS::Value>,
                                         const Optional<JS::Handle<JSObject*> >&,
                                         const Optional<JS::Handle<JSObject*> >&,
+                                        ErrorResult&);
+
+  static
+  already_AddRefed<TestInterface> Test3(const GlobalObject&,
+                                        const LongOrAnyMozMap&,
                                         ErrorResult&);
 
   // Integer types
@@ -172,7 +182,21 @@ public:
   int8_t CachedConstantByte();
   int8_t CachedWritableByte();
   void SetCachedWritableByte(int8_t);
+  int8_t SideEffectFreeByte();
+  int8_t SetSideEffectFreeByte(int8_t);
+  int8_t DomDependentByte();
+  int8_t SetDomDependentByte(int8_t);
+  int8_t ConstantByte();
+  int8_t DeviceStateDependentByte();
+  int8_t ReturnByteSideEffectFree();
+  int8_t ReturnDOMDependentByte();
+  int8_t ReturnConstantByte();
+  int8_t ReturnDeviceStateDependentByte();
 
+  void UnsafePrerenderMethod();
+  int32_t UnsafePrerenderWritable();
+  void SetUnsafePrerenderWritable(int32_t);
+  int32_t UnsafePrerenderReadonly();
   int16_t ReadonlyShort();
   int16_t WritableShort();
   void SetWritableShort(int16_t);
@@ -364,17 +388,19 @@ public:
   void ReceiveNullableCallbackObjectSequence(nsTArray< nsRefPtr<TestCallbackInterface> > &);
   void ReceiveCastableObjectNullableSequence(Nullable< nsTArray< nsRefPtr<TestInterface> > >&);
   void ReceiveNullableCastableObjectNullableSequence(Nullable< nsTArray< nsRefPtr<TestInterface> > >&);
-  void ReceiveWeakCastableObjectSequence(nsTArray<TestInterface*> &);
-  void ReceiveWeakNullableCastableObjectSequence(nsTArray<TestInterface*> &);
-  void ReceiveWeakCastableObjectNullableSequence(Nullable< nsTArray<TestInterface*> >&);
-  void ReceiveWeakNullableCastableObjectNullableSequence(Nullable< nsTArray<TestInterface*> >&);
+  void ReceiveWeakCastableObjectSequence(nsTArray<nsRefPtr<TestInterface>> &);
+  void ReceiveWeakNullableCastableObjectSequence(nsTArray<nsRefPtr<TestInterface>> &);
+  void ReceiveWeakCastableObjectNullableSequence(Nullable< nsTArray<nsRefPtr<TestInterface>> >&);
+  void ReceiveWeakNullableCastableObjectNullableSequence(Nullable< nsTArray<nsRefPtr<TestInterface>> >&);
   void PassCastableObjectSequence(const Sequence< OwningNonNull<TestInterface> >&);
   void PassNullableCastableObjectSequence(const Sequence< nsRefPtr<TestInterface> > &);
   void PassCastableObjectNullableSequence(const Nullable< Sequence< OwningNonNull<TestInterface> > >&);
   void PassNullableCastableObjectNullableSequence(const Nullable< Sequence< nsRefPtr<TestInterface> > >&);
   void PassOptionalSequence(const Optional<Sequence<int32_t> >&);
+  void PassOptionalSequenceWithDefaultValue(const Sequence<int32_t> &);
   void PassOptionalNullableSequence(const Optional<Nullable<Sequence<int32_t> > >&);
   void PassOptionalNullableSequenceWithDefaultValue(const Nullable< Sequence<int32_t> >&);
+  void PassOptionalNullableSequenceWithDefaultValue2(const Nullable< Sequence<int32_t> >&);
   void PassOptionalObjectSequence(const Optional<Sequence<OwningNonNull<TestInterface> > >&);
   void PassExternalInterfaceSequence(const Sequence<nsRefPtr<TestExternalInterface> >&);
   void PassNullableExternalInterfaceSequence(const Sequence<nsRefPtr<TestExternalInterface> >&);
@@ -395,6 +421,32 @@ public:
   void PassSequenceOfSequences(const Sequence< Sequence<int32_t> >&);
   void ReceiveSequenceOfSequences(nsTArray< nsTArray<int32_t> >&);
 
+  // MozMap types
+  void PassMozMap(const MozMap<int32_t> &);
+  void PassNullableMozMap(const Nullable< MozMap<int32_t> >&);
+  void PassMozMapOfNullableInts(const MozMap<Nullable<int32_t> >&);
+  void PassOptionalMozMapOfNullableInts(const Optional<MozMap<Nullable<int32_t> > > &);
+  void PassOptionalNullableMozMapOfNullableInts(const Optional<Nullable<MozMap<Nullable<int32_t> > > > &);
+  void PassCastableObjectMozMap(const MozMap< OwningNonNull<TestInterface> >&);
+  void PassNullableCastableObjectMozMap(const MozMap< nsRefPtr<TestInterface> > &);
+  void PassCastableObjectNullableMozMap(const Nullable< MozMap< OwningNonNull<TestInterface> > >&);
+  void PassNullableCastableObjectNullableMozMap(const Nullable< MozMap< nsRefPtr<TestInterface> > >&);
+  void PassOptionalMozMap(const Optional<MozMap<int32_t> >&);
+  void PassOptionalNullableMozMap(const Optional<Nullable<MozMap<int32_t> > >&);
+  void PassOptionalNullableMozMapWithDefaultValue(const Nullable< MozMap<int32_t> >&);
+  void PassOptionalObjectMozMap(const Optional<MozMap<OwningNonNull<TestInterface> > >&);
+  void PassExternalInterfaceMozMap(const MozMap<nsRefPtr<TestExternalInterface> >&);
+  void PassNullableExternalInterfaceMozMap(const MozMap<nsRefPtr<TestExternalInterface> >&);
+  void PassStringMozMap(const MozMap<nsString>&);
+  void PassByteStringMozMap(const MozMap<nsCString>&);
+  void PassMozMapOfMozMaps(const MozMap< MozMap<int32_t> >&);
+  void ReceiveMozMap(MozMap<int32_t>&);
+  void ReceiveNullableMozMap(Nullable<MozMap<int32_t>>&);
+  void ReceiveMozMapOfNullableInts(MozMap<Nullable<int32_t>>&);
+  void ReceiveNullableMozMapOfNullableInts(Nullable<MozMap<Nullable<int32_t>>>&);
+  void ReceiveMozMapOfMozMaps(MozMap<MozMap<int32_t>>&);
+  void ReceiveAnyMozMap(JSContext*, MozMap<JS::Value>&);
+
   // Typed array types
   void PassArrayBuffer(const ArrayBuffer&);
   void PassNullableArrayBuffer(const Nullable<ArrayBuffer>&);
@@ -413,9 +465,13 @@ public:
   void PassFloat64Array(const Float64Array&);
   void PassSequenceOfArrayBuffers(const Sequence<ArrayBuffer>&);
   void PassSequenceOfNullableArrayBuffers(const Sequence<Nullable<ArrayBuffer> >&);
+  void PassMozMapOfArrayBuffers(const MozMap<ArrayBuffer>&);
+  void PassMozMapOfNullableArrayBuffers(const MozMap<Nullable<ArrayBuffer> >&);
   void PassVariadicTypedArray(const Sequence<Float32Array>&);
   void PassVariadicNullableTypedArray(const Sequence<Nullable<Float32Array> >&);
-  JSObject* ReceiveUint8Array(JSContext*);
+  void ReceiveUint8Array(JSContext*, JS::MutableHandle<JSObject*>);
+  void SetUint8ArrayAttr(const Uint8Array&);
+  void GetUint8ArrayAttr(JSContext*, JS::MutableHandle<JSObject*>);
 
   // DOMString types
   void PassString(const nsAString&);
@@ -425,6 +481,7 @@ public:
   void PassOptionalNullableString(const Optional<nsAString>&);
   void PassOptionalNullableStringWithDefaultValue(const nsAString&);
   void PassVariadicString(const Sequence<nsString>&);
+  void ReceiveString(DOMString&);
 
   // ByteString types
   void PassByteString(const nsCString&);
@@ -432,6 +489,16 @@ public:
   void PassOptionalByteString(const Optional<nsCString>&);
   void PassOptionalNullableByteString(const Optional<nsCString>&);
   void PassVariadicByteString(const Sequence<nsCString>&);
+
+  // USVString types
+  void PassUSVS(const nsAString&);
+  void PassNullableUSVS(const nsAString&);
+  void PassOptionalUSVS(const Optional<nsAString>&);
+  void PassOptionalUSVSWithDefaultValue(const nsAString&);
+  void PassOptionalNullableUSVS(const Optional<nsAString>&);
+  void PassOptionalNullableUSVSWithDefaultValue(const nsAString&);
+  void PassVariadicUSVS(const Sequence<nsString>&);
+  void ReceiveUSVS(DOMString&);
 
   // Enumerated types
   void PassEnum(TestEnum);
@@ -466,6 +533,7 @@ public:
   // Any types
   void PassAny(JSContext*, JS::Handle<JS::Value>);
   void PassVariadicAny(JSContext*, const Sequence<JS::Value>&);
+  void PassOptionalAny(JSContext*, JS::Handle<JS::Value>);
   void PassAnyDefaultNull(JSContext*, JS::Handle<JS::Value>);
   void PassSequenceOfAny(JSContext*, const Sequence<JS::Value>&);
   void PassNullableSequenceOfAny(JSContext*, const Nullable<Sequence<JS::Value> >&);
@@ -476,7 +544,18 @@ public:
   void PassSequenceOfNullableSequenceOfAny(JSContext*, const Sequence<Nullable<Sequence<JS::Value> > >&);
   void PassNullableSequenceOfNullableSequenceOfAny(JSContext*, const Nullable<Sequence<Nullable<Sequence<JS::Value> > > >&);
   void PassOptionalNullableSequenceOfNullableSequenceOfAny(JSContext*, const Optional<Nullable<Sequence<Nullable<Sequence<JS::Value> > > > >&);
-  JS::Value ReceiveAny(JSContext*);
+  void PassMozMapOfAny(JSContext*, const MozMap<JS::Value>&);
+  void PassNullableMozMapOfAny(JSContext*, const Nullable<MozMap<JS::Value> >&);
+  void PassOptionalMozMapOfAny(JSContext*, const Optional<MozMap<JS::Value> >&);
+  void PassOptionalNullableMozMapOfAny(JSContext*, const Optional<Nullable<MozMap<JS::Value> > >&);
+  void PassOptionalMozMapOfAnyWithDefaultValue(JSContext*, const Nullable<MozMap<JS::Value> >&);
+  void PassMozMapOfMozMapOfAny(JSContext*, const MozMap<MozMap<JS::Value> >&);
+  void PassMozMapOfNullableMozMapOfAny(JSContext*, const MozMap<Nullable<MozMap<JS::Value> > >&);
+  void PassNullableMozMapOfNullableMozMapOfAny(JSContext*, const Nullable<MozMap<Nullable<MozMap<JS::Value> > > >&);
+  void PassOptionalNullableMozMapOfNullableMozMapOfAny(JSContext*, const Optional<Nullable<MozMap<Nullable<MozMap<JS::Value>>>>>&);
+  void PassOptionalNullableMozMapOfNullableSequenceOfAny(JSContext*, const Optional<Nullable<MozMap<Nullable<Sequence<JS::Value>>>>>&);
+  void PassOptionalNullableSequenceOfNullableMozMapOfAny(JSContext*, const Optional<Nullable<Sequence<Nullable<MozMap<JS::Value>>>>>&);
+  void ReceiveAny(JSContext*, JS::MutableHandle<JS::Value>);
 
   // object types
   void PassObject(JSContext*, JS::Handle<JSObject*>);
@@ -491,8 +570,9 @@ public:
   void PassNullableSequenceOfObject(JSContext*, const Nullable<Sequence<JSObject*> >&);
   void PassOptionalNullableSequenceOfNullableSequenceOfObject(JSContext*, const Optional<Nullable<Sequence<Nullable<Sequence<JSObject*> > > > >&);
   void PassOptionalNullableSequenceOfNullableSequenceOfNullableObject(JSContext*, const Optional<Nullable<Sequence<Nullable<Sequence<JSObject*> > > > >&);
-  JSObject* ReceiveObject(JSContext*);
-  JSObject* ReceiveNullableObject(JSContext*);
+  void PassMozMapOfObject(JSContext*, const MozMap<JSObject*>&);
+  void ReceiveObject(JSContext*, JS::MutableHandle<JSObject*>);
+  void ReceiveNullableObject(JSContext*, JS::MutableHandle<JSObject*>);
 
   // Union types
   void PassUnion(JSContext*, const ObjectOrLong& arg);
@@ -524,7 +604,26 @@ public:
   void PassUnion12(const EventInitOrLong& arg);
   void PassUnion13(JSContext*, const ObjectOrLongOrNull& arg);
   void PassUnion14(JSContext*, const ObjectOrLongOrNull& arg);
+  void PassUnion15(const LongSequenceOrLong&);
+  void PassUnion16(const Optional<LongSequenceOrLong>&);
+  void PassUnion17(const LongSequenceOrNullOrLong&);
+  void PassUnion18(JSContext*, const ObjectSequenceOrLong&);
+  void PassUnion19(JSContext*, const Optional<ObjectSequenceOrLong>&);
+  void PassUnion20(JSContext*, const ObjectSequenceOrLong&);
+  void PassUnion21(const LongMozMapOrLong&);
+  void PassUnion22(JSContext*, const ObjectMozMapOrLong&);
+  void PassUnion23(const ImageDataSequenceOrLong&);
+  void PassUnion24(const ImageDataOrNullSequenceOrLong&);
+  void PassUnion25(const ImageDataSequenceSequenceOrLong&);
+  void PassUnion26(const ImageDataOrNullSequenceSequenceOrLong&);
+  void PassUnion27(const StringSequenceOrEventInit&);
+  void PassUnion28(const EventInitOrStringSequence&);
   void PassUnionWithCallback(const EventHandlerNonNullOrNullOrLong& arg);
+  void PassUnionWithByteString(const ByteStringOrLong&);
+  void PassUnionWithMozMap(const StringMozMapOrString&);
+  void PassUnionWithMozMapAndSequence(const StringMozMapOrStringSequence&);
+  void PassUnionWithSequenceAndMozMap(const StringSequenceOrStringMozMap&);
+  void PassUnionWithUSVS(const USVStringOrLong&);
 #endif
   void PassNullableUnion(JSContext*, const Nullable<ObjectOrLong>&);
   void PassOptionalUnion(JSContext*, const Optional<ObjectOrLong>&);
@@ -572,6 +671,8 @@ public:
 
   void PassSequenceOfNullableUnions(const Sequence<Nullable<OwningCanvasPatternOrCanvasGradient>>&);
   void PassVariadicNullableUnion(const Sequence<Nullable<OwningCanvasPatternOrCanvasGradient>>&);
+  void PassMozMapOfUnions(const MozMap<OwningCanvasPatternOrCanvasGradient>&);
+  void PassMozMapOfUnions2(JSContext*, const MozMap<OwningObjectOrLong>&);
 
   void ReceiveUnion(OwningCanvasPatternOrCanvasGradient&);
   void ReceiveUnion2(JSContext*, OwningObjectOrLong&);
@@ -592,16 +693,20 @@ public:
   void PassOptionalNullableDate(const Optional<Nullable<Date> >&);
   void PassOptionalNullableDateWithDefaultValue(const Nullable<Date>&);
   void PassDateSequence(const Sequence<Date>&);
+  void PassDateMozMap(const MozMap<Date>&);
   void PassNullableDateSequence(const Sequence<Nullable<Date> >&);
   Date ReceiveDate();
   Nullable<Date> ReceiveNullableDate();
 
   // binaryNames tests
   void MethodRenamedTo();
+  void OtherMethodRenamedTo();
   void MethodRenamedTo(int8_t);
   int8_t AttributeGetterRenamedTo();
   int8_t AttributeRenamedTo();
   void SetAttributeRenamedTo(int8_t);
+  int8_t OtherAttributeRenamedTo();
+  void SetOtherAttributeRenamedTo(int8_t);
 
   // Dictionary tests
   void PassDictionary(JSContext*, const Dict&);
@@ -617,11 +722,13 @@ public:
   void ReceiveNullableDictionary(JSContext*, Nullable<Dict>&);
   void PassOtherDictionary(const GrandparentDict&);
   void PassSequenceOfDictionaries(JSContext*, const Sequence<Dict>&);
+  void PassMozMapOfDictionaries(const MozMap<GrandparentDict>&);
   void PassDictionaryOrLong(JSContext*, const Dict&);
   void PassDictionaryOrLong(int32_t);
   void PassDictContainingDict(JSContext*, const DictContainingDict&);
   void PassDictContainingSequence(JSContext*, const DictContainingSequence&);
   void ReceiveDictContainingSequence(JSContext*, DictContainingSequence&);
+  void PassVariadicDictionary(JSContext*, const Sequence<Dict>&);
 
   // Typedefs
   void ExerciseTypedefInterfaces1(TestInterface&);
@@ -630,8 +737,7 @@ public:
 
   // Static methods and attributes
   static void StaticMethod(const GlobalObject&, bool);
-  static void StaticMethodWithContext(const GlobalObject&, JSContext*,
-                                      JS::Value);
+  static void StaticMethodWithContext(const GlobalObject&, JS::Value);
   static bool StaticAttribute(const GlobalObject&);
   static void SetStaticAttribute(const GlobalObject&, bool);
 
@@ -674,7 +780,15 @@ public:
   void Overload15(const Optional<NonNull<TestInterface> >&);
   void Overload16(int32_t);
   void Overload16(const Optional<TestInterface*>&);
-
+  void Overload17(const Sequence<int32_t>&);
+  void Overload17(const MozMap<int32_t>&);
+  void Overload18(const MozMap<nsString>&);
+  void Overload18(const Sequence<nsString>&);
+  void Overload19(const Sequence<int32_t>&);
+  void Overload19(JSContext*, const Dict&);
+  void Overload20(JSContext*, const Dict&);
+  void Overload20(const Sequence<int32_t>&);
+  
   // Variadic handling
   void PassVariadicThirdArg(const nsAString&, int32_t,
                             const Sequence<OwningNonNull<TestInterface> >&);
@@ -710,12 +824,14 @@ public:
   void SetAttrWithLenientThis(int32_t);
   uint32_t UnforgeableAttr();
   uint32_t UnforgeableAttr2();
+  uint32_t UnforgeableMethod();
+  uint32_t UnforgeableMethod2();
   void Stringify(nsString&);
   void PassRenamedInterface(nsRenamedInterface&);
   TestInterface* PutForwardsAttr();
   TestInterface* PutForwardsAttr2();
   TestInterface* PutForwardsAttr3();
-  JS::Value JsonifierShouldSkipThis(JSContext*);
+  void GetJsonifierShouldSkipThis(JSContext*, JS::MutableHandle<JS::Value>);
   void SetJsonifierShouldSkipThis(JSContext*, JS::Rooted<JS::Value>&);
   TestParentInterface* JsonifierShouldSkipThis2();
   void SetJsonifierShouldSkipThis2(TestParentInterface&);
@@ -732,6 +848,10 @@ public:
   void PassArgsWithDefaults(JSContext*, const Optional<int32_t>&,
                             TestInterface*, const Dict&, double,
                             const Optional<float>&);
+
+  void SetDashed_attribute(int8_t);
+  int8_t Dashed_attribute();
+  void Dashed_method();
 
   // Methods and properties imported via "implements"
   bool ImplementedProperty();
@@ -758,201 +878,201 @@ private:
   // We add signatures here that _could_ start matching if the codegen
   // got data types wrong.  That way if it ever does we'll have a call
   // to these private deleted methods and compilation will fail.
-  void SetReadonlyByte(int8_t) MOZ_DELETE;
+  void SetReadonlyByte(int8_t) = delete;
   template<typename T>
-  void SetWritableByte(T) MOZ_DELETE;
+  void SetWritableByte(T) = delete;
   template<typename T>
-  void PassByte(T) MOZ_DELETE;
-  void PassNullableByte(Nullable<int8_t>&) MOZ_DELETE;
+  void PassByte(T) = delete;
+  void PassNullableByte(Nullable<int8_t>&) = delete;
   template<typename T>
-  void PassOptionalByte(const Optional<T>&) MOZ_DELETE;
+  void PassOptionalByte(const Optional<T>&) = delete;
   template<typename T>
-  void PassOptionalByteWithDefault(T) MOZ_DELETE;
-  void PassVariadicByte(Sequence<int8_t>&) MOZ_DELETE;
+  void PassOptionalByteWithDefault(T) = delete;
+  void PassVariadicByte(Sequence<int8_t>&) = delete;
 
-  void SetReadonlyShort(int16_t) MOZ_DELETE;
+  void SetReadonlyShort(int16_t) = delete;
   template<typename T>
-  void SetWritableShort(T) MOZ_DELETE;
+  void SetWritableShort(T) = delete;
   template<typename T>
-  void PassShort(T) MOZ_DELETE;
+  void PassShort(T) = delete;
   template<typename T>
-  void PassOptionalShort(const Optional<T>&) MOZ_DELETE;
+  void PassOptionalShort(const Optional<T>&) = delete;
   template<typename T>
-  void PassOptionalShortWithDefault(T) MOZ_DELETE;
+  void PassOptionalShortWithDefault(T) = delete;
 
-  void SetReadonlyLong(int32_t) MOZ_DELETE;
+  void SetReadonlyLong(int32_t) = delete;
   template<typename T>
-  void SetWritableLong(T) MOZ_DELETE;
+  void SetWritableLong(T) = delete;
   template<typename T>
-  void PassLong(T) MOZ_DELETE;
+  void PassLong(T) = delete;
   template<typename T>
-  void PassOptionalLong(const Optional<T>&) MOZ_DELETE;
+  void PassOptionalLong(const Optional<T>&) = delete;
   template<typename T>
-  void PassOptionalLongWithDefault(T) MOZ_DELETE;
+  void PassOptionalLongWithDefault(T) = delete;
 
-  void SetReadonlyLongLong(int64_t) MOZ_DELETE;
+  void SetReadonlyLongLong(int64_t) = delete;
   template<typename T>
-  void SetWritableLongLong(T) MOZ_DELETE;
+  void SetWritableLongLong(T) = delete;
   template<typename T>
-  void PassLongLong(T) MOZ_DELETE;
+  void PassLongLong(T) = delete;
   template<typename T>
-  void PassOptionalLongLong(const Optional<T>&) MOZ_DELETE;
+  void PassOptionalLongLong(const Optional<T>&) = delete;
   template<typename T>
-  void PassOptionalLongLongWithDefault(T) MOZ_DELETE;
+  void PassOptionalLongLongWithDefault(T) = delete;
 
-  void SetReadonlyOctet(uint8_t) MOZ_DELETE;
+  void SetReadonlyOctet(uint8_t) = delete;
   template<typename T>
-  void SetWritableOctet(T) MOZ_DELETE;
+  void SetWritableOctet(T) = delete;
   template<typename T>
-  void PassOctet(T) MOZ_DELETE;
+  void PassOctet(T) = delete;
   template<typename T>
-  void PassOptionalOctet(const Optional<T>&) MOZ_DELETE;
+  void PassOptionalOctet(const Optional<T>&) = delete;
   template<typename T>
-  void PassOptionalOctetWithDefault(T) MOZ_DELETE;
+  void PassOptionalOctetWithDefault(T) = delete;
 
-  void SetReadonlyUnsignedShort(uint16_t) MOZ_DELETE;
+  void SetReadonlyUnsignedShort(uint16_t) = delete;
   template<typename T>
-  void SetWritableUnsignedShort(T) MOZ_DELETE;
+  void SetWritableUnsignedShort(T) = delete;
   template<typename T>
-  void PassUnsignedShort(T) MOZ_DELETE;
+  void PassUnsignedShort(T) = delete;
   template<typename T>
-  void PassOptionalUnsignedShort(const Optional<T>&) MOZ_DELETE;
+  void PassOptionalUnsignedShort(const Optional<T>&) = delete;
   template<typename T>
-  void PassOptionalUnsignedShortWithDefault(T) MOZ_DELETE;
+  void PassOptionalUnsignedShortWithDefault(T) = delete;
 
-  void SetReadonlyUnsignedLong(uint32_t) MOZ_DELETE;
+  void SetReadonlyUnsignedLong(uint32_t) = delete;
   template<typename T>
-  void SetWritableUnsignedLong(T) MOZ_DELETE;
+  void SetWritableUnsignedLong(T) = delete;
   template<typename T>
-  void PassUnsignedLong(T) MOZ_DELETE;
+  void PassUnsignedLong(T) = delete;
   template<typename T>
-  void PassOptionalUnsignedLong(const Optional<T>&) MOZ_DELETE;
+  void PassOptionalUnsignedLong(const Optional<T>&) = delete;
   template<typename T>
-  void PassOptionalUnsignedLongWithDefault(T) MOZ_DELETE;
+  void PassOptionalUnsignedLongWithDefault(T) = delete;
 
-  void SetReadonlyUnsignedLongLong(uint64_t) MOZ_DELETE;
+  void SetReadonlyUnsignedLongLong(uint64_t) = delete;
   template<typename T>
-  void SetWritableUnsignedLongLong(T) MOZ_DELETE;
+  void SetWritableUnsignedLongLong(T) = delete;
   template<typename T>
-  void PassUnsignedLongLong(T) MOZ_DELETE;
+  void PassUnsignedLongLong(T) = delete;
   template<typename T>
-  void PassOptionalUnsignedLongLong(const Optional<T>&) MOZ_DELETE;
+  void PassOptionalUnsignedLongLong(const Optional<T>&) = delete;
   template<typename T>
-  void PassOptionalUnsignedLongLongWithDefault(T) MOZ_DELETE;
+  void PassOptionalUnsignedLongLongWithDefault(T) = delete;
 
   // Enforce that only const things are passed for sequences
-  void PassSequence(Sequence<int32_t> &) MOZ_DELETE;
-  void PassNullableSequence(Nullable< Sequence<int32_t> >&) MOZ_DELETE;
-  void PassOptionalNullableSequenceWithDefaultValue(Nullable< Sequence<int32_t> >&) MOZ_DELETE;
-  void PassSequenceOfAny(JSContext*, Sequence<JS::Value>&) MOZ_DELETE;
-  void PassNullableSequenceOfAny(JSContext*, Nullable<Sequence<JS::Value> >&) MOZ_DELETE;
-  void PassOptionalSequenceOfAny(JSContext*, Optional<Sequence<JS::Value> >&) MOZ_DELETE;
-  void PassOptionalNullableSequenceOfAny(JSContext*, Optional<Nullable<Sequence<JS::Value> > >&) MOZ_DELETE;
-  void PassOptionalSequenceOfAnyWithDefaultValue(JSContext*, Nullable<Sequence<JS::Value> >&) MOZ_DELETE;
-  void PassSequenceOfSequenceOfAny(JSContext*, Sequence<Sequence<JS::Value> >&) MOZ_DELETE;
-  void PassSequenceOfNullableSequenceOfAny(JSContext*, Sequence<Nullable<Sequence<JS::Value> > >&) MOZ_DELETE;
-  void PassNullableSequenceOfNullableSequenceOfAny(JSContext*, Nullable<Sequence<Nullable<Sequence<JS::Value> > > >&) MOZ_DELETE;
-  void PassOptionalNullableSequenceOfNullableSequenceOfAny(JSContext*, Optional<Nullable<Sequence<Nullable<Sequence<JS::Value> > > > >&) MOZ_DELETE;
-  void PassSequenceOfObject(JSContext*, Sequence<JSObject*>&) MOZ_DELETE;
-  void PassSequenceOfNullableObject(JSContext*, Sequence<JSObject*>&) MOZ_DELETE;
-  void PassOptionalNullableSequenceOfNullableSequenceOfObject(JSContext*, Optional<Nullable<Sequence<Nullable<Sequence<JSObject*> > > > >&) MOZ_DELETE;
-  void PassOptionalNullableSequenceOfNullableSequenceOfNullableObject(JSContext*, Optional<Nullable<Sequence<Nullable<Sequence<JSObject*> > > > >&) MOZ_DELETE;
+  void PassSequence(Sequence<int32_t> &) = delete;
+  void PassNullableSequence(Nullable< Sequence<int32_t> >&) = delete;
+  void PassOptionalNullableSequenceWithDefaultValue(Nullable< Sequence<int32_t> >&) = delete;
+  void PassSequenceOfAny(JSContext*, Sequence<JS::Value>&) = delete;
+  void PassNullableSequenceOfAny(JSContext*, Nullable<Sequence<JS::Value> >&) = delete;
+  void PassOptionalSequenceOfAny(JSContext*, Optional<Sequence<JS::Value> >&) = delete;
+  void PassOptionalNullableSequenceOfAny(JSContext*, Optional<Nullable<Sequence<JS::Value> > >&) = delete;
+  void PassOptionalSequenceOfAnyWithDefaultValue(JSContext*, Nullable<Sequence<JS::Value> >&) = delete;
+  void PassSequenceOfSequenceOfAny(JSContext*, Sequence<Sequence<JS::Value> >&) = delete;
+  void PassSequenceOfNullableSequenceOfAny(JSContext*, Sequence<Nullable<Sequence<JS::Value> > >&) = delete;
+  void PassNullableSequenceOfNullableSequenceOfAny(JSContext*, Nullable<Sequence<Nullable<Sequence<JS::Value> > > >&) = delete;
+  void PassOptionalNullableSequenceOfNullableSequenceOfAny(JSContext*, Optional<Nullable<Sequence<Nullable<Sequence<JS::Value> > > > >&) = delete;
+  void PassSequenceOfObject(JSContext*, Sequence<JSObject*>&) = delete;
+  void PassSequenceOfNullableObject(JSContext*, Sequence<JSObject*>&) = delete;
+  void PassOptionalNullableSequenceOfNullableSequenceOfObject(JSContext*, Optional<Nullable<Sequence<Nullable<Sequence<JSObject*> > > > >&) = delete;
+  void PassOptionalNullableSequenceOfNullableSequenceOfNullableObject(JSContext*, Optional<Nullable<Sequence<Nullable<Sequence<JSObject*> > > > >&) = delete;
 
   // Enforce that only const things are passed for optional
-  void PassOptionalByte(Optional<int8_t>&) MOZ_DELETE;
-  void PassOptionalNullableByte(Optional<Nullable<int8_t> >&) MOZ_DELETE;
-  void PassOptionalShort(Optional<int16_t>&) MOZ_DELETE;
-  void PassOptionalLong(Optional<int32_t>&) MOZ_DELETE;
-  void PassOptionalLongLong(Optional<int64_t>&) MOZ_DELETE;
-  void PassOptionalOctet(Optional<uint8_t>&) MOZ_DELETE;
-  void PassOptionalUnsignedShort(Optional<uint16_t>&) MOZ_DELETE;
-  void PassOptionalUnsignedLong(Optional<uint32_t>&) MOZ_DELETE;
-  void PassOptionalUnsignedLongLong(Optional<uint64_t>&) MOZ_DELETE;
-  void PassOptionalSelf(Optional<TestInterface*> &) MOZ_DELETE;
-  void PassOptionalNonNullSelf(Optional<NonNull<TestInterface> >&) MOZ_DELETE;
+  void PassOptionalByte(Optional<int8_t>&) = delete;
+  void PassOptionalNullableByte(Optional<Nullable<int8_t> >&) = delete;
+  void PassOptionalShort(Optional<int16_t>&) = delete;
+  void PassOptionalLong(Optional<int32_t>&) = delete;
+  void PassOptionalLongLong(Optional<int64_t>&) = delete;
+  void PassOptionalOctet(Optional<uint8_t>&) = delete;
+  void PassOptionalUnsignedShort(Optional<uint16_t>&) = delete;
+  void PassOptionalUnsignedLong(Optional<uint32_t>&) = delete;
+  void PassOptionalUnsignedLongLong(Optional<uint64_t>&) = delete;
+  void PassOptionalSelf(Optional<TestInterface*> &) = delete;
+  void PassOptionalNonNullSelf(Optional<NonNull<TestInterface> >&) = delete;
   void PassOptionalOther(Optional<IndirectlyImplementedInterface*>&);
   void PassOptionalNonNullOther(Optional<NonNull<IndirectlyImplementedInterface> >&);
-  void PassOptionalExternal(Optional<TestExternalInterface*>&) MOZ_DELETE;
-  void PassOptionalNonNullExternal(Optional<TestExternalInterface*>&) MOZ_DELETE;
-  void PassOptionalSequence(Optional<Sequence<int32_t> >&) MOZ_DELETE;
-  void PassOptionalNullableSequence(Optional<Nullable<Sequence<int32_t> > >&) MOZ_DELETE;
-  void PassOptionalObjectSequence(Optional<Sequence<OwningNonNull<TestInterface> > >&) MOZ_DELETE;
-  void PassOptionalArrayBuffer(Optional<ArrayBuffer>&) MOZ_DELETE;
-  void PassOptionalNullableArrayBuffer(Optional<ArrayBuffer*>&) MOZ_DELETE;
-  void PassOptionalEnum(Optional<TestEnum>&) MOZ_DELETE;
-  void PassOptionalCallback(JSContext*, Optional<OwningNonNull<TestCallback> >&) MOZ_DELETE;
-  void PassOptionalNullableCallback(JSContext*, Optional<nsRefPtr<TestCallback> >&) MOZ_DELETE;
-  void PassOptionalAny(Optional<JS::Handle<JS::Value> >&) MOZ_DELETE;
+  void PassOptionalExternal(Optional<TestExternalInterface*>&) = delete;
+  void PassOptionalNonNullExternal(Optional<TestExternalInterface*>&) = delete;
+  void PassOptionalSequence(Optional<Sequence<int32_t> >&) = delete;
+  void PassOptionalNullableSequence(Optional<Nullable<Sequence<int32_t> > >&) = delete;
+  void PassOptionalObjectSequence(Optional<Sequence<OwningNonNull<TestInterface> > >&) = delete;
+  void PassOptionalArrayBuffer(Optional<ArrayBuffer>&) = delete;
+  void PassOptionalNullableArrayBuffer(Optional<ArrayBuffer*>&) = delete;
+  void PassOptionalEnum(Optional<TestEnum>&) = delete;
+  void PassOptionalCallback(JSContext*, Optional<OwningNonNull<TestCallback> >&) = delete;
+  void PassOptionalNullableCallback(JSContext*, Optional<nsRefPtr<TestCallback> >&) = delete;
+  void PassOptionalAny(Optional<JS::Handle<JS::Value> >&) = delete;
 
   // And test that string stuff is always const
-  void PassString(nsAString&) MOZ_DELETE;
-  void PassNullableString(nsAString&) MOZ_DELETE;
-  void PassOptionalString(Optional<nsAString>&) MOZ_DELETE;
-  void PassOptionalStringWithDefaultValue(nsAString&) MOZ_DELETE;
-  void PassOptionalNullableString(Optional<nsAString>&) MOZ_DELETE;
-  void PassOptionalNullableStringWithDefaultValue(nsAString&) MOZ_DELETE;
-  void PassVariadicString(Sequence<nsString>&) MOZ_DELETE;
+  void PassString(nsAString&) = delete;
+  void PassNullableString(nsAString&) = delete;
+  void PassOptionalString(Optional<nsAString>&) = delete;
+  void PassOptionalStringWithDefaultValue(nsAString&) = delete;
+  void PassOptionalNullableString(Optional<nsAString>&) = delete;
+  void PassOptionalNullableStringWithDefaultValue(nsAString&) = delete;
+  void PassVariadicString(Sequence<nsString>&) = delete;
 
   // cstrings should be const as well
-  void PassByteString(nsCString&) MOZ_DELETE;
-  void PassNullableByteString(nsCString&) MOZ_DELETE;
-  void PassOptionalByteString(Optional<nsCString>&) MOZ_DELETE;
-  void PassOptionalNullableByteString(Optional<nsCString>&) MOZ_DELETE;
-  void PassVariadicByteString(Sequence<nsCString>&) MOZ_DELETE;
+  void PassByteString(nsCString&) = delete;
+  void PassNullableByteString(nsCString&) = delete;
+  void PassOptionalByteString(Optional<nsCString>&) = delete;
+  void PassOptionalNullableByteString(Optional<nsCString>&) = delete;
+  void PassVariadicByteString(Sequence<nsCString>&) = delete;
 
   // Make sure dictionary arguments are always const
-  void PassDictionary(JSContext*, Dict&) MOZ_DELETE;
-  void PassOtherDictionary(GrandparentDict&) MOZ_DELETE;
-  void PassSequenceOfDictionaries(JSContext*, Sequence<Dict>&) MOZ_DELETE;
-  void PassDictionaryOrLong(JSContext*, Dict&) MOZ_DELETE;
-  void PassDictContainingDict(JSContext*, DictContainingDict&) MOZ_DELETE;
-  void PassDictContainingSequence(DictContainingSequence&) MOZ_DELETE;
+  void PassDictionary(JSContext*, Dict&) = delete;
+  void PassOtherDictionary(GrandparentDict&) = delete;
+  void PassSequenceOfDictionaries(JSContext*, Sequence<Dict>&) = delete;
+  void PassDictionaryOrLong(JSContext*, Dict&) = delete;
+  void PassDictContainingDict(JSContext*, DictContainingDict&) = delete;
+  void PassDictContainingSequence(DictContainingSequence&) = delete;
 
   // Make sure various nullable things are always const
-  void PassNullableEnum(Nullable<TestEnum>&) MOZ_DELETE;
+  void PassNullableEnum(Nullable<TestEnum>&) = delete;
 
   // Make sure unions are always const
-  void PassUnion(JSContext*, ObjectOrLong& arg) MOZ_DELETE;
-  void PassUnionWithNullable(JSContext*, ObjectOrNullOrLong& arg) MOZ_DELETE;
-  void PassNullableUnion(JSContext*, Nullable<ObjectOrLong>&) MOZ_DELETE;
-  void PassOptionalUnion(JSContext*, Optional<ObjectOrLong>&) MOZ_DELETE;
-  void PassOptionalNullableUnion(JSContext*, Optional<Nullable<ObjectOrLong> >&) MOZ_DELETE;
-  void PassOptionalNullableUnionWithDefaultValue(JSContext*, Nullable<ObjectOrLong>&) MOZ_DELETE;
+  void PassUnion(JSContext*, ObjectOrLong& arg) = delete;
+  void PassUnionWithNullable(JSContext*, ObjectOrNullOrLong& arg) = delete;
+  void PassNullableUnion(JSContext*, Nullable<ObjectOrLong>&) = delete;
+  void PassOptionalUnion(JSContext*, Optional<ObjectOrLong>&) = delete;
+  void PassOptionalNullableUnion(JSContext*, Optional<Nullable<ObjectOrLong> >&) = delete;
+  void PassOptionalNullableUnionWithDefaultValue(JSContext*, Nullable<ObjectOrLong>&) = delete;
 
   // Make sure various date stuff is const as needed
-  void PassNullableDate(Nullable<Date>&) MOZ_DELETE;
-  void PassOptionalDate(Optional<Date>&) MOZ_DELETE;
-  void PassOptionalNullableDate(Optional<Nullable<Date> >&) MOZ_DELETE;
-  void PassOptionalNullableDateWithDefaultValue(Nullable<Date>&) MOZ_DELETE;
-  void PassDateSequence(Sequence<Date>&) MOZ_DELETE;
-  void PassNullableDateSequence(Sequence<Nullable<Date> >&) MOZ_DELETE;
+  void PassNullableDate(Nullable<Date>&) = delete;
+  void PassOptionalDate(Optional<Date>&) = delete;
+  void PassOptionalNullableDate(Optional<Nullable<Date> >&) = delete;
+  void PassOptionalNullableDateWithDefaultValue(Nullable<Date>&) = delete;
+  void PassDateSequence(Sequence<Date>&) = delete;
+  void PassNullableDateSequence(Sequence<Nullable<Date> >&) = delete;
 
   // Make sure variadics are const as needed
-  void PassVariadicAny(JSContext*, Sequence<JS::Value>&) MOZ_DELETE;
-  void PassVariadicObject(JSContext*, Sequence<JSObject*>&) MOZ_DELETE;
-  void PassVariadicNullableObject(JSContext*, Sequence<JSObject*>&) MOZ_DELETE;
+  void PassVariadicAny(JSContext*, Sequence<JS::Value>&) = delete;
+  void PassVariadicObject(JSContext*, Sequence<JSObject*>&) = delete;
+  void PassVariadicNullableObject(JSContext*, Sequence<JSObject*>&) = delete;
 
   // Ensure NonNull does not leak in
-  void PassSelf(NonNull<TestInterface>&) MOZ_DELETE;
-  void PassSelf(OwningNonNull<TestInterface>&) MOZ_DELETE;
-  void PassSelf(const NonNull<TestInterface>&) MOZ_DELETE;
-  void PassSelf(const OwningNonNull<TestInterface>&) MOZ_DELETE;
-  void PassOther(NonNull<IndirectlyImplementedInterface>&) MOZ_DELETE;
-  void PassOther(const NonNull<IndirectlyImplementedInterface>&) MOZ_DELETE;
-  void PassOther(OwningNonNull<IndirectlyImplementedInterface>&) MOZ_DELETE;
-  void PassOther(const OwningNonNull<IndirectlyImplementedInterface>&) MOZ_DELETE;
-  void PassCallbackInterface(OwningNonNull<TestCallbackInterface>&) MOZ_DELETE;
-  void PassCallbackInterface(const OwningNonNull<TestCallbackInterface>&) MOZ_DELETE;
-  void PassCallbackInterface(NonNull<TestCallbackInterface>&) MOZ_DELETE;
-  void PassCallbackInterface(const NonNull<TestCallbackInterface>&) MOZ_DELETE;
-  void PassCallback(OwningNonNull<TestCallback>&) MOZ_DELETE;
-  void PassCallback(const OwningNonNull<TestCallback>&) MOZ_DELETE;
-  void PassCallback(NonNull<TestCallback>&) MOZ_DELETE;
-  void PassCallback(const NonNull<TestCallback>&) MOZ_DELETE;
-  void PassString(const NonNull<nsAString>&) MOZ_DELETE;
-  void PassString(NonNull<nsAString>&) MOZ_DELETE;
-  void PassString(const OwningNonNull<nsAString>&) MOZ_DELETE;
-  void PassString(OwningNonNull<nsAString>&) MOZ_DELETE;
+  void PassSelf(NonNull<TestInterface>&) = delete;
+  void PassSelf(OwningNonNull<TestInterface>&) = delete;
+  void PassSelf(const NonNull<TestInterface>&) = delete;
+  void PassSelf(const OwningNonNull<TestInterface>&) = delete;
+  void PassOther(NonNull<IndirectlyImplementedInterface>&) = delete;
+  void PassOther(const NonNull<IndirectlyImplementedInterface>&) = delete;
+  void PassOther(OwningNonNull<IndirectlyImplementedInterface>&) = delete;
+  void PassOther(const OwningNonNull<IndirectlyImplementedInterface>&) = delete;
+  void PassCallbackInterface(OwningNonNull<TestCallbackInterface>&) = delete;
+  void PassCallbackInterface(const OwningNonNull<TestCallbackInterface>&) = delete;
+  void PassCallbackInterface(NonNull<TestCallbackInterface>&) = delete;
+  void PassCallbackInterface(const NonNull<TestCallbackInterface>&) = delete;
+  void PassCallback(OwningNonNull<TestCallback>&) = delete;
+  void PassCallback(const OwningNonNull<TestCallback>&) = delete;
+  void PassCallback(NonNull<TestCallback>&) = delete;
+  void PassCallback(const NonNull<TestCallback>&) = delete;
+  void PassString(const NonNull<nsAString>&) = delete;
+  void PassString(NonNull<nsAString>&) = delete;
+  void PassString(const OwningNonNull<nsAString>&) = delete;
+  void PassString(OwningNonNull<nsAString>&) = delete;
 };
 
 class TestIndexedGetterInterface : public nsISupports,
@@ -965,9 +1085,9 @@ public:
   virtual nsISupports* GetParentObject();
 
   uint32_t IndexedGetter(uint32_t, bool&);
-  uint32_t IndexedGetter(uint32_t&) MOZ_DELETE;
+  uint32_t IndexedGetter(uint32_t&) = delete;
   uint32_t Item(uint32_t&);
-  uint32_t Item(uint32_t, bool&) MOZ_DELETE;
+  uint32_t Item(uint32_t, bool&) = delete;
   uint32_t Length();
   void LegacyCall(JS::Handle<JS::Value>);
 };
@@ -982,7 +1102,8 @@ public:
   virtual nsISupports* GetParentObject();
 
   void NamedGetter(const nsAString&, bool&, nsAString&);
-  void GetSupportedNames(nsTArray<nsString>&);
+  bool NameIsEnumerable(const nsAString&);
+  void GetSupportedNames(unsigned, nsTArray<nsString>&);
 };
 
 class TestIndexedGetterAndSetterAndNamedGetterInterface : public nsISupports,
@@ -995,7 +1116,8 @@ public:
   virtual nsISupports* GetParentObject();
 
   void NamedGetter(const nsAString&, bool&, nsAString&);
-  void GetSupportedNames(nsTArray<nsString>&);
+  bool NameIsEnumerable(const nsAString&);
+  void GetSupportedNames(unsigned, nsTArray<nsString>&);
   int32_t IndexedGetter(uint32_t, bool&);
   void IndexedSetter(uint32_t, int32_t);
   uint32_t Length();
@@ -1012,9 +1134,10 @@ public:
 
   uint32_t IndexedGetter(uint32_t, bool&);
   void NamedGetter(const nsAString&, bool&, nsAString&);
+  bool NameIsEnumerable(const nsAString&);
   void NamedItem(const nsAString&, nsAString&);
   uint32_t Length();
-  void GetSupportedNames(nsTArray<nsString>&);
+  void GetSupportedNames(unsigned, nsTArray<nsString>&);
 };
 
 class TestIndexedSetterInterface : public nsISupports,
@@ -1043,7 +1166,8 @@ public:
 
   void NamedSetter(const nsAString&, TestIndexedSetterInterface&);
   TestIndexedSetterInterface* NamedGetter(const nsAString&, bool&);
-  void GetSupportedNames(nsTArray<nsString>&);
+  bool NameIsEnumerable(const nsAString&);
+  void GetSupportedNames(unsigned, nsTArray<nsString>&);
 };
 
 class TestIndexedAndNamedSetterInterface : public nsISupports,
@@ -1060,8 +1184,9 @@ public:
   uint32_t Length();
   void NamedSetter(const nsAString&, TestIndexedSetterInterface&);
   TestIndexedSetterInterface* NamedGetter(const nsAString&, bool&);
+  bool NameIsEnumerable(const nsAString&);
   void SetNamedItem(const nsAString&, TestIndexedSetterInterface&);
-  void GetSupportedNames(nsTArray<nsString>&);
+  void GetSupportedNames(unsigned, nsTArray<nsString>&);
 };
 
 class TestIndexedAndNamedGetterAndSetterInterface : public TestIndexedSetterInterface
@@ -1070,13 +1195,14 @@ public:
   uint32_t IndexedGetter(uint32_t, bool&);
   uint32_t Item(uint32_t);
   void NamedGetter(const nsAString&, bool&, nsAString&);
+  bool NameIsEnumerable(const nsAString&);
   void NamedItem(const nsAString&, nsAString&);
   void IndexedSetter(uint32_t, int32_t&);
-  void IndexedSetter(uint32_t, const nsAString&) MOZ_DELETE;
+  void IndexedSetter(uint32_t, const nsAString&) = delete;
   void NamedSetter(const nsAString&, const nsAString&);
   void Stringify(nsAString&);
   uint32_t Length();
-  void GetSupportedNames(nsTArray<nsString>&);
+  void GetSupportedNames(unsigned, nsTArray<nsString>&);
 };
 
 class TestCppKeywordNamedMethodsInterface : public nsISupports,
@@ -1103,11 +1229,11 @@ public:
   virtual nsISupports* GetParentObject();
 
   void IndexedDeleter(uint32_t, bool&);
-  void IndexedDeleter(uint32_t) MOZ_DELETE;
+  void IndexedDeleter(uint32_t) = delete;
   long IndexedGetter(uint32_t, bool&);
   uint32_t Length();
   void DelItem(uint32_t);
-  void DelItem(uint32_t, bool&) MOZ_DELETE;
+  void DelItem(uint32_t, bool&) = delete;
 };
 
 class TestIndexedDeleterWithRetvalInterface : public nsISupports,
@@ -1120,11 +1246,11 @@ public:
   virtual nsISupports* GetParentObject();
 
   bool IndexedDeleter(uint32_t, bool&);
-  bool IndexedDeleter(uint32_t) MOZ_DELETE;
+  bool IndexedDeleter(uint32_t) = delete;
   long IndexedGetter(uint32_t, bool&);
   uint32_t Length();
   bool DelItem(uint32_t);
-  bool DelItem(uint32_t, bool&) MOZ_DELETE;
+  bool DelItem(uint32_t, bool&) = delete;
 };
 
 class TestNamedDeleterInterface : public nsISupports,
@@ -1138,7 +1264,8 @@ public:
 
   void NamedDeleter(const nsAString&, bool&);
   long NamedGetter(const nsAString&, bool&);
-  void GetSupportedNames(nsTArray<nsString>&);
+  bool NameIsEnumerable(const nsAString&);
+  void GetSupportedNames(unsigned, nsTArray<nsString>&);
 };
 
 class TestNamedDeleterWithRetvalInterface : public nsISupports,
@@ -1151,11 +1278,12 @@ public:
   virtual nsISupports* GetParentObject();
 
   bool NamedDeleter(const nsAString&, bool&);
-  bool NamedDeleter(const nsAString&) MOZ_DELETE;
+  bool NamedDeleter(const nsAString&) = delete;
   long NamedGetter(const nsAString&, bool&);
+  bool NameIsEnumerable(const nsAString&);
   bool DelNamedItem(const nsAString&);
-  bool DelNamedItem(const nsAString&, bool&) MOZ_DELETE;
-  void GetSupportedNames(nsTArray<nsString>&);
+  bool DelNamedItem(const nsAString&, bool&) = delete;
+  void GetSupportedNames(unsigned, nsTArray<nsString>&);
 };
 
 class TestIndexedAndNamedDeleterInterface : public nsISupports,
@@ -1172,11 +1300,12 @@ public:
   uint32_t Length();
 
   void NamedDeleter(const nsAString&, bool&);
-  void NamedDeleter(const nsAString&) MOZ_DELETE;
+  void NamedDeleter(const nsAString&) = delete;
   long NamedGetter(const nsAString&, bool&);
+  bool NameIsEnumerable(const nsAString&);
   void DelNamedItem(const nsAString&);
-  void DelNamedItem(const nsAString&, bool&) MOZ_DELETE;
-  void GetSupportedNames(nsTArray<nsString>&);
+  void DelNamedItem(const nsAString&, bool&) = delete;
+  void GetSupportedNames(unsigned, nsTArray<nsString>&);
 };
 
 class TestParentInterface : public nsISupports,

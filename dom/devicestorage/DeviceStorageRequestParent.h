@@ -22,10 +22,10 @@ namespace devicestorage {
 class DeviceStorageRequestParent : public PDeviceStorageRequestParent
 {
 public:
-  DeviceStorageRequestParent(const DeviceStorageParams& aParams);
+  explicit DeviceStorageRequestParent(const DeviceStorageParams& aParams);
 
-  NS_IMETHOD_(nsrefcnt) AddRef();
-  NS_IMETHOD_(nsrefcnt) Release();
+  NS_IMETHOD_(MozExternalRefCountType) AddRef();
+  NS_IMETHOD_(MozExternalRefCountType) Release();
 
   bool EnsureRequiredPermissions(mozilla::dom::ContentParent* aParent);
   void Dispatch();
@@ -43,7 +43,7 @@ private:
   class CancelableRunnable : public nsRunnable
   {
   public:
-    CancelableRunnable(DeviceStorageRequestParent* aParent)
+    explicit CancelableRunnable(DeviceStorageRequestParent* aParent)
       : mParent(aParent)
     {
       mCanceled = !(mParent->AddRunnable(this));
@@ -86,7 +86,7 @@ private:
   class PostSuccessEvent : public CancelableRunnable
   {
     public:
-      PostSuccessEvent(DeviceStorageRequestParent* aParent);
+      explicit PostSuccessEvent(DeviceStorageRequestParent* aParent);
       virtual ~PostSuccessEvent();
       virtual nsresult CancelableRun();
   };
@@ -132,12 +132,14 @@ private:
   class WriteFileEvent : public CancelableRunnable
   {
     public:
-      WriteFileEvent(DeviceStorageRequestParent* aParent, DeviceStorageFile* aFile, nsIInputStream* aInputStream);
+      WriteFileEvent(DeviceStorageRequestParent* aParent, DeviceStorageFile* aFile,
+                     nsIInputStream* aInputStream, int32_t aRequestType);
       virtual ~WriteFileEvent();
       virtual nsresult CancelableRun();
     private:
       nsRefPtr<DeviceStorageFile> mFile;
       nsCOMPtr<nsIInputStream> mInputStream;
+      int32_t mRequestType;
   };
 
   class DeleteFileEvent : public CancelableRunnable

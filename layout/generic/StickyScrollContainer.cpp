@@ -15,8 +15,6 @@
 #include "nsLayoutUtils.h"
 #include "RestyleTracker.h"
 
-using namespace mozilla::css;
-
 namespace mozilla {
 
 void DestroyStickyScrollContainer(void* aPropertyValue)
@@ -181,11 +179,6 @@ StickyScrollContainer::ComputeStickyLimits(nsIFrame* aFrame, nsRect* aStick,
   }
 
   nsIFrame* scrolledFrame = mScrollFrame->GetScrolledFrame();
-  // FIXME (Bug 920688):  cbFrame isn't quite right if we're dealing
-  // with a block-in-inline split whose first part is a block.  We
-  // probably want the first in flow of the containing block of the
-  // first inline part.  (Or maybe those block-in-inline split pieces
-  // are never a containing block, and we're ok?)
   nsIFrame* cbFrame = aFrame->GetContainingBlock();
   NS_ASSERTION(cbFrame == scrolledFrame ||
     nsLayoutUtils::IsProperAncestorFrame(scrolledFrame, cbFrame),
@@ -371,9 +364,12 @@ StickyScrollContainer::UpdatePositions(nsPoint aScrollPosition,
     // nsIFrame::Init.
     PositionContinuations(f);
 
-    for (nsIFrame* cont = f; cont;
-         cont = nsLayoutUtils::GetNextContinuationOrIBSplitSibling(cont)) {
-      oct.AddFrame(cont);
+    f = f->GetParent();
+    if (f != aSubtreeRoot) {
+      for (nsIFrame* cont = f; cont;
+           cont = nsLayoutUtils::GetNextContinuationOrIBSplitSibling(cont)) {
+        oct.AddFrame(cont, OverflowChangedTracker::CHILDREN_CHANGED);
+      }
     }
   }
   oct.Flush();

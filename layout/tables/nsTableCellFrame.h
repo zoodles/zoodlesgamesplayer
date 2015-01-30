@@ -40,12 +40,12 @@ public:
 
   // default constructor supplied by the compiler
 
-  nsTableCellFrame(nsStyleContext* aContext);
+  explicit nsTableCellFrame(nsStyleContext* aContext);
   ~nsTableCellFrame();
 
-  virtual void Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
 
   virtual void DestroyFrom(nsIFrame* aDestructRoot) MOZ_OVERRIDE;
 
@@ -60,18 +60,19 @@ public:
   /** @see nsIFrame::DidSetStyleContext */
   virtual void DidSetStyleContext(nsStyleContext* aOldStyleContext) MOZ_OVERRIDE;
 
-  // table cells contain a block frame which does most of the work, and
-  // so these functions should never be called. They assert and return
-  // NS_ERROR_NOT_IMPLEMENTED
-  virtual nsresult AppendFrames(ChildListID     aListID,
-                                nsFrameList&    aFrameList) MOZ_OVERRIDE;
-  virtual nsresult InsertFrames(ChildListID     aListID,
-                                nsIFrame*       aPrevFrame,
-                                nsFrameList&    aFrameList) MOZ_OVERRIDE;
-  virtual nsresult RemoveFrame(ChildListID     aListID,
-                               nsIFrame*       aOldFrame) MOZ_OVERRIDE;
+#ifdef DEBUG
+  // Our anonymous block frame is the content insertion frame so these
+  // methods should never be called:
+  virtual void AppendFrames(ChildListID     aListID,
+                            nsFrameList&    aFrameList) MOZ_OVERRIDE;
+  virtual void InsertFrames(ChildListID     aListID,
+                            nsIFrame*       aPrevFrame,
+                            nsFrameList&    aFrameList) MOZ_OVERRIDE;
+  virtual void RemoveFrame(ChildListID     aListID,
+                           nsIFrame*       aOldFrame) MOZ_OVERRIDE;
+#endif
 
-  virtual nsIFrame* GetContentInsertionFrame() MOZ_OVERRIDE {
+  virtual nsContainerFrame* GetContentInsertionFrame() MOZ_OVERRIDE {
     return GetFirstPrincipalChild()->GetContentInsertionFrame();
   }
 
@@ -101,15 +102,15 @@ public:
                                   nsDisplayListBuilder* aBuilder,
                                   const nsDisplayListSet& aLists);
 
-  virtual nscoord GetMinWidth(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
-  virtual nscoord GetPrefWidth(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
-  virtual IntrinsicWidthOffsetData
-    IntrinsicWidthOffsets(nsRenderingContext* aRenderingContext) MOZ_OVERRIDE;
+  virtual nscoord GetMinISize(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
+  virtual nscoord GetPrefISize(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
+  virtual IntrinsicISizeOffsetData
+    IntrinsicISizeOffsets(nsRenderingContext* aRenderingContext) MOZ_OVERRIDE;
 
-  virtual nsresult Reflow(nsPresContext*      aPresContext,
-                          nsHTMLReflowMetrics& aDesiredSize,
-                          const nsHTMLReflowState& aReflowState,
-                          nsReflowStatus&      aStatus) MOZ_OVERRIDE;
+  virtual void Reflow(nsPresContext*      aPresContext,
+                      nsHTMLReflowMetrics& aDesiredSize,
+                      const nsHTMLReflowState& aReflowState,
+                      nsReflowStatus&      aStatus) MOZ_OVERRIDE;
 
   /**
    * Get the "type" of the frame
@@ -186,7 +187,7 @@ public:
   inline void SetPriorAvailWidth(nscoord aPriorAvailWidth);
 
   /** return the desired size returned by this frame during its last reflow */
-  inline nsSize GetDesiredSize();
+  inline mozilla::LogicalSize GetDesiredSize();
 
   /** set the desired size returned by this frame during its last reflow */
   inline void SetDesiredSize(const nsHTMLReflowMetrics & aDesiredSize);
@@ -221,7 +222,7 @@ public:
   virtual void InvalidateFrameForRemoval() MOZ_OVERRIDE { InvalidateFrameSubtree(); }
 
 protected:
-  virtual int GetLogicalSkipSides(const nsHTMLReflowState* aReflowState= nullptr) const MOZ_OVERRIDE;
+  virtual LogicalSides GetLogicalSkipSides(const nsHTMLReflowState* aReflowState= nullptr) const MOZ_OVERRIDE;
 
   /**
    * GetBorderOverflow says how far the cell's own borders extend
@@ -237,7 +238,7 @@ protected:
   uint32_t     mColIndex;             // the starting column for this cell
 
   nscoord      mPriorAvailWidth;      // the avail width during the last reflow
-  nsSize       mDesiredSize;          // the last desired width & height
+  mozilla::LogicalSize mDesiredSize;  // the last desired inline and block size
 };
 
 inline nscoord nsTableCellFrame::GetPriorAvailWidth()
@@ -246,13 +247,13 @@ inline nscoord nsTableCellFrame::GetPriorAvailWidth()
 inline void nsTableCellFrame::SetPriorAvailWidth(nscoord aPriorAvailWidth)
 { mPriorAvailWidth = aPriorAvailWidth;}
 
-inline nsSize nsTableCellFrame::GetDesiredSize()
+inline mozilla::LogicalSize nsTableCellFrame::GetDesiredSize()
 { return mDesiredSize; }
 
 inline void nsTableCellFrame::SetDesiredSize(const nsHTMLReflowMetrics & aDesiredSize)
 {
-  mDesiredSize.width = aDesiredSize.Width();
-  mDesiredSize.height = aDesiredSize.Height();
+  mozilla::WritingMode wm = aDesiredSize.GetWritingMode();
+  mDesiredSize = aDesiredSize.Size(wm).ConvertTo(GetWritingMode(), wm);
 }
 
 inline bool nsTableCellFrame::GetContentEmpty()
@@ -286,19 +287,22 @@ inline void nsTableCellFrame::SetHasPctOverHeight(bool aValue)
 }
 
 // nsBCTableCellFrame
-class nsBCTableCellFrame : public nsTableCellFrame
+class nsBCTableCellFrame MOZ_FINAL : public nsTableCellFrame
 {
 public:
   NS_DECL_FRAMEARENA_HELPERS
 
-  nsBCTableCellFrame(nsStyleContext* aContext);
+  explicit nsBCTableCellFrame(nsStyleContext* aContext);
 
   ~nsBCTableCellFrame();
 
   virtual nsIAtom* GetType() const MOZ_OVERRIDE;
 
   virtual nsMargin GetUsedBorder() const MOZ_OVERRIDE;
-  virtual bool GetBorderRadii(nscoord aRadii[8]) const MOZ_OVERRIDE;
+  virtual bool GetBorderRadii(const nsSize& aFrameSize,
+                              const nsSize& aBorderArea,
+                              Sides aSkipSides,
+                              nscoord aRadii[8]) const MOZ_OVERRIDE;
 
   // Get the *inner half of the border only*, in twips.
   virtual nsMargin* GetBorderWidth(nsMargin& aBorder) const MOZ_OVERRIDE;

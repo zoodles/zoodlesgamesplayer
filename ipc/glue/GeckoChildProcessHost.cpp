@@ -6,12 +6,7 @@
 
 #include "GeckoChildProcessHost.h"
 
-#if defined(XP_WIN) && defined(MOZ_CONTENT_SANDBOX)
-#include "sandboxBroker.h"
-#endif
-
 #include "base/command_line.h"
-#include "base/path_service.h"
 #include "base/string_util.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/process_watcher.h"
@@ -21,14 +16,17 @@
 #include "nsILocalFileMac.h"
 #endif
 
+#include "MainThreadUtils.h"
 #include "prprf.h"
 #include "prenv.h"
+#include "nsXPCOMPrivate.h"
 
 #include "nsExceptionHandler.h"
 
 #include "nsDirectoryServiceDefs.h"
 #include "nsIFile.h"
 
+#include "mozilla/ClearOnShutdown.h"
 #include "mozilla/ipc/BrowserProcessSubThread.h"
 #include "mozilla/Omnijar.h"
 #include <sys/stat.h>
@@ -36,11 +34,17 @@
 #ifdef XP_WIN
 #include "nsIWinTaskbar.h"
 #define NS_TASKBAR_CONTRACTID "@mozilla.org/windows-taskbar;1"
+
+#if defined(MOZ_SANDBOX)
+#include "mozilla/Preferences.h"
+#include "mozilla/sandboxing/sandboxLogging.h"
+#endif
 #endif
 
 #include "nsTArray.h"
 #include "nsClassHashtable.h"
 #include "nsHashKeys.h"
+#include "nsNativeCharsetUtils.h"
 
 using mozilla::MonitorAutoLock;
 using mozilla::ipc::GeckoChildProcessHost;
@@ -87,11 +91,17 @@ GeckoChildProcessHost::GeckoChildProcessHost(GeckoProcessType aProcessType,
                                              ChildPrivileges aPrivileges)
   : ChildProcessHost(RENDER_PROCESS), // FIXME/cjones: we should own this enum
     mProcessType(aProcessType),
-    mSandboxEnabled(true),
     mPrivileges(aPrivileges),
     mMonitor("mozilla.ipc.GeckChildProcessHost.mMonitor"),
     mProcessState(CREATING_CHANNEL),
     mDelegate(nullptr),
+#if defined(MOZ_SANDBOX) && defined(XP_WIN)
+    mEnableSandboxLogging(false),
+    mEnableNPAPISandbox(false),
+#if defined(MOZ_CONTENT_SANDBOX)
+    mMoreStrictContentSandbox(false),
+#endif
+#endif
     mChildProcessHandle(0)
 #if defined(MOZ_WIDGET_COCOA)
   , mChildTask(MACH_PORT_NULL)
@@ -120,30 +130,31 @@ GeckoChildProcessHost::~GeckoChildProcessHost()
 #endif
 }
 
-void GetPathToBinary(FilePath& exePath)
+//static
+void
+GeckoChildProcessHost::GetPathToBinary(FilePath& exePath)
 {
   if (ShouldHaveDirectoryService()) {
-    nsCOMPtr<nsIProperties> directoryService(do_GetService(NS_DIRECTORY_SERVICE_CONTRACTID));
-    NS_ASSERTION(directoryService, "Expected XPCOM to be available");
-    if (directoryService) {
-      nsCOMPtr<nsIFile> greDir;
-      nsresult rv = directoryService->Get(NS_GRE_DIR, NS_GET_IID(nsIFile), getter_AddRefs(greDir));
-      if (NS_SUCCEEDED(rv)) {
+    MOZ_ASSERT(gGREBinPath);
 #ifdef OS_WIN
-        nsString path;
-        greDir->GetPath(path);
+    exePath = FilePath(char16ptr_t(gGREBinPath));
+#elif MOZ_WIDGET_COCOA
+    nsCOMPtr<nsIFile> childProcPath;
+    NS_NewLocalFile(nsDependentString(gGREBinPath), false,
+                    getter_AddRefs(childProcPath));
+    // We need to use an App Bundle on OS X so that we can hide
+    // the dock icon. See Bug 557225.
+    childProcPath->AppendNative(NS_LITERAL_CSTRING("plugin-container.app"));
+    childProcPath->AppendNative(NS_LITERAL_CSTRING("Contents"));
+    childProcPath->AppendNative(NS_LITERAL_CSTRING("MacOS"));
+    nsCString tempCPath;
+    childProcPath->GetNativePath(tempCPath);
+    exePath = FilePath(tempCPath.get());
 #else
-        nsCString path;
-        greDir->GetNativePath(path);
+    nsCString path;
+    NS_CopyUnicodeToNative(nsDependentString(gGREBinPath), path);
+    exePath = FilePath(path.get());
 #endif
-        exePath = FilePath(path.get());
-#ifdef MOZ_WIDGET_COCOA
-        // We need to use an App Bundle on OS X so that we can hide
-        // the dock icon. See Bug 557225.
-        exePath = exePath.AppendASCII(MOZ_CHILD_PROCESS_BUNDLE);
-#endif
-      }
-    }
   }
 
   if (exePath.empty()) {
@@ -161,7 +172,7 @@ void GetPathToBinary(FilePath& exePath)
 #ifdef MOZ_WIDGET_COCOA
 class AutoCFTypeObject {
 public:
-  AutoCFTypeObject(CFTypeRef object)
+  explicit AutoCFTypeObject(CFTypeRef object)
   {
     mObject = object;
   }
@@ -226,6 +237,7 @@ uint32_t GeckoChildProcessHost::GetSupportedArchitecturesForProcessType(GeckoPro
 {
 #ifdef MOZ_WIDGET_COCOA
   if (type == GeckoProcessType_Plugin) {
+
     // Cache this, it shouldn't ever change.
     static uint32_t pluginContainerArchs = 0;
     if (pluginContainerArchs == 0) {
@@ -254,7 +266,27 @@ GeckoChildProcessHost::PrepareLaunch()
 #endif
 
 #ifdef XP_WIN
-  InitWindowsGroupID();
+  if (mProcessType == GeckoProcessType_Plugin) {
+    InitWindowsGroupID();
+  }
+
+#if defined(MOZ_CONTENT_SANDBOX)
+  // We need to get the pref here as the process is launched off main thread.
+  if (mProcessType == GeckoProcessType_Content) {
+    mMoreStrictContentSandbox =
+      Preferences::GetBool("security.sandbox.windows.content.moreStrict");
+    mEnableSandboxLogging =
+      Preferences::GetBool("security.sandbox.windows.log");
+  }
+#endif
+
+#if defined(MOZ_SANDBOX)
+  // For other process types we can't rely on them being launched on main
+  // thread and they may not have access to prefs in the child process, so allow
+  // them to turn on logging via an environment variable.
+  mEnableSandboxLogging = mEnableSandboxLogging
+                          || !!PR_GetEnv("MOZ_WIN_SANDBOX_LOGGING");
+#endif
 #endif
 }
 
@@ -273,7 +305,7 @@ void GeckoChildProcessHost::InitWindowsGroupID()
     if (isSupported && NS_SUCCEEDED(taskbarInfo->GetDefaultGroupId(appId))) {
       mGroupId.Append(appId);
     } else {
-      mGroupId.AssignLiteral("-");
+      mGroupId.Assign('-');
     }
   }
 }
@@ -284,8 +316,6 @@ GeckoChildProcessHost::SyncLaunch(std::vector<std::string> aExtraOpts, int aTime
 {
   PrepareLaunch();
 
-  PRIntervalTime timeoutTicks = (aTimeoutMs > 0) ? 
-    PR_MillisecondsToInterval(aTimeoutMs) : PR_INTERVAL_NO_TIMEOUT;
   MessageLoop* ioLoop = XRE_GetIOMessageLoop();
   NS_ASSERTION(MessageLoop::current() != ioLoop, "sync launch from the IO thread NYI");
 
@@ -293,8 +323,40 @@ GeckoChildProcessHost::SyncLaunch(std::vector<std::string> aExtraOpts, int aTime
                    NewRunnableMethod(this,
                                      &GeckoChildProcessHost::RunPerformAsyncLaunch,
                                      aExtraOpts, arch));
+
+  return WaitUntilConnected(aTimeoutMs);
+}
+
+bool
+GeckoChildProcessHost::AsyncLaunch(std::vector<std::string> aExtraOpts,
+                                   base::ProcessArchitecture arch)
+{
+  PrepareLaunch();
+
+  MessageLoop* ioLoop = XRE_GetIOMessageLoop();
+  ioLoop->PostTask(FROM_HERE,
+                   NewRunnableMethod(this,
+                                     &GeckoChildProcessHost::RunPerformAsyncLaunch,
+                                     aExtraOpts, arch));
+
+  // This may look like the sync launch wait, but we only delay as
+  // long as it takes to create the channel.
+  MonitorAutoLock lock(mMonitor);
+  while (mProcessState < CHANNEL_INITIALIZED) {
+    lock.Wait();
+  }
+
+  return true;
+}
+
+bool
+GeckoChildProcessHost::WaitUntilConnected(int32_t aTimeoutMs)
+{
   // NB: this uses a different mechanism than the chromium parent
   // class.
+  PRIntervalTime timeoutTicks = (aTimeoutMs > 0) ? 
+    PR_MillisecondsToInterval(aTimeoutMs) : PR_INTERVAL_NO_TIMEOUT;
+
   MonitorAutoLock lock(mMonitor);
   PRIntervalTime waitStart = PR_IntervalNow();
   PRIntervalTime current;
@@ -321,27 +383,6 @@ GeckoChildProcessHost::SyncLaunch(std::vector<std::string> aExtraOpts, int aTime
   }
 
   return mProcessState == PROCESS_CONNECTED;
-}
-
-bool
-GeckoChildProcessHost::AsyncLaunch(std::vector<std::string> aExtraOpts)
-{
-  PrepareLaunch();
-
-  MessageLoop* ioLoop = XRE_GetIOMessageLoop();
-  ioLoop->PostTask(FROM_HERE,
-                   NewRunnableMethod(this,
-                                     &GeckoChildProcessHost::RunPerformAsyncLaunch,
-                                     aExtraOpts, base::GetCurrentProcessArchitecture()));
-
-  // This may look like the sync launch wait, but we only delay as
-  // long as it takes to create the channel.
-  MonitorAutoLock lock(mMonitor);
-  while (mProcessState < CHANNEL_INITIALIZED) {
-    lock.Wait();
-  }
-
-  return true;
 }
 
 bool
@@ -467,7 +508,7 @@ AddAppDirToCommandLine(std::vector<std::string>& aCmdLine)
                                           getter_AddRefs(appDir));
       if (NS_SUCCEEDED(rv)) {
         nsAutoCString path;
-        appDir->GetNativePath(path);
+        MOZ_ALWAYS_TRUE(NS_SUCCEEDED(appDir->GetNativePath(path)));
 #if defined(XP_WIN)
         aCmdLine.AppendLooseValue(UTF8ToWide("-appdir"));
         aCmdLine.AppendLooseValue(UTF8ToWide(path.get()));
@@ -519,52 +560,63 @@ GeckoChildProcessHost::PerformAsyncLaunchInternal(std::vector<std::string>& aExt
   // since LD_LIBRARY_PATH is already set correctly in subprocesses
   // (meaning that we don't need to set that up in the environment).
   if (ShouldHaveDirectoryService()) {
-    nsCOMPtr<nsIProperties> directoryService(do_GetService(NS_DIRECTORY_SERVICE_CONTRACTID));
-    NS_ASSERTION(directoryService, "Expected XPCOM to be available");
-    if (directoryService) {
-      nsCOMPtr<nsIFile> greDir;
-      nsresult rv = directoryService->Get(NS_GRE_DIR, NS_GET_IID(nsIFile), getter_AddRefs(greDir));
-      if (NS_SUCCEEDED(rv)) {
-        nsCString path;
-        greDir->GetNativePath(path);
+    MOZ_ASSERT(gGREBinPath);
+    nsCString path;
+    NS_CopyUnicodeToNative(nsDependentString(gGREBinPath), path);
 # if defined(OS_LINUX) || defined(OS_BSD)
 #  if defined(MOZ_WIDGET_ANDROID)
-        path += "/lib";
+    path += "/lib";
 #  endif  // MOZ_WIDGET_ANDROID
-        const char *ld_library_path = PR_GetEnv("LD_LIBRARY_PATH");
-        nsCString new_ld_lib_path;
-        if (ld_library_path && *ld_library_path) {
-            new_ld_lib_path.Assign(path.get());
-            new_ld_lib_path.AppendLiteral(":");
-            new_ld_lib_path.Append(ld_library_path);
-            newEnvVars["LD_LIBRARY_PATH"] = new_ld_lib_path.get();
-        } else {
-            newEnvVars["LD_LIBRARY_PATH"] = path.get();
-        }
-# elif OS_MACOSX
-        newEnvVars["DYLD_LIBRARY_PATH"] = path.get();
-        // XXX DYLD_INSERT_LIBRARIES should only be set when launching a plugin
-        //     process, and has no effect on other subprocesses (the hooks in
-        //     libplugin_child_interpose.dylib become noops).  But currently it
-        //     gets set when launching any kind of subprocess.
-        //
-        // Trigger "dyld interposing" for the dylib that contains
-        // plugin_child_interpose.mm.  This allows us to hook OS calls in the
-        // plugin process (ones that don't work correctly in a background
-        // process).  Don't break any other "dyld interposing" that has already
-        // been set up by whatever may have launched the browser.
-        const char* prevInterpose = PR_GetEnv("DYLD_INSERT_LIBRARIES");
-        nsCString interpose;
-        if (prevInterpose) {
-          interpose.Assign(prevInterpose);
-          interpose.AppendLiteral(":");
-        }
-        interpose.Append(path.get());
-        interpose.AppendLiteral("/libplugin_child_interpose.dylib");
-        newEnvVars["DYLD_INSERT_LIBRARIES"] = interpose.get();
-# endif  // OS_LINUX
-      }
+    const char *ld_library_path = PR_GetEnv("LD_LIBRARY_PATH");
+    nsCString new_ld_lib_path;
+    if (ld_library_path && *ld_library_path) {
+      new_ld_lib_path.Assign(path.get());
+      new_ld_lib_path.Append(':');
+      new_ld_lib_path.Append(ld_library_path);
+      newEnvVars["LD_LIBRARY_PATH"] = new_ld_lib_path.get();
+    } else {
+      newEnvVars["LD_LIBRARY_PATH"] = path.get();
     }
+
+#  if (MOZ_WIDGET_GTK == 3)
+    if (mProcessType == GeckoProcessType_Plugin) {
+      const char *ld_preload = PR_GetEnv("LD_PRELOAD");
+      nsCString new_ld_preload;
+
+      new_ld_preload.Assign(path.get());
+      new_ld_preload.AppendLiteral("/" DLL_PREFIX "mozgtk2" DLL_SUFFIX);
+
+      if (ld_preload && *ld_preload) {
+        new_ld_preload.AppendLiteral(":");
+        new_ld_preload.Append(ld_preload);
+      }
+      newEnvVars["LD_PRELOAD"] = new_ld_preload.get();
+    }
+#  endif // MOZ_WIDGET_GTK
+
+
+# elif OS_MACOSX
+    newEnvVars["DYLD_LIBRARY_PATH"] = path.get();
+    // XXX DYLD_INSERT_LIBRARIES should only be set when launching a plugin
+    //     process, and has no effect on other subprocesses (the hooks in
+    //     libplugin_child_interpose.dylib become noops).  But currently it
+    //     gets set when launching any kind of subprocess.
+    //
+    // Trigger "dyld interposing" for the dylib that contains
+    // plugin_child_interpose.mm.  This allows us to hook OS calls in the
+    // plugin process (ones that don't work correctly in a background
+    // process).  Don't break any other "dyld interposing" that has already
+    // been set up by whatever may have launched the browser.
+    const char* prevInterpose = PR_GetEnv("DYLD_INSERT_LIBRARIES");
+    nsCString interpose;
+    if (prevInterpose) {
+      interpose.Assign(prevInterpose);
+      interpose.Append(':');
+    }
+    interpose.Append(path.get());
+    interpose.AppendLiteral("/libplugin_child_interpose.dylib");
+    newEnvVars["DYLD_INSERT_LIBRARIES"] = interpose.get();
+# endif  // OS_LINUX
   }
 #endif  // OS_LINUX || OS_MACOSX
 
@@ -705,7 +757,7 @@ GeckoChildProcessHost::PerformAsyncLaunchInternal(std::vector<std::string>& aExt
   MachPortSender parent_sender(child_message.GetTranslatedPort(1));
 
   MachSendMessage parent_message(/* id= */0);
-  if (!parent_message.AddDescriptor(bootstrap_port)) {
+  if (!parent_message.AddDescriptor(MachMsgPortDescriptor(bootstrap_port))) {
     CHROMIUM_LOG(ERROR) << "parent AddDescriptor(" << bootstrap_port << ") failed.";
     return false;
   }
@@ -749,12 +801,53 @@ GeckoChildProcessHost::PerformAsyncLaunchInternal(std::vector<std::string>& aExt
     }
   }
 
-#if defined(XP_WIN) && defined(MOZ_CONTENT_SANDBOX)
-  if (mSandboxEnabled) {
-    // Tell the process that it should lower its rights after initialization.
-    cmdLine.AppendLooseValue(UTF8ToWide("-sandbox"));
+#if defined(XP_WIN) && defined(MOZ_SANDBOX)
+  bool shouldSandboxCurrentProcess = false;
+  switch (mProcessType) {
+    case GeckoProcessType_Content:
+#if defined(MOZ_CONTENT_SANDBOX)
+      if (!PR_GetEnv("MOZ_DISABLE_CONTENT_SANDBOX")) {
+        mSandboxBroker.SetSecurityLevelForContentProcess(mMoreStrictContentSandbox);
+        cmdLine.AppendLooseValue(UTF8ToWide("-sandbox"));
+        shouldSandboxCurrentProcess = true;
+      }
+#endif // MOZ_CONTENT_SANDBOX
+      break;
+    case GeckoProcessType_Plugin:
+      if (mEnableNPAPISandbox &&
+          !PR_GetEnv("MOZ_DISABLE_NPAPI_SANDBOX")) {
+        mSandboxBroker.SetSecurityLevelForPluginProcess();
+        cmdLine.AppendLooseValue(UTF8ToWide("-sandbox"));
+        shouldSandboxCurrentProcess = true;
+      }
+      break;
+    case GeckoProcessType_IPDLUnitTest:
+      // XXX: We don't sandbox this process type yet
+      // mSandboxBroker.SetSecurityLevelForIPDLUnitTestProcess();
+      // cmdLine.AppendLooseValue(UTF8ToWide("-sandbox"));
+      // shouldSandboxCurrentProcess = true;
+      break;
+    case GeckoProcessType_GMPlugin:
+      if (!PR_GetEnv("MOZ_DISABLE_GMP_SANDBOX")) {
+        mSandboxBroker.SetSecurityLevelForGMPlugin();
+        cmdLine.AppendLooseValue(UTF8ToWide("-sandbox"));
+        shouldSandboxCurrentProcess = true;
+      }
+      break;
+    case GeckoProcessType_Default:
+    default:
+      MOZ_CRASH("Bad process type in GeckoChildProcessHost");
+      break;
+  };
+
+  if (shouldSandboxCurrentProcess) {
+    for (auto it = mAllowedFilesRead.begin();
+         it != mAllowedFilesRead.end();
+         ++it) {
+      mSandboxBroker.AllowReadFile(it->c_str());
+    }
   }
-#endif
+#endif // XP_WIN && MOZ_SANDBOX
 
   // Add the application directory path (-appdir path)
   AddAppDirToCommandLine(cmdLine);
@@ -777,13 +870,12 @@ GeckoChildProcessHost::PerformAsyncLaunchInternal(std::vector<std::string>& aExt
   // Process type
   cmdLine.AppendLooseValue(UTF8ToWide(childProcessType));
 
-#if defined(XP_WIN) && defined(MOZ_CONTENT_SANDBOX)
-  if (mSandboxEnabled) {
-
-    mozilla::SandboxBroker sandboxBroker;
-    sandboxBroker.LaunchApp(cmdLine.program().c_str(),
-                            cmdLine.command_line_string().c_str(),
-                            &process);
+#if defined(XP_WIN) && defined(MOZ_SANDBOX)
+  if (shouldSandboxCurrentProcess) {
+    mSandboxBroker.LaunchApp(cmdLine.program().c_str(),
+                             cmdLine.command_line_string().c_str(),
+                             mEnableSandboxLogging,
+                             &process);
   } else
 #endif
   {

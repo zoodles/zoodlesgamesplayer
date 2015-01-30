@@ -19,21 +19,21 @@
 extern const nsCID kTestConverterCID;
 
 class TestConverter : public nsIStreamConverter {
+    virtual ~TestConverter() {}
 public:
     NS_DECL_ISUPPORTS
     NS_DECL_NSIREQUESTOBSERVER
     NS_DECL_NSISTREAMLISTENER
 
     TestConverter();
-    virtual ~TestConverter() {}
 
     // nsIStreamConverter methods
     NS_IMETHOD Convert(nsIInputStream *aFromStream, const char *aFromType, 
-                       const char *aToType, nsISupports *ctxt, nsIInputStream **_retval);
+                       const char *aToType, nsISupports *ctxt, nsIInputStream **_retval) MOZ_OVERRIDE;
 
 
     NS_IMETHOD AsyncConvertData(const char *aFromType, const char *aToType, 
-                                nsIStreamListener *aListener, nsISupports *ctxt);
+                                nsIStreamListener *aListener, nsISupports *ctxt) MOZ_OVERRIDE;
 
     // member data
     nsCOMPtr<nsIStreamListener> mListener;

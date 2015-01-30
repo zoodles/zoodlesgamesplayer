@@ -89,10 +89,10 @@ class nsHtml5ParserThreadTerminator MOZ_FINAL : public nsIObserver
 {
   public:
     NS_DECL_ISUPPORTS
-    nsHtml5ParserThreadTerminator(nsIThread* aThread)
+    explicit nsHtml5ParserThreadTerminator(nsIThread* aThread)
       : mThread(aThread)
     {}
-    NS_IMETHODIMP Observe(nsISupports *, const char *topic, const char16_t *)
+    NS_IMETHODIMP Observe(nsISupports *, const char *topic, const char16_t *) MOZ_OVERRIDE
     {
       NS_ASSERTION(!strcmp(topic, "xpcom-shutdown-threads"), 
                    "Unexpected topic");
@@ -103,10 +103,12 @@ class nsHtml5ParserThreadTerminator MOZ_FINAL : public nsIObserver
       return NS_OK;
     }
   private:
+    ~nsHtml5ParserThreadTerminator() {}
+
     nsCOMPtr<nsIThread> mThread;
 };
 
-NS_IMPL_ISUPPORTS1(nsHtml5ParserThreadTerminator, nsIObserver)
+NS_IMPL_ISUPPORTS(nsHtml5ParserThreadTerminator, nsIObserver)
 
 // static 
 nsIThread*

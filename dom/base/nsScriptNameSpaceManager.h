@@ -49,7 +49,6 @@ struct nsGlobalNameStruct
     eTypeProperty,
     eTypeNavigatorProperty,
     eTypeExternalConstructor,
-    eTypeStaticNameSet,
     eTypeClassConstructor,
     eTypeClassProto,
     eTypeExternalClassInfoCreator,
@@ -62,7 +61,6 @@ struct nsGlobalNameStruct
   // initialized for eTypeNewDOMBinding structs.
   bool mChromeOnly : 1;
   bool mAllowXBL : 1;
-  bool mDisabled : 1;
 
   union {
     int32_t mDOMClassInfoID; // eTypeClassConstructor
@@ -97,10 +95,8 @@ public:
   NS_DECL_NSIMEMORYREPORTER
 
   nsScriptNameSpaceManager();
-  virtual ~nsScriptNameSpaceManager();
 
   nsresult Init();
-  nsresult InitForContext(nsIScriptContext *aContext);
 
   // Returns a nsGlobalNameStruct for aName, or null if one is not
   // found. The returned nsGlobalNameStruct is only guaranteed to be
@@ -123,7 +119,6 @@ public:
                              int32_t aDOMClassInfoID,
                              bool aPrivileged,
                              bool aXBLAllowed,
-                             bool aDisabled,
                              const char16_t **aResult);
 
   nsresult RegisterClassProto(const char *aClassName,
@@ -174,7 +169,9 @@ public:
   }
 
   typedef PLDHashOperator
-  (* NameEnumerator)(const nsAString& aGlobalName, void* aClosure);
+  (* NameEnumerator)(const nsAString& aGlobalName,
+                     const nsGlobalNameStruct& aGlobalNameStruct,
+                     void* aClosure);
 
   void EnumerateGlobalNames(NameEnumerator aEnumerator,
                             void* aClosure);
@@ -184,6 +181,8 @@ public:
   size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf);
 
 private:
+  virtual ~nsScriptNameSpaceManager();
+
   // Adds a new entry to the hash and returns the nsGlobalNameStruct
   // that aKey will be mapped to. If mType in the returned
   // nsGlobalNameStruct is != eTypeNotInitialized, an entry for aKey

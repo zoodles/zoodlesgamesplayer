@@ -40,6 +40,7 @@ namespace mozilla {
 namespace widget {
 namespace winrt {
 
+class APZPendingResponseFlusher;
 class FrameworkView;
 
 } } }
@@ -59,6 +60,7 @@ class MetroWidget : public nsWindowBase,
   typedef ABI::Windows::UI::Core::ICharacterReceivedEventArgs ICharacterReceivedEventArgs;
   typedef mozilla::widget::winrt::FrameworkView FrameworkView;
   typedef mozilla::widget::winrt::APZController APZController;
+  typedef mozilla::widget::winrt::APZPendingResponseFlusher APZPendingResponseFlusher;
   typedef mozilla::layers::ScrollableLayerGuid ScrollableLayerGuid;
 
   static LRESULT CALLBACK
@@ -87,7 +89,6 @@ public:
                          nsIntPoint* aPoint = nullptr) MOZ_OVERRIDE;
 
   // nsBaseWidget
-  virtual CompositorParent* NewCompositorParent(int aSurfaceWidth, int aSurfaceHeight);
   virtual void SetWidgetListener(nsIWidgetListener* aWidgetListener);
 
   // nsIWidget interface
@@ -147,7 +148,6 @@ public:
   virtual bool  IsEnabled() const;
   // ShouldUseOffMainThreadCompositing is defined in base widget
   virtual bool  ShouldUseOffMainThreadCompositing();
-  bool          ShouldUseMainThreadD3D10Manager();
   bool          ShouldUseBasicManager();
   bool          ShouldUseAPZC();
   virtual LayerManager* GetLayerManager(PLayerTransactionChild* aShadowManager = nullptr,
@@ -160,7 +160,6 @@ public:
   NS_IMETHOD_(void) SetInputContext(const InputContext& aContext,
                                     const InputContextAction& aAction);
   NS_IMETHOD_(nsIWidget::InputContext) GetInputContext();
-  NS_IMETHOD    NotifyIME(const IMENotification& aIMENotification) MOZ_OVERRIDE;
   NS_IMETHOD    GetToggledKeyState(uint32_t aKeyCode, bool* aLEDState);
   virtual nsIMEUpdatePreference GetIMEUpdatePreference() MOZ_OVERRIDE;
 
@@ -207,7 +206,7 @@ public:
 
   // apzc controller related api
   void ApzcGetAllowedTouchBehavior(mozilla::WidgetInputEvent* aTransformedEvent, nsTArray<TouchBehaviorFlags>& aOutBehaviors);
-  void ApzcSetAllowedTouchBehavior(const ScrollableLayerGuid& aGuid, nsTArray<TouchBehaviorFlags>& aBehaviors);
+  void ApzcSetAllowedTouchBehavior(uint64_t aInputBlockId, nsTArray<TouchBehaviorFlags>& aBehaviors);
 
   // Hit test a point to see if an apzc would consume input there
   bool ApzHitTest(mozilla::ScreenIntPoint& pt);
@@ -216,11 +215,14 @@ public:
   void ApzTransformGeckoCoordinate(const mozilla::ScreenIntPoint& pt,
                                    mozilla::LayoutDeviceIntPoint* aRefPointOut);
   // send ContentRecievedTouch calls to the apz with appropriate preventDefault params
-  void ApzContentConsumingTouch(const ScrollableLayerGuid& aGuid);
-  void ApzContentIgnoringTouch(const ScrollableLayerGuid& aGuid);
+  void ApzContentConsumingTouch(uint64_t aInputBlockId);
+  void ApzContentIgnoringTouch(uint64_t aInputBlockId);
   // Input handling
   nsEventStatus ApzReceiveInputEvent(mozilla::WidgetInputEvent* aEvent,
-                                     ScrollableLayerGuid* aOutTargetGuid);
+                                     ScrollableLayerGuid* aOutTargetGuid,
+                                     uint64_t* aOutInputBlockId);
+  // Callback for the APZController
+  void SetApzPendingResponseFlusher(APZPendingResponseFlusher* aFlusher);
 
 protected:
   friend class FrameworkView;
@@ -241,9 +243,16 @@ protected:
     }
   };
 
+  // nsBaseWidget
+  void ConfigureAPZCTreeManager() MOZ_OVERRIDE;
+  already_AddRefed<GeckoContentController> NewRootContentController() MOZ_OVERRIDE;
+
   void SetSubclass();
   void RemoveSubclass();
   nsIWidgetListener* GetPaintListener();
+
+  virtual nsresult NotifyIMEInternal(
+                     const IMENotification& aIMENotification) MOZ_OVERRIDE;
 
   // Async event dispatching
   void DispatchAsyncScrollEvent(DispatchMsg* aEvent);
@@ -256,7 +265,7 @@ protected:
   Microsoft::WRL::ComPtr<FrameworkView> mView;
   nsTransparencyMode mTransparencyMode;
   nsIntRegion mInvalidatedRegion;
-  nsCOMPtr<nsIdleService> mIdleService;
+  nsCOMPtr<nsIIdleServiceInternal> mIdleService;
   HWND mWnd;
   static HWND sICoreHwnd;
   WNDPROC mMetroWndProc;

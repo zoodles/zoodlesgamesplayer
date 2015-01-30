@@ -214,6 +214,21 @@ int nr_ice_ctx_set_interface_prioritizer(nr_ice_ctx *ctx, nr_interface_prioritiz
     return(_status);
   }
 
+int nr_ice_ctx_set_turn_tcp_socket_wrapper(nr_ice_ctx *ctx, nr_socket_wrapper_factory *wrapper)
+  {
+    int _status;
+
+    if (ctx->turn_tcp_socket_wrapper) {
+      ABORT(R_ALREADY);
+    }
+
+    ctx->turn_tcp_socket_wrapper = wrapper;
+
+    _status=0;
+   abort:
+    return(_status);
+  }
+
 #ifdef USE_TURN
 int nr_ice_fetch_turn_servers(int ct, nr_ice_turn_server **out)
   {
@@ -422,6 +437,7 @@ static void nr_ice_ctx_destroy_cb(NR_SOCKET s, int how, void *cb_arg)
 
     nr_resolver_destroy(&ctx->resolver);
     nr_interface_prioritizer_destroy(&ctx->interface_prioritizer);
+    nr_socket_wrapper_factory_destroy(&ctx->turn_tcp_socket_wrapper);
 
     RFREE(ctx);
   }
@@ -455,6 +471,10 @@ void nr_ice_initialize_finished_cb(NR_SOCKET s, int h, void *cb_arg)
 
     ctx->uninitialized_candidates--;
 
+    // Avoid the need for yet another initialization function
+    if (cand->state == NR_ICE_CAND_STATE_INITIALIZING && cand->type == HOST)
+      cand->state = NR_ICE_CAND_STATE_INITIALIZED;
+
     if (cand->state == NR_ICE_CAND_STATE_INITIALIZED) {
       int was_pruned = 0;
 
@@ -468,7 +488,7 @@ void nr_ice_initialize_finished_cb(NR_SOCKET s, int h, void *cb_arg)
       if (ctx->trickle_cb && !was_pruned) {
         ctx->trickle_cb(ctx->trickle_cb_arg, ctx, cand->stream, cand->component_id, cand);
 
-        if (r=nr_ice_ctx_pair_new_trickle_candidates(ctx, cand)) {
+        if (nr_ice_ctx_pair_new_trickle_candidates(ctx, cand)) {
           r_log(LOG_ICE,LOG_ERR, "ICE(%s): All could not pair new trickle candidate",ctx->label);
           /* But continue */
         }

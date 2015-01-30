@@ -7,27 +7,8 @@ function run_test() {
   run_next_test();
 }
 
-function _getWorker() {
-  let _postedMessage;
-  let _worker = newWorker({
-    postRILMessage: function(data) {
-    },
-    postMessage: function(message) {
-      _postedMessage = message;
-    }
-  });
-  return {
-    get postedMessage() {
-      return _postedMessage;
-    },
-    get worker() {
-      return _worker;
-    }
-  };
-}
-
 add_test(function test_notification() {
-  let workerHelper = _getWorker();
+  let workerHelper = newInterceptWorker();
   let worker = workerHelper.worker;
   let context = worker.ContextPool._contexts[0];
 
@@ -37,7 +18,10 @@ add_test(function test_notification() {
   }
 
   Call.prototype = {
-    state: CALL_STATE_DIALING,
+    // Should use CALL_STATE_ACTIVE.
+    // Any new outgoing call (state = dialing or alerting) will be drop if there
+    // is no pending outgoing call created before.
+    state: CALL_STATE_ACTIVE,
     //callIndex: 0,
     toa: 0,
     isMpty: false,
@@ -88,7 +72,7 @@ add_test(function test_notification() {
     do_check_eq(postedMessage.callIndex, resultCallIndex);
 
     // Clear all existed calls.
-    context.RIL._processCalls(null);
+    context.RIL._processCalls({});
   }
 
   testNotification(oneCall, SUPP_SVC_NOTIFICATION_CODE2_PUT_ON_HOLD, null,
@@ -114,4 +98,3 @@ add_test(function test_notification() {
 
   run_next_test();
 });
-

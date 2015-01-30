@@ -34,6 +34,8 @@
 #include "X11/Xlib.h"
 #include "X11/Xutil.h"
 
+#include "mozilla/unused.h"
+
 // stuff from glx.h
 typedef struct __GLXcontextRec *GLXContext;
 typedef XID GLXPixmap;
@@ -81,9 +83,9 @@ static func_ptr_type cast(void *ptr)
 
 static void fatal_error(const char *str)
 {
-  write(write_end_of_the_pipe, str, strlen(str));
-  write(write_end_of_the_pipe, "\n", 1);
-  exit(EXIT_FAILURE);
+  mozilla::unused << write(write_end_of_the_pipe, str, strlen(str));
+  mozilla::unused << write(write_end_of_the_pipe, "\n", 1);
+  _exit(EXIT_FAILURE);
 }
 
 static int
@@ -96,12 +98,19 @@ x_error_handler(Display *, XErrorEvent *ev)
                         ev->error_code,
                         ev->request_code,
                         ev->minor_code);
-  write(write_end_of_the_pipe, buf, length);
-  exit(EXIT_FAILURE);
+  mozilla::unused << write(write_end_of_the_pipe, buf, length);
+  _exit(EXIT_FAILURE);
   return 0;
 }
 
-static void glxtest()
+
+// glxtest is declared inside extern "C" so that the name is not mangled.
+// The name is used in build/valgrind/x86_64-redhat-linux-gnu.sup to suppress
+// memory leak errors because we run it inside a short lived fork and we don't
+// care about leaking memory
+extern "C" {
+
+void glxtest()
 {
   // we want to redirect to /dev/null stdout, stderr, and while we're at it,
   // any PR logging file descriptors. To that effect, we redirect all positive
@@ -242,7 +251,9 @@ static void glxtest()
   dlclose(libgl);
 
   ///// Finally write data to the pipe
-  write(write_end_of_the_pipe, buf, length);
+  mozilla::unused << write(write_end_of_the_pipe, buf, length);
+}
+
 }
 
 /** \returns true in the child glxtest process, false in the parent process */
@@ -267,7 +278,7 @@ bool fire_glxtest_process()
       write_end_of_the_pipe = pfd[1];
       glxtest();
       close(pfd[1]);
-      exit(0);
+      _exit(0);
   }
 
   close(pfd[1]);

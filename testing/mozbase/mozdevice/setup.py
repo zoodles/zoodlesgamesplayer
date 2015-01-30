@@ -5,10 +5,12 @@
 from setuptools import setup
 
 PACKAGE_NAME = 'mozdevice'
-PACKAGE_VERSION = '0.33'
+PACKAGE_VERSION = '0.44'
 
 deps = ['mozfile >= 1.0',
-        'mozlog',
+        'mozlog >= 2.1',
+        'moznetwork >= 0.24',
+        'mozprocess >= 0.19',
        ]
 
 setup(name=PACKAGE_NAME,

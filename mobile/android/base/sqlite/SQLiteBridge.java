@@ -10,6 +10,7 @@ import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteException;
 import android.text.TextUtils;
 import android.util.Log;
+
 import org.mozilla.gecko.mozglue.RobocopTarget;
 
 import java.util.ArrayList;
@@ -25,18 +26,25 @@ public class SQLiteBridge {
     private static final String LOGTAG = "SQLiteBridge";
 
     // Path to the database. If this database was not opened with openDatabase, we reopen it every query.
-    private String mDb;
-    // pointer to the database if it was opened with openDatabase
-    protected long mDbPointer = 0;
+    private final String mDb;
+
+    // Pointer to the database if it was opened with openDatabase. 0 implies closed.
+    protected volatile long mDbPointer;
 
     // Values remembered after a query.
     private long[] mQueryResults;
 
-    private boolean mTransactionSuccess = false;
-    private boolean mInTransaction = false;
+    private boolean mTransactionSuccess;
+    private boolean mInTransaction;
 
     private static final int RESULT_INSERT_ROW_ID = 0;
     private static final int RESULT_ROWS_CHANGED = 1;
+
+    // Shamelessly cribbed from db/sqlite3/src/moz.build.
+    private static final int DEFAULT_PAGE_SIZE_BYTES = 32768;
+
+    // The same size we use elsewhere.
+    private static final int MAX_WAL_SIZE_BYTES = 524288;
 
     // JNI code in $(topdir)/mozglue/android/..
     private static native MatrixBlobCursor sqliteCall(String aDb, String aQuery,
@@ -60,13 +68,15 @@ public class SQLiteBridge {
     // Executes a simple line of sql.
     public void execSQL(String sql)
                 throws SQLiteBridgeException {
-        internalQuery(sql, null);
+        Cursor cursor = internalQuery(sql, null);
+        cursor.close();
     }
 
     // Executes a simple line of sql. Allow you to bind arguments
     public void execSQL(String sql, String[] bindArgs)
                 throws SQLiteBridgeException {
-        internalQuery(sql, bindArgs);
+        Cursor cursor = internalQuery(sql, bindArgs);
+        cursor.close();
     }
 
     // Executes a DELETE statement on the database
@@ -78,7 +88,7 @@ public class SQLiteBridge {
             sb.append(" WHERE " + whereClause);
         }
 
-        internalQuery(sb.toString(), whereArgs);
+        execSQL(sb.toString(), whereArgs);
         return (int)mQueryResults[RESULT_ROWS_CHANGED];
     }
 
@@ -164,7 +174,7 @@ public class SQLiteBridge {
 
         String[] binds = new String[valueBinds.size()];
         valueBinds.toArray(binds);
-        internalQuery(sb.toString(), binds);
+        execSQL(sb.toString(), binds);
         return mQueryResults[RESULT_INSERT_ROW_ID];
     }
 
@@ -207,7 +217,7 @@ public class SQLiteBridge {
         String[] binds = new String[valueNames.size()];
         valueNames.toArray(binds);
 
-        internalQuery(sb.toString(), binds);
+        execSQL(sb.toString(), binds);
         return (int)mQueryResults[RESULT_ROWS_CHANGED];
     }
 
@@ -219,12 +229,13 @@ public class SQLiteBridge {
             cursor.moveToFirst();
             String version = cursor.getString(0);
             ret = Integer.parseInt(version);
+            cursor.close();
         }
         return ret;
     }
 
     // Do an SQL query, substituting the parameters in the query with the passed
-    // parameters. The parameters are subsituded in order, so named parameters
+    // parameters. The parameters are substituted in order: named parameters
     // are not supported.
     private Cursor internalQuery(String aQuery, String[] aParams)
         throws SQLiteBridgeException {
@@ -237,19 +248,29 @@ public class SQLiteBridge {
     }
 
     /*
-     * The second two parameters here are just provided for compatbility with SQLiteDatabase
-     * Support for them is not currently implemented
+     * The second two parameters here are just provided for compatibility with SQLiteDatabase
+     * Support for them is not currently implemented.
     */
     public static SQLiteBridge openDatabase(String path, SQLiteDatabase.CursorFactory factory, int flags)
         throws SQLiteException {
+        if (factory != null) {
+            throw new RuntimeException("factory not supported.");
+        }
+        if (flags != 0) {
+            throw new RuntimeException("flags not supported.");
+        }
+
         SQLiteBridge bridge = null;
         try {
             bridge = new SQLiteBridge(path);
             bridge.mDbPointer = SQLiteBridge.openDatabase(path);
-        } catch(SQLiteBridgeException ex) {
-            // catch and rethrow as a SQLiteException to match SQLiteDatabase
+        } catch (SQLiteBridgeException ex) {
+            // Catch and rethrow as a SQLiteException to match SQLiteDatabase.
             throw new SQLiteException(ex.getMessage());
         }
+
+        prepareWAL(bridge);
+
         return bridge;
     }
 
@@ -257,11 +278,11 @@ public class SQLiteBridge {
         if (isOpen()) {
           closeDatabase(mDbPointer);
         }
-        mDbPointer = 0;
+        mDbPointer = 0L;
     }
 
     public boolean isOpen() {
-        return mDbPointer > 0;
+        return mDbPointer != 0;
     }
 
     public void beginTransaction() throws SQLiteBridgeException {
@@ -315,6 +336,52 @@ public class SQLiteBridge {
         if (isOpen()) {
             Log.e(LOGTAG, "Bridge finalized without closing the database");
             close();
+        }
+    }
+
+    private static void prepareWAL(final SQLiteBridge bridge) {
+        // Prepare for WAL mode. If we can, we switch to journal_mode=WAL, then
+        // set the checkpoint size appropriately. If we can't, then we fall back
+        // to truncating and synchronous writes.
+        final Cursor cursor = bridge.internalQuery("PRAGMA journal_mode=WAL", null);
+        try {
+            if (cursor.moveToFirst()) {
+                String journalMode = cursor.getString(0);
+                Log.d(LOGTAG, "Journal mode: " + journalMode);
+                if ("wal".equals(journalMode)) {
+                    // Success! Let's make sure we autocheckpoint at a reasonable interval.
+                    final int pageSizeBytes = bridge.getPageSizeBytes();
+                    final int checkpointPageCount = MAX_WAL_SIZE_BYTES / pageSizeBytes;
+                    bridge.execSQL("PRAGMA wal_autocheckpoint=" + checkpointPageCount);
+                } else {
+                    if (!"truncate".equals(journalMode)) {
+                        Log.w(LOGTAG, "Unable to activate WAL journal mode. Using truncate instead.");
+                        bridge.execSQL("PRAGMA journal_mode=TRUNCATE");
+                    }
+                    Log.w(LOGTAG, "Not using WAL mode: using synchronous=FULL instead.");
+                    bridge.execSQL("PRAGMA synchronous=FULL");
+                }
+            }
+        } finally {
+            cursor.close();
+        }
+    }
+
+    private int getPageSizeBytes() {
+        if (!isOpen()) {
+            throw new IllegalStateException("Database not open.");
+        }
+
+        final Cursor cursor = internalQuery("PRAGMA page_size", null);
+        try {
+            if (!cursor.moveToFirst()) {
+                Log.w(LOGTAG, "Unable to retrieve page size.");
+                return DEFAULT_PAGE_SIZE_BYTES;
+            }
+
+            return cursor.getInt(0);
+        } finally {
+            cursor.close();
         }
     }
 }

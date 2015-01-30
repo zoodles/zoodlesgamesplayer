@@ -3,12 +3,13 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-// The panel module currently supports only Firefox.
+// The panel module currently supports only Firefox and SeaMonkey.
 // See: https://bugzilla.mozilla.org/show_bug.cgi?id=jetpack-panel-apps
 module.metadata = {
   "stability": "stable",
   "engines": {
-    "Firefox": "*"
+    "Firefox": "*",
+    "SeaMonkey": "*"
   }
 };
 
@@ -18,7 +19,7 @@ const { isPrivateBrowsingSupported } = require('./self');
 const { isWindowPBSupported } = require('./private-browsing/utils');
 const { Class } = require("./core/heritage");
 const { merge } = require("./util/object");
-const { WorkerHost, detach, attach, destroy } = require("./content/utils");
+const { WorkerHost } = require("./content/utils");
 const { Worker } = require("./content/worker");
 const { Disposable } = require("./core/disposable");
 const { WeakReference } = require('./core/reference');
@@ -34,6 +35,8 @@ const { getNodeView, getActiveView } = require("./view/core");
 const { isNil, isObject, isNumber } = require("./lang/type");
 const { getAttachEventType } = require("./content/utils");
 const { number, boolean, object } = require('./deprecated/api-utils');
+const { Style } = require("./stylesheet/style");
+const { attach, detach } = require("./content/mod");
 
 let isRect = ({top, right, bottom, left}) => [top, right, bottom, left].
   some(value => isNumber(value) && !isNaN(value));
@@ -63,7 +66,17 @@ let displayContract = contract({
   position: position
 });
 
-let panelContract = contract(merge({}, displayContract.rules, loaderContract.rules));
+let panelContract = contract(merge({
+  // contentStyle* / contentScript* are sharing the same validation constraints,
+  // so they can be mostly reused, except for the messages.
+  contentStyle: merge(Object.create(loaderContract.rules.contentScript), {
+    msg: 'The `contentStyle` option must be a string or an array of strings.'
+  }),
+  contentStyleFile: merge(Object.create(loaderContract.rules.contentScriptFile), {
+    msg: 'The `contentStyleFile` option must be a local URL or an array of URLs'
+  }),
+  contextMenu: boolean
+}, displayContract.rules, loaderContract.rules));
 
 
 function isDisposed(panel) !views.has(panel);
@@ -72,12 +85,13 @@ let panels = new WeakMap();
 let models = new WeakMap();
 let views = new WeakMap();
 let workers = new WeakMap();
+let styles = new WeakMap();
 
-function viewFor(panel) views.get(panel)
-function modelFor(panel) models.get(panel)
-function panelFor(view) panels.get(view)
-function workerFor(panel) workers.get(panel)
-
+const viewFor = (panel) => views.get(panel);
+const modelFor = (panel) => models.get(panel);
+const panelFor = (view) => panels.get(view);
+const workerFor = (panel) => workers.get(panel);
+const styleFor = (panel) => styles.get(panel);
 
 // Utility function takes `panel` instance and makes sure it will be
 // automatically hidden as soon as other panel is shown.
@@ -122,9 +136,17 @@ const Panel = Class({
       defaultHeight: 240,
       focus: true,
       position: Object.freeze({}),
+      contextMenu: false
     }, panelContract(options));
+    model.ready = false;
     models.set(this, model);
 
+    if (model.contentStyle || model.contentStyleFile) {
+      styles.set(this, Style({
+        uri: model.contentStyleFile,
+        source: model.contentStyle
+      }));
+    }
 
     // Setup view
     let view = domPanel.make();
@@ -133,6 +155,9 @@ const Panel = Class({
 
     // Load panel content.
     domPanel.setURL(view, model.contentURL);
+    
+    // Allow context menu
+    domPanel.allowContextMenu(view, model.contextMenu);
 
     setupAutoHide(this);
 
@@ -148,7 +173,8 @@ const Panel = Class({
     this.hide();
     off(this);
 
-    destroy(workerFor(this));
+    workerFor(this).destroy();
+    detach(styleFor(this));
 
     domPanel.dispose(viewFor(this));
 
@@ -169,7 +195,15 @@ const Panel = Class({
 
   /* Public API: Panel.position */
   get position() modelFor(this).position,
-
+  
+  /* Public API: Panel.contextMenu */
+  get contextMenu() modelFor(this).contextMenu,
+  set contextMenu(allow) {
+    let model = modelFor(this);
+    model.contextMenu = panelContract({ contextMenu: allow }).contextMenu;
+    domPanel.allowContextMenu(viewFor(this), model.contextMenu);
+  },
+    
   get contentURL() modelFor(this).contentURL,
   set contentURL(value) {
     let model = modelFor(this);
@@ -177,7 +211,7 @@ const Panel = Class({
     domPanel.setURL(viewFor(this), model.contentURL);
     // Detach worker so that messages send will be queued until it's
     // reatached once panel content is ready.
-    detach(workerFor(this));
+    workerFor(this).detach();
   },
 
   /* Public API: Panel.isShowing */
@@ -207,7 +241,8 @@ const Panel = Class({
       height: model.height,
       defaultWidth: model.defaultWidth,
       defaultHeight: model.defaultHeight,
-      focus: model.focus
+      focus: model.focus,
+      contextMenu: model.contextMenu
     }, displayContract(options));
 
     if (!isDisposed(this))
@@ -262,12 +297,40 @@ let hides = filter(panelEvents, ({type}) => type === "popuphidden");
 let ready = filter(panelEvents, ({type, target}) =>
   getAttachEventType(modelFor(panelFor(target))) === type);
 
+// Styles should be always added as soon as possible, and doesn't makes them
+// depends on `contentScriptWhen`
+let start = filter(panelEvents, ({type}) => type === "document-element-inserted");
+
 // Forward panel show / hide events to panel's own event listeners.
-on(shows, "data", ({target}) => emit(panelFor(target), "show"));
+on(shows, "data", ({target}) => {
+  let panel = panelFor(target);
+  if (modelFor(panel).ready)
+    emit(panel, "show");
+});
 
-on(hides, "data", ({target}) => emit(panelFor(target), "hide"));
+on(hides, "data", ({target}) => {
+  let panel = panelFor(target);
+  if (modelFor(panel).ready)
+    emit(panel, "hide");
+});
 
-on(ready, "data", function({target}) {
-  let worker = workerFor(panelFor(target));
-  attach(worker, domPanel.getContentDocument(target).defaultView);
+on(ready, "data", ({target}) => {
+  let panel = panelFor(target);
+  let window = domPanel.getContentDocument(target).defaultView;
+
+  workerFor(panel).attach(window);
+
+  if (!modelFor(panel).ready) {
+    modelFor(panel).ready = true;
+
+    if (viewFor(panel).state == "open")
+      emit(panel, "show");
+  }
+});
+
+on(start, "data", ({target}) => {
+  let panel = panelFor(target);
+  let window = domPanel.getContentDocument(target).defaultView;
+
+  attach(styleFor(panel), window);
 });

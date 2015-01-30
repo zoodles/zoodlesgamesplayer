@@ -9,18 +9,13 @@ import java.util.Map;
 import java.util.Set;
 
 import org.mozilla.gecko.background.helpers.AndroidSyncTestCase;
-import org.mozilla.gecko.sync.PrefsSource;
 import org.mozilla.gecko.sync.SyncConfiguration;
 
 import android.content.SharedPreferences;
 
-public class TestSyncConfiguration extends AndroidSyncTestCase implements PrefsSource {
+public class TestSyncConfiguration extends AndroidSyncTestCase {
   public static final String TEST_PREFS_NAME = "test";
 
-  /*
-   * PrefsSource methods.
-   */
-  @Override
   public SharedPreferences getPrefs(String name, int mode) {
     return this.getApplicationContext().getSharedPreferences(name, mode);
   }
@@ -49,7 +44,8 @@ public class TestSyncConfiguration extends AndroidSyncTestCase implements PrefsS
     config.persistToPrefs();
     assertFalse(prefs.contains(SyncConfiguration.PREF_DECLINED_ENGINE_NAMES));
     config = newSyncConfiguration();
-    assertNull(config.declinedEngineNames);
+    assertNotNull(config.declinedEngineNames);
+    assertTrue(config.declinedEngineNames.isEmpty());
   }
 
   public void testEnabledEngineNames() {
@@ -145,6 +141,6 @@ public class TestSyncConfiguration extends AndroidSyncTestCase implements PrefsS
   }
 
   protected SyncConfiguration newSyncConfiguration() {
-    return new SyncConfiguration(null, null, TEST_PREFS_NAME, this);
+    return new SyncConfiguration(null, null, getPrefs(TEST_PREFS_NAME, 0));
   }
 }

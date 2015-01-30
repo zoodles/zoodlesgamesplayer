@@ -47,11 +47,16 @@ struct DllBlockInfo {
   // Note that the version is usually 4 components, which is A.B.C.D
   // encoded as 0x AAAA BBBB CCCC DDDD ULL (spaces added for clarity),
   // but it's not required to be of that format.
+  //
+  // If the USE_TIMESTAMP flag is set, then we use the timestamp from
+  // the IMAGE_FILE_HEADER in lieu of a version number.
   unsigned long long maxVersion;
 
   enum {
     FLAGS_DEFAULT = 0,
-    BLOCK_WIN8PLUS_ONLY = 1
+    BLOCK_WIN8PLUS_ONLY = 1,
+    BLOCK_XP_ONLY = 2,
+    USE_TIMESTAMP = 4,
   } flags;
 };
 
@@ -139,6 +144,26 @@ static DllBlockInfo sWindowsDllBlocklist[] = {
 
   // Topcrash with Conduit SearchProtect, bug 944542
   { "spvc32.dll", ALL_VERSIONS },
+
+  // XP topcrash with F-Secure, bug 970362
+  { "fs_ccf_ni_umh32.dll", MAKE_VERSION(1, 42, 101, 0), DllBlockInfo::BLOCK_XP_ONLY },
+
+  // Topcrash with V-bates, bug 1002748 and bug 1023239
+  { "libinject.dll", UNVERSIONED },
+  { "libinject2.dll", 0x537DDC93, DllBlockInfo::USE_TIMESTAMP },
+  { "libredir2.dll", 0x5385B7ED, DllBlockInfo::USE_TIMESTAMP },
+
+  // Crashes with RoboForm2Go written against old SDK, bug 988311
+  { "rf-firefox-22.dll", ALL_VERSIONS },
+
+  // Crashes with DesktopTemperature, bug 1046382
+  { "dtwxsvc.dll", 0x53153234, DllBlockInfo::USE_TIMESTAMP },
+
+  // Startup crashes with Lenovo Onekey Theater, bug 1123778
+  { "activedetect32.dll", UNVERSIONED },
+  { "activedetect64.dll", UNVERSIONED },
+  { "windowsapihookdll32.dll", UNVERSIONED },
+  { "windowsapihookdll64.dll", UNVERSIONED },
 
   { nullptr, 0 }
 };
@@ -260,6 +285,33 @@ CheckASLR(const wchar_t* path)
   }
 
   return retval;
+}
+
+DWORD
+GetTimestamp(const wchar_t* path)
+{
+  DWORD timestamp = 0;
+
+  HANDLE file = ::CreateFileW(path, GENERIC_READ, FILE_SHARE_READ,
+                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                              nullptr);
+  if (file != INVALID_HANDLE_VALUE) {
+    HANDLE map = ::CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0,
+                                      nullptr);
+    if (map) {
+      RVAMap<IMAGE_DOS_HEADER> peHeader(map, 0);
+      if (peHeader) {
+        RVAMap<IMAGE_NT_HEADERS> ntHeader(map, peHeader->e_lfanew);
+        if (ntHeader) {
+          timestamp = ntHeader->FileHeader.TimeDateStamp;
+        }
+      }
+      ::CloseHandle(map);
+    }
+    ::CloseHandle(file);
+  }
+
+  return timestamp;
 }
 
 // This lock protects both the reentrancy sentinel and the crash reporter
@@ -444,6 +496,7 @@ patched_LdrLoadDll (PWCHAR filePath, PULONG flags, PUNICODE_STRING moduleFileNam
 #define DLLNAME_MAX 128
   char dllName[DLLNAME_MAX+1];
   wchar_t *dll_part;
+  char *dot;
   DllBlockInfo *info;
 
   int len = moduleFileName->Length / 2;
@@ -508,6 +561,17 @@ patched_LdrLoadDll (PWCHAR filePath, PULONG flags, PUNICODE_STRING moduleFileNam
   printf_stderr("LdrLoadDll: dll name '%s'\n", dllName);
 #endif
 
+  // Block a suspicious binary that uses various 12-digit hex strings
+  // e.g. MovieMode.48CA2AEFA22D.dll (bug 973138)
+  dot = strchr(dllName, '.');
+  if (dot && (strchr(dot+1, '.') == dot+13)) {
+    char * end = nullptr;
+    _strtoui64(dot+1, &end, 16);
+    if (end == dot+13) {
+      return STATUS_DLL_NOT_FOUND;
+    }
+  }
+
   // then compare to everything on the blocklist
   info = &sWindowsDllBlocklist[0];
   while (info->name) {
@@ -529,6 +593,11 @@ patched_LdrLoadDll (PWCHAR filePath, PULONG flags, PUNICODE_STRING moduleFileNam
       goto continue_loading;
     }
 
+    if ((info->flags == DllBlockInfo::BLOCK_XP_ONLY) &&
+        IsWin2003OrLater()) {
+      goto continue_loading;
+    }
+
     unsigned long long fVersion = ALL_VERSIONS;
 
     if (info->maxVersion != ALL_VERSIONS) {
@@ -544,27 +613,34 @@ patched_LdrLoadDll (PWCHAR filePath, PULONG flags, PUNICODE_STRING moduleFileNam
         return STATUS_DLL_NOT_FOUND;
       }
 
-      DWORD zero;
-      DWORD infoSize = GetFileVersionInfoSizeW(full_fname, &zero);
+      if (info->flags & DllBlockInfo::USE_TIMESTAMP) {
+        fVersion = GetTimestamp(full_fname);
+        if (fVersion > info->maxVersion) {
+          load_ok = true;
+        }
+      } else {
+        DWORD zero;
+        DWORD infoSize = GetFileVersionInfoSizeW(full_fname, &zero);
 
-      // If we failed to get the version information, we block.
+        // If we failed to get the version information, we block.
 
-      if (infoSize != 0) {
-        nsAutoArrayPtr<unsigned char> infoData(new unsigned char[infoSize]);
-        VS_FIXEDFILEINFO *vInfo;
-        UINT vInfoLen;
+        if (infoSize != 0) {
+          nsAutoArrayPtr<unsigned char> infoData(new unsigned char[infoSize]);
+          VS_FIXEDFILEINFO *vInfo;
+          UINT vInfoLen;
 
-        if (GetFileVersionInfoW(full_fname, 0, infoSize, infoData) &&
-            VerQueryValueW(infoData, L"\\", (LPVOID*) &vInfo, &vInfoLen))
-        {
-          fVersion =
-            ((unsigned long long)vInfo->dwFileVersionMS) << 32 |
-            ((unsigned long long)vInfo->dwFileVersionLS);
+          if (GetFileVersionInfoW(full_fname, 0, infoSize, infoData) &&
+              VerQueryValueW(infoData, L"\\", (LPVOID*) &vInfo, &vInfoLen))
+          {
+            fVersion =
+              ((unsigned long long)vInfo->dwFileVersionMS) << 32 |
+              ((unsigned long long)vInfo->dwFileVersionLS);
 
-          // finally do the version check, and if it's greater than our block
-          // version, keep loading
-          if (fVersion > info->maxVersion)
-            load_ok = true;
+            // finally do the version check, and if it's greater than our block
+            // version, keep loading
+            if (fVersion > info->maxVersion)
+              load_ok = true;
+          }
         }
       }
     }

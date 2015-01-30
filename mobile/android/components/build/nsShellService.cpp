@@ -8,9 +8,9 @@
 
 #include "AndroidBridge.h"
 
-using namespace mozilla::widget::android;
+using namespace mozilla;
 
-NS_IMPL_ISUPPORTS1(nsShellService, nsIShellService)
+NS_IMPL_ISUPPORTS(nsShellService, nsIShellService)
 
 NS_IMETHODIMP
 nsShellService::SwitchTask()
@@ -19,11 +19,12 @@ nsShellService::SwitchTask()
 }
 
 NS_IMETHODIMP
-nsShellService::CreateShortcut(const nsAString& aTitle, const nsAString& aURI, const nsAString& aIconData, const nsAString& aIntent)
+nsShellService::CreateShortcut(const nsAString& aTitle, const nsAString& aURI,
+                                const nsAString& aIconData, const nsAString& aIntent)
 {
   if (!aTitle.Length() || !aURI.Length() || !aIconData.Length())
     return NS_ERROR_FAILURE;
 
-  GeckoAppShell::CreateShortcut(aTitle, aURI, aIconData, aIntent);
+  widget::GeckoAppShell::CreateShortcut(aTitle, aURI, aIconData);
   return NS_OK;
 }

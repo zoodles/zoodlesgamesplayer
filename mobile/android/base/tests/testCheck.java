@@ -1,4 +1,9 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 package org.mozilla.gecko.tests;
+
 
 public class testCheck extends PixelTest {
     private void pause(int length) {
@@ -10,8 +15,8 @@ public class testCheck extends PixelTest {
     }
 
     @Override
-    protected int getTestType() {
-        return TEST_TALOS;
+    protected Type getTestType() {
+        return Type.TALOS;
     }
 
     public void testCheck() {

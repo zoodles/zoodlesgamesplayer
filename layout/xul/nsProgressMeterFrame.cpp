@@ -63,7 +63,7 @@ nsReflowFrameRunnable::Run()
 nsIFrame*
 NS_NewProgressMeterFrame (nsIPresShell* aPresShell, nsStyleContext* aContext)
 {
-  return new (aPresShell) nsProgressMeterFrame(aPresShell, aContext);
+  return new (aPresShell) nsProgressMeterFrame(aContext);
 }
 
 NS_IMPL_FRAMEARENA_HELPERS(nsProgressMeterFrame)
@@ -80,7 +80,7 @@ nsProgressMeterFrame :: ~nsProgressMeterFrame ( )
 class nsAsyncProgressMeterInit MOZ_FINAL : public nsIReflowCallback
 {
 public:
-  nsAsyncProgressMeterInit(nsIFrame* aFrame) : mWeakFrame(aFrame) {}
+  explicit nsAsyncProgressMeterInit(nsIFrame* aFrame) : mWeakFrame(aFrame) {}
 
   virtual bool ReflowFinished() MOZ_OVERRIDE
   {

@@ -11,6 +11,7 @@
 
 #include "nsIPersistentProperties2.h"
 #include "nsNetUtil.h"
+#include "nsContentUtils.h"
 #include "nsCRT.h"
 
 // operator dictionary entry
@@ -221,8 +222,12 @@ InitOperators(void)
   // Load the property file containing the Operator Dictionary
   nsresult rv;
   nsCOMPtr<nsIPersistentProperties> mathfontProp;
-  rv = NS_LoadPersistentPropertiesFromURISpec(getter_AddRefs(mathfontProp),
-       NS_LITERAL_CSTRING("resource://gre/res/fonts/mathfont.properties"));
+  rv = NS_LoadPersistentPropertiesFromURISpec(
+         getter_AddRefs(mathfontProp),
+         NS_LITERAL_CSTRING("resource://gre/res/fonts/mathfont.properties"),
+         nsContentUtils::GetSystemPrincipal(),
+         nsIContentPolicy::TYPE_OTHER);
+
   if (NS_FAILED(rv)) return rv;
 
   // Parse the Operator Dictionary in two passes.
@@ -426,25 +431,6 @@ nsMathMLOperators::LookupOperators(const nsString&       aOperator,
       aTrailingSpace[NS_MATHML_OPERATOR_FORM_PREFIX] = found->mTrailingSpace;
     }
   }
-}
-
-bool
-nsMathMLOperators::IsMutableOperator(const nsString& aOperator)
-{
-  if (!gGlobalsInitialized) {
-    InitGlobals();
-  }
-  // lookup all the variants of the operator and return true if there
-  // is a variant that is stretchy or largeop
-  nsOperatorFlags flags[4];
-  float lspace[4], rspace[4];
-  nsMathMLOperators::LookupOperators(aOperator, flags, lspace, rspace);
-  nsOperatorFlags allFlags =
-    flags[NS_MATHML_OPERATOR_FORM_INFIX] |
-    flags[NS_MATHML_OPERATOR_FORM_POSTFIX] |
-    flags[NS_MATHML_OPERATOR_FORM_PREFIX];
-  return NS_MATHML_OPERATOR_IS_STRETCHY(allFlags) ||
-         NS_MATHML_OPERATOR_IS_LARGEOP(allFlags);
 }
 
 /* static */ bool

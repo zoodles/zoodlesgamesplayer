@@ -19,7 +19,7 @@ import java.util.List;
 public class GeckoActivity extends FragmentActivity implements GeckoActivityStatus {
 	private static final String KID_MODE_PACKAGE = "com.zoodles.kidmode";
 	// has this activity recently started another Gecko activity?
-    private boolean mGeckoActivityOpened = false;
+    private boolean mGeckoActivityOpened;
 
     /**
      * Display any resources that show strings or encompass locale-specific

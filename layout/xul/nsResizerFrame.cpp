@@ -38,13 +38,13 @@ using namespace mozilla;
 nsIFrame*
 NS_NewResizerFrame(nsIPresShell* aPresShell, nsStyleContext* aContext)
 {
-  return new (aPresShell) nsResizerFrame(aPresShell, aContext);
+  return new (aPresShell) nsResizerFrame(aContext);
 }
 
 NS_IMPL_FRAMEARENA_HELPERS(nsResizerFrame)
 
-nsResizerFrame::nsResizerFrame(nsIPresShell* aPresShell, nsStyleContext* aContext)
-:nsTitleBarFrame(aPresShell, aContext)
+nsResizerFrame::nsResizerFrame(nsStyleContext* aContext)
+:nsTitleBarFrame(aContext)
 {
 }
 
@@ -64,8 +64,8 @@ nsResizerFrame::HandleEvent(nsPresContext* aPresContext,
   switch (aEvent->message) {
     case NS_TOUCH_START:
     case NS_MOUSE_BUTTON_DOWN: {
-      if (aEvent->eventStructType == NS_TOUCH_EVENT ||
-          (aEvent->eventStructType == NS_MOUSE_EVENT &&
+      if (aEvent->mClass == eTouchEventClass ||
+          (aEvent->mClass == eMouseEventClass &&
            aEvent->AsMouseEvent()->button == WidgetMouseEvent::eLeftButton)) {
         nsCOMPtr<nsIBaseWindow> window;
         nsIPresShell* presShell = aPresContext->GetPresShell();
@@ -129,8 +129,8 @@ nsResizerFrame::HandleEvent(nsPresContext* aPresContext,
 
   case NS_TOUCH_END:
   case NS_MOUSE_BUTTON_UP: {
-    if (aEvent->eventStructType == NS_TOUCH_EVENT ||
-        (aEvent->eventStructType == NS_MOUSE_EVENT &&
+    if (aEvent->mClass == eTouchEventClass ||
+        (aEvent->mClass == eMouseEventClass &&
          aEvent->AsMouseEvent()->button == WidgetMouseEvent::eLeftButton)) {
       // we're done tracking.
       mTrackingMouseMove = false;
@@ -253,8 +253,8 @@ nsResizerFrame::HandleEvent(nsPresContext* aPresContext,
 
           // convert the new rectangle into outer window coordinates
           nsIntPoint clientOffset = widget->GetClientOffset();
-          rect.x -= clientOffset.x; 
-          rect.y -= clientOffset.y; 
+          rect.x -= clientOffset.x;
+          rect.y -= clientOffset.y;
         }
 
         SizeInfo sizeInfo, originalSizeInfo;
@@ -271,6 +271,9 @@ nsResizerFrame::HandleEvent(nsPresContext* aPresContext,
             (oldRect.x != rect.x || oldRect.y != rect.y) &&
             (!menuPopupFrame->IsAnchored() ||
              menuPopupFrame->PopupLevel() != ePopupLevelParent)) {
+
+          rect.x = aPresContext->DevPixelsToIntCSSPixels(rect.x);
+          rect.y = aPresContext->DevPixelsToIntCSSPixels(rect.y);
           menuPopupFrame->MoveTo(rect.x, rect.y, true);
         }
       }
@@ -499,21 +502,28 @@ nsResizerFrame::GetDirection()
      {-1,  1},          {1,  1}
     };
 
-  if (!GetContent())
+  if (!GetContent()) {
     return directions[0]; // default: topleft
+  }
 
   int32_t index = GetContent()->FindAttrValueIn(kNameSpaceID_None,
                                                 nsGkAtoms::dir,
                                                 strings, eCaseMatters);
-  if(index < 0)
+  if (index < 0) {
     return directions[0]; // default: topleft
-  else if (index >= 8 && StyleVisibility()->mDirection == NS_STYLE_DIRECTION_RTL) {
+  }
+
+  if (index >= 8) {
     // Directions 8 and higher are RTL-aware directions and should reverse the
     // horizontal component if RTL.
-    Direction direction = directions[index];
-    direction.mHorizontal *= -1;
-    return direction;
+    WritingMode wm = GetWritingMode();
+    if (!(wm.IsVertical() ? wm.IsVerticalLR() : wm.IsBidiLTR())) {
+      Direction direction = directions[index];
+      direction.mHorizontal *= -1;
+      return direction;
+    }
   }
+
   return directions[index];
 }
 

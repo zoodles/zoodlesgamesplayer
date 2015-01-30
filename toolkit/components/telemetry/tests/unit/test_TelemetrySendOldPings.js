@@ -23,7 +23,13 @@ Cu.import("resource://gre/modules/Promise.jsm", this);
 Cu.import("resource://gre/modules/TelemetryFile.jsm", this);
 Cu.import("resource://gre/modules/TelemetryPing.jsm", this);
 Cu.import("resource://gre/modules/Task.jsm", this);
+Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 let {OS: {File, Path, Constants}} = Cu.import("resource://gre/modules/osfile.jsm", {});
+
+XPCOMUtils.defineLazyGetter(this, "gDatareportingService",
+  () => Cc["@mozilla.org/datareporting/service;1"]
+          .getService(Ci.nsISupports)
+          .wrappedJSObject);
 
 // We increment TelemetryFile's MAX_PING_FILE_AGE and
 // OVERDUE_PING_FILE_AGE by 1 minute so that our test pings exceed
@@ -37,6 +43,7 @@ const PING_TIMEOUT_LENGTH = 5000;
 const EXPIRED_PINGS = 5;
 const OVERDUE_PINGS = 6;
 const RECENT_PINGS = 4;
+const LRU_PINGS = TelemetryFile.MAX_LRU_PINGS;
 
 const TOTAL_EXPECTED_PINGS = OVERDUE_PINGS + RECENT_PINGS;
 
@@ -189,6 +196,12 @@ function run_test() {
   gHttpServer.registerPrefixHandler("/submit/telemetry/", pingHandler);
   gHttpServer.start(-1);
   do_get_profile();
+
+  // Send the needed startup notifications to the datareporting service
+  // to ensure that it has been initialized.
+  gDatareportingService.observe(null, "app-startup", null);
+  gDatareportingService.observe(null, "profile-after-change", null);
+
   Services.prefs.setBoolPref(TelemetryPing.Constants.PREF_ENABLED, true);
   Services.prefs.setCharPref(TelemetryPing.Constants.PREF_SERVER,
                              "http://localhost:" + gHttpServer.identity.primaryPort);
@@ -199,7 +212,7 @@ function run_test() {
  * Test that pings that are considered too old are just chucked out
  * immediately and never sent.
  */
-add_task(function test_expired_pings_are_deleted() {
+add_task(function* test_expired_pings_are_deleted() {
   let expiredPings = yield createSavedPings(EXPIRED_PINGS, EXPIRED_PING_FILE_AGE);
   yield startTelemetry();
   assertReceivedPings(0);
@@ -210,7 +223,7 @@ add_task(function test_expired_pings_are_deleted() {
 /**
  * Test that really recent pings are not sent on Telemetry initialization.
  */
-add_task(function test_recent_pings_not_sent() {
+add_task(function* test_recent_pings_not_sent() {
   let recentPings = yield createSavedPings(RECENT_PINGS);
   yield startTelemetry();
   assertReceivedPings(0);
@@ -219,11 +232,33 @@ add_task(function test_recent_pings_not_sent() {
 });
 
 /**
+ * Test that only the most recent LRU_PINGS pings are kept at startup.
+ */
+add_task(function* test_most_recent_pings_kept() {
+  let head = yield createSavedPings(LRU_PINGS);
+  let tail = yield createSavedPings(3, ONE_MINUTE_MS);
+  let pings = head.concat(tail);
+
+  yield startTelemetry();
+  let gen = TelemetryFile.popPendingPings();
+
+  for (let item of gen) {
+    for (let p of tail) {
+      do_check_neq(p.slug, item.slug);
+    }
+  }
+
+  assertNotSaved(tail);
+  yield resetTelemetry();
+  yield clearPings(pings);
+});
+
+/**
  * Create some recent, expired and overdue pings. The overdue pings should
  * trigger a send of all recent and overdue pings, but the expired pings
  * should just be deleted.
  */
-add_task(function test_overdue_pings_trigger_send() {
+add_task(function* test_overdue_pings_trigger_send() {
   let recentPings = yield createSavedPings(RECENT_PINGS);
   let expiredPings = yield createSavedPings(EXPIRED_PINGS, EXPIRED_PING_FILE_AGE);
   let overduePings = yield createSavedPings(OVERDUE_PINGS, OVERDUE_PING_FILE_AGE);
@@ -237,6 +272,6 @@ add_task(function test_overdue_pings_trigger_send() {
   yield resetTelemetry();
 });
 
-add_task(function teardown() {
+add_task(function* teardown() {
   yield stopHttpServer();
 });

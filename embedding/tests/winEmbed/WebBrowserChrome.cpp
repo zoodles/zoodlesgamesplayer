@@ -366,6 +366,12 @@ WebBrowserChrome::OnHistoryPurge(int32_t aNumEntries, bool *aContinue)
     return SendHistoryStatusMessage(nullptr, "purge", aNumEntries);
 }
 
+NS_IMETHODIMP
+WebBrowserChrome::OnHistoryReplaceEntry(int32_t aIndex)
+{
+    return SendHistoryStatusMessage(nullptr, "replace", aIndex);
+}
+
 static void
 AppendIntToCString(int32_t info1, nsCString& aResult)
 {
@@ -388,13 +394,13 @@ WebBrowserChrome::SendHistoryStatusMessage(nsIURI * aURI, char * operation, int3
 
     if(!(strcmp(operation, "back")))
     {
-        status.Assign("Going back to url: ");
+        status.AssignLiteral("Going back to url: ");
         status.Append(uriSpec);
     }
     else if (!(strcmp(operation, "forward")))
     {
         // Going forward. XXX Get string from a resource file
-        status.Assign("Going forward to url: ");
+        status.AssignLiteral("Going forward to url: ");
         status.Append(uriSpec);
     }
     else if (!(strcmp(operation, "reload")))
@@ -403,40 +409,45 @@ WebBrowserChrome::SendHistoryStatusMessage(nsIURI * aURI, char * operation, int3
         if (aReloadFlags & nsIWebNavigation::LOAD_FLAGS_BYPASS_PROXY && 
             aReloadFlags & nsIWebNavigation::LOAD_FLAGS_BYPASS_CACHE)
         {
-            status.Assign("Reloading url, (bypassing proxy and cache): ");
+            status.AssignLiteral("Reloading url, (bypassing proxy and cache): ");
         }
         else if (aReloadFlags & nsIWebNavigation::LOAD_FLAGS_BYPASS_PROXY)
         {
-            status.Assign("Reloading url, (bypassing proxy): ");
+            status.AssignLiteral("Reloading url, (bypassing proxy): ");
         }
         else if (aReloadFlags & nsIWebNavigation::LOAD_FLAGS_BYPASS_CACHE)
         {
-            status.Assign("Reloading url, (bypassing cache): ");
+            status.AssignLiteral("Reloading url, (bypassing cache): ");
         }
         else
         {
-            status.Assign("Reloading url, (normal): ");
+            status.AssignLiteral("Reloading url, (normal): ");
         }
         status.Append(uriSpec);
     }
     else if (!(strcmp(operation, "add")))
     {
         status.Assign(uriSpec);
-        status.Append(" added to session History");
+        status.AppendLiteral(" added to session History");
     }
     else if (!(strcmp(operation, "goto")))
     {
-        status.Assign("Going to HistoryIndex: ");
+        status.AssignLiteral("Going to HistoryIndex: ");
 
 	AppendIntToCString(info1, status);
 
-        status.Append(" Url: ");
+        status.AppendLiteral(" Url: ");
         status.Append(uriSpec);
     }
     else if (!(strcmp(operation, "purge")))
     {
         AppendIntToCString(info1, status);
-        status.Append(" purged from Session History");
+        status.AppendLiteral(" purged from Session History");
+    }
+    else if (!(strcmp(operation, "replace")))
+    {
+        status.AssignLiteral("Replacing HistoryIndex: ");
+        AppendIntToCString(info1, status);
     }
 
     nsString wstatus;

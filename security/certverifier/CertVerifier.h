@@ -9,8 +9,11 @@
 
 #include "pkix/pkixtypes.h"
 #include "OCSPCache.h"
+#include "ScopedNSSTypes.h"
 
 namespace mozilla { namespace psm {
+
+struct ChainValidationCallbackState;
 
 class CertVerifier
 {
@@ -21,35 +24,45 @@ public:
   // Don't perform fallback DV validation on EV validation failure.
   static const Flags FLAG_MUST_BE_EV;
 
+  // These values correspond to the SSL_OCSP_STAPLING telemetry.
+  enum OCSPStaplingStatus {
+    OCSP_STAPLING_NEVER_CHECKED = 0,
+    OCSP_STAPLING_GOOD = 1,
+    OCSP_STAPLING_NONE = 2,
+    OCSP_STAPLING_EXPIRED = 3,
+    OCSP_STAPLING_INVALID = 4,
+  };
+
   // *evOidPolicy == SEC_OID_UNKNOWN means the cert is NOT EV
   // Only one usage per verification is supported.
   SECStatus VerifyCert(CERTCertificate* cert,
-          /*optional*/ const SECItem* stapledOCSPResponse,
-                       const SECCertificateUsage usage,
-                       const PRTime time,
+                       SECCertificateUsage usage,
+                       mozilla::pkix::Time time,
                        void* pinArg,
-                       const Flags flags = 0,
-      /*optional out*/ mozilla::pkix::ScopedCERTCertList* validationChain = nullptr,
-      /*optional out*/ SECOidTag* evOidPolicy = nullptr ,
-      /*optional out*/ CERTVerifyLog* verifyLog = nullptr);
+                       const char* hostname,
+                       Flags flags = 0,
+       /*optional in*/ const SECItem* stapledOCSPResponse = nullptr,
+      /*optional out*/ ScopedCERTCertList* builtChain = nullptr,
+      /*optional out*/ SECOidTag* evOidPolicy = nullptr,
+      /*optional out*/ OCSPStaplingStatus* ocspStaplingStatus = nullptr);
 
   SECStatus VerifySSLServerCert(
                     CERTCertificate* peerCert,
        /*optional*/ const SECItem* stapledOCSPResponse,
-                    PRTime time,
+                    mozilla::pkix::Time time,
        /*optional*/ void* pinarg,
                     const char* hostname,
                     bool saveIntermediatesInPermanentDatabase = false,
-   /*optional out*/ mozilla::pkix::ScopedCERTCertList* certChainOut = nullptr,
-   /*optional out*/ SECOidTag* evOidPolicy = nullptr);
+                    Flags flags = 0,
+   /*optional out*/ ScopedCERTCertList* builtChain = nullptr,
+   /*optional out*/ SECOidTag* evOidPolicy = nullptr,
+   /*optional out*/ OCSPStaplingStatus* ocspStaplingStatus = nullptr);
 
-
-  enum implementation_config {
-    classic = 0,
-#ifndef NSS_NO_LIBPKIX
-    libpkix = 1,
-#endif
-    mozillapkix = 2
+  enum PinningMode {
+    pinningDisabled = 0,
+    pinningAllowUserCAMITM = 1,
+    pinningStrict = 2,
+    pinningEnforceTestMode = 3
   };
 
   enum missing_cert_download_config { missing_cert_download_off = 0, missing_cert_download_on };
@@ -60,39 +73,27 @@ public:
 
   bool IsOCSPDownloadEnabled() const { return mOCSPDownloadEnabled; }
 
-  CertVerifier(implementation_config ic,
-#ifndef NSS_NO_LIBPKIX
-               missing_cert_download_config ac, crl_download_config cdc,
-#endif
-               ocsp_download_config odc, ocsp_strict_config osc,
-               ocsp_get_config ogc);
+  CertVerifier(ocsp_download_config odc, ocsp_strict_config osc,
+               ocsp_get_config ogc, PinningMode pinningMode);
   ~CertVerifier();
 
   void ClearOCSPCache() { mOCSPCache.Clear(); }
 
-  const implementation_config mImplementation;
-#ifndef NSS_NO_LIBPKIX
-  const bool mMissingCertDownloadEnabled;
-  const bool mCRLDownloadEnabled;
-#endif
   const bool mOCSPDownloadEnabled;
   const bool mOCSPStrict;
   const bool mOCSPGETEnabled;
+  const PinningMode mPinningMode;
 
 private:
-  SECStatus MozillaPKIXVerifyCert(CERTCertificate* cert,
-      const SECCertificateUsage usage,
-      const PRTime time,
-      void* pinArg,
-      const Flags flags,
-      /*optional*/ const SECItem* stapledOCSPResponse,
-      /*optional out*/ mozilla::pkix::ScopedCERTCertList* validationChain,
-      /*optional out*/ SECOidTag* evOidPolicy);
-
   OCSPCache mOCSPCache;
 };
 
 void InitCertVerifierLog();
+SECStatus IsCertBuiltInRoot(CERTCertificate* cert, bool& result);
+mozilla::pkix::Result CertListContainsExpectedKeys(
+  const CERTCertList* certList, const char* hostname, mozilla::pkix::Time time,
+  CertVerifier::PinningMode pinningMode);
+
 } } // namespace mozilla::psm
 
 #endif // mozilla_psm__CertVerifier_h

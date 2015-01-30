@@ -1,11 +1,14 @@
-package org.mozilla.gecko.tests;
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import org.mozilla.gecko.*;
+package org.mozilla.gecko.tests;
 
 import java.util.ArrayList;
 
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.mozilla.gecko.Actions;
 
 /**
  * The test loads a new private tab and loads a page with a big link on it
@@ -14,11 +17,6 @@ import org.json.JSONObject;
  * Checks that the bigLinkUrl loaded in the normal tab is present in the browsing history but the 2 urls opened in private tabs are not
  */
 public class testPrivateBrowsing extends ContentContextMenuTest {
-
-    @Override
-    protected int getTestType() {
-        return TEST_MOCHITEST;
-    }
 
     public void testPrivateBrowsing() {
         String bigLinkUrl = getAbsoluteUrl(StringHelper.ROBOCOP_BIG_LINK_URL);
@@ -53,7 +51,8 @@ public class testPrivateBrowsing extends ContentContextMenuTest {
         verifyTabCount(2);
 
         // Get the history list and check that the links open in private browsing are not saved
-        ArrayList<String> firefoxHistory = mDatabaseHelper.getBrowserDBUrls(DatabaseHelper.BrowserDataType.HISTORY);
+        final ArrayList<String> firefoxHistory = mDatabaseHelper.getBrowserDBUrls(DatabaseHelper.BrowserDataType.HISTORY);
+
         mAsserter.ok(!firefoxHistory.contains(bigLinkUrl), "Check that the link opened in the first private tab was not saved", bigLinkUrl + " was not added to history");
         mAsserter.ok(!firefoxHistory.contains(blank1Url), "Check that the link opened in the private tab from the context menu was not saved", blank1Url + " was not added to history");
         mAsserter.ok(firefoxHistory.contains(blank2Url), "Check that the link opened in the normal tab was saved", blank2Url + " was added to history");

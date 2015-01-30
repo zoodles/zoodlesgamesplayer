@@ -21,38 +21,44 @@ namespace mozilla {
 namespace layers {
 
 void
-BasicCanvasLayer::Paint(DrawTarget* aTarget, SourceSurface* aMaskSurface)
+BasicCanvasLayer::Paint(DrawTarget* aDT,
+                        const Point& aDeviceOffset,
+                        Layer* aMaskLayer)
 {
   if (IsHidden())
     return;
 
-  FirePreTransactionCallback();
-  UpdateTarget();
-  FireDidTransactionCallback();
+  if (IsDirty()) {
+    Painted();
 
-  PaintWithOpacity(aTarget,
-                   GetEffectiveOpacity(),
-                   aMaskSurface,
-                   GetEffectiveOperator(this));
-}
+    FirePreTransactionCallback();
+    UpdateTarget();
+    FireDidTransactionCallback();
+  }
 
-void
-BasicCanvasLayer::DeprecatedPaint(gfxContext* aContext, Layer* aMaskLayer)
-{
-  if (IsHidden())
+  if (!mSurface) {
     return;
+  }
 
-  FirePreTransactionCallback();
-  DeprecatedUpdateSurface();
-  FireDidTransactionCallback();
+  const bool needsYFlip = (mOriginPos == gl::OriginPos::BottomLeft);
 
-  gfxContext::GraphicsOperator mixBlendMode = DeprecatedGetEffectiveMixBlendMode();
-  DeprecatedPaintWithOpacity(aContext,
-                             GetEffectiveOpacity(),
-                             aMaskLayer,
-                             mixBlendMode != gfxContext::OPERATOR_OVER ?
-                               mixBlendMode :
-                               DeprecatedGetOperator());
+  Matrix oldTM;
+  if (needsYFlip) {
+    oldTM = aDT->GetTransform();
+    aDT->SetTransform(Matrix(oldTM).
+                        PreTranslate(0.0f, mBounds.height).
+                        PreScale(1.0f, -1.0f));
+  }
+
+  FillRectWithMask(aDT, aDeviceOffset,
+                   Rect(0, 0, mBounds.width, mBounds.height),
+                   mSurface, ToFilter(mFilter),
+                   DrawOptions(GetEffectiveOpacity(), GetEffectiveOperator(this)),
+                   aMaskLayer);
+
+  if (needsYFlip) {
+    aDT->SetTransform(oldTM);
+  }
 }
 
 already_AddRefed<CanvasLayer>

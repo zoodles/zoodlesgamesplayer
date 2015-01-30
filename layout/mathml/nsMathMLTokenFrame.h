@@ -34,20 +34,20 @@ public:
 
   virtual eMathMLFrameType GetMathMLFrameType() MOZ_OVERRIDE;
 
-  virtual nsresult
+  virtual void
   SetInitialChildList(ChildListID     aListID,
                       nsFrameList&    aChildList) MOZ_OVERRIDE;
 
-  virtual nsresult
+  virtual void
   AppendFrames(ChildListID            aListID,
                nsFrameList&           aChildList) MOZ_OVERRIDE;
 
-  virtual nsresult
+  virtual void
   InsertFrames(ChildListID            aListID,
                nsIFrame*              aPrevFrame,
                nsFrameList&           aChildList) MOZ_OVERRIDE;
 
-  virtual nsresult
+  virtual void
   Reflow(nsPresContext*          aPresContext,
          nsHTMLReflowMetrics&     aDesiredSize,
          const nsHTMLReflowState& aReflowState,
@@ -59,7 +59,7 @@ public:
         nsHTMLReflowMetrics& aDesiredSize) MOZ_OVERRIDE;
 
 protected:
-  nsMathMLTokenFrame(nsStyleContext* aContext) : nsMathMLContainerFrame(aContext) {}
+  explicit nsMathMLTokenFrame(nsStyleContext* aContext) : nsMathMLContainerFrame(aContext) {}
   virtual ~nsMathMLTokenFrame();
 
   void MarkTextFramesAsTokenMathML();

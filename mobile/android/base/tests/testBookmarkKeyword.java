@@ -1,14 +1,11 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 package org.mozilla.gecko.tests;
 
-import org.mozilla.gecko.*;
 
 public class testBookmarkKeyword extends AboutHomeTest {
-
-    @Override
-    protected int getTestType() {
-        return TEST_MOCHITEST;
-    }
-
     public void testBookmarkKeyword() {
         blockForGeckoReady();
 
@@ -22,11 +19,8 @@ public class testBookmarkKeyword extends AboutHomeTest {
         // Enter the keyword in the urlbar.
         inputAndLoadUrl(keyword);
 
-        // Wait for the page to load.
-        waitForText(StringHelper.ROBOCOP_BLANK_PAGE_01_TITLE);
-
         // Make sure the title of the page appeared.
-        verifyPageTitle(StringHelper.ROBOCOP_BLANK_PAGE_01_TITLE);
+        verifyUrlBarTitle(StringHelper.ROBOCOP_BLANK_PAGE_01_URL);
 
         // Delete the bookmark to clean up.
         mDatabaseHelper.deleteBookmark(url);

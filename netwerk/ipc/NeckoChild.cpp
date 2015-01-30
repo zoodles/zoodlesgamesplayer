@@ -9,6 +9,7 @@
 #include "nsHttp.h"
 #include "mozilla/net/NeckoChild.h"
 #include "mozilla/dom/ContentChild.h"
+#include "mozilla/dom/TabChild.h"
 #include "mozilla/net/HttpChannelChild.h"
 #include "mozilla/net/CookieServiceChild.h"
 #include "mozilla/net/WyciwygChannelChild.h"
@@ -22,8 +23,10 @@
 #include "mozilla/dom/network/UDPSocketChild.h"
 #ifdef NECKO_PROTOCOL_rtsp
 #include "mozilla/net/RtspControllerChild.h"
+#include "mozilla/net/RtspChannelChild.h"
 #endif
 #include "SerializedLoadContext.h"
+#include "nsIOService.h"
 
 using mozilla::dom::TCPSocketChild;
 using mozilla::dom::TCPServerSocketChild;
@@ -72,7 +75,7 @@ void NeckoChild::DestroyNeckoChild()
 }
 
 PHttpChannelChild*
-NeckoChild::AllocPHttpChannelChild(PBrowserChild* browser,
+NeckoChild::AllocPHttpChannelChild(const PBrowserOrId& browser,
                                    const SerializedLoadContext& loadContext,
                                    const HttpChannelCreationArgs& aOpenArgs)
 {
@@ -93,7 +96,7 @@ NeckoChild::DeallocPHttpChannelChild(PHttpChannelChild* channel)
 }
 
 PFTPChannelChild*
-NeckoChild::AllocPFTPChannelChild(PBrowserChild* aBrowser,
+NeckoChild::AllocPFTPChannelChild(const PBrowserOrId& aBrowser,
                                   const SerializedLoadContext& aSerialized,
                                   const FTPChannelCreationArgs& aOpenArgs)
 {
@@ -149,7 +152,7 @@ NeckoChild::DeallocPWyciwygChannelChild(PWyciwygChannelChild* channel)
 }
 
 PWebSocketChild*
-NeckoChild::AllocPWebSocketChild(PBrowserChild* browser,
+NeckoChild::AllocPWebSocketChild(const PBrowserOrId& browser,
                                  const SerializedLoadContext& aSerialized)
 {
   NS_NOTREACHED("AllocPWebSocketChild should not be called");
@@ -181,10 +184,29 @@ NeckoChild::DeallocPRtspControllerChild(PRtspControllerChild* child)
   return true;
 }
 
+PRtspChannelChild*
+NeckoChild::AllocPRtspChannelChild(const RtspChannelConnectArgs& aArgs)
+{
+  NS_NOTREACHED("AllocPRtspController should not be called");
+  return nullptr;
+}
+
+bool
+NeckoChild::DeallocPRtspChannelChild(PRtspChannelChild* child)
+{
+#ifdef NECKO_PROTOCOL_rtsp
+  RtspChannelChild* p = static_cast<RtspChannelChild*>(child);
+  p->ReleaseIPDLReference();
+#endif
+  return true;
+}
+
 PTCPSocketChild*
-NeckoChild::AllocPTCPSocketChild()
+NeckoChild::AllocPTCPSocketChild(const nsString& host,
+                                 const uint16_t& port)
 {
   TCPSocketChild* p = new TCPSocketChild();
+  p->Init(host, port);
   p->AddIPDLReference();
   return p;
 }
@@ -215,9 +237,7 @@ NeckoChild::DeallocPTCPServerSocketChild(PTCPServerSocketChild* child)
 }
 
 PUDPSocketChild*
-NeckoChild::AllocPUDPSocketChild(const nsCString& aHost,
-                                 const uint16_t& aPort,
-                                 const nsCString& aFilter)
+NeckoChild::AllocPUDPSocketChild(const nsCString& aFilter)
 {
   NS_NOTREACHED("AllocPUDPSocket should not be called");
   return nullptr;
@@ -251,7 +271,9 @@ NeckoChild::DeallocPDNSRequestChild(PDNSRequestChild* aChild)
 }
 
 PRemoteOpenFileChild*
-NeckoChild::AllocPRemoteOpenFileChild(const URIParams&, const OptionalURIParams&)
+NeckoChild::AllocPRemoteOpenFileChild(const SerializedLoadContext& aSerialized,
+                                      const URIParams&,
+                                      const OptionalURIParams&)
 {
   // We don't allocate here: instead we always use IPDL constructor that takes
   // an existing RemoteOpenFileChild
@@ -277,6 +299,34 @@ bool
 NeckoChild::DeallocPChannelDiverterChild(PChannelDiverterChild* child)
 {
   delete static_cast<ChannelDiverterChild*>(child);
+  return true;
+}
+
+bool
+NeckoChild::RecvAsyncAuthPromptForNestedFrame(const TabId& aNestedFrameId,
+                                              const nsCString& aUri,
+                                              const nsString& aRealm,
+                                              const uint64_t& aCallbackId)
+{
+  auto iter = dom::TabChild::NestedTabChildMap().find(aNestedFrameId);
+  if (iter == dom::TabChild::NestedTabChildMap().end()) {
+    MOZ_CRASH();
+    return false;
+  }
+  dom::TabChild* tabChild = iter->second;
+  tabChild->SendAsyncAuthPrompt(aUri, aRealm, aCallbackId);
+  return true;
+}
+
+bool
+NeckoChild::RecvAppOfflineStatus(const uint32_t& aId, const bool& aOffline)
+{
+  // Instantiate the service to make sure gIOService is initialized
+  nsCOMPtr<nsIIOService> ioService = do_GetIOService();
+  if (gIOService) {
+    gIOService->SetAppOfflineInternal(aId, aOffline ?
+      nsIAppOfflineInfo::OFFLINE : nsIAppOfflineInfo::ONLINE);
+  }
   return true;
 }
 

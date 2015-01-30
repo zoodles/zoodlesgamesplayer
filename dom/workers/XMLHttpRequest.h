@@ -16,6 +16,12 @@
 #include "js/StructuredClone.h"
 #include "nsXMLHttpRequest.h"
 
+namespace mozilla {
+namespace dom {
+class File;
+}
+}
+
 BEGIN_WORKERS_NAMESPACE
 
 class Proxy;
@@ -29,6 +35,7 @@ public:
   struct StateData
   {
     nsString mResponseText;
+    nsString mResponseURL;
     uint32_t mStatus;
     nsCString mStatusText;
     uint16_t mReadyState;
@@ -38,7 +45,7 @@ public:
     nsresult mResponseResult;
 
     StateData()
-    : mStatus(0), mReadyState(0), mResponse(JSVAL_VOID),
+    : mStatus(0), mReadyState(0), mResponse(JS::UndefinedValue()),
       mResponseTextResult(NS_OK), mStatusResult(NS_OK),
       mResponseResult(NS_OK)
     { }
@@ -63,7 +70,7 @@ private:
 
 public:
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_INHERITED(XMLHttpRequest,
@@ -87,7 +94,7 @@ public:
   {
     // Pretend like someone passed null, so we can pick up the default values
     MozXMLHttpRequestParameters params;
-    if (!params.Init(aGlobal.GetContext(), JS::NullHandleValue)) {
+    if (!params.Init(aGlobal.Context(), JS::NullHandleValue)) {
       aRv.Throw(NS_ERROR_UNEXPECTED);
       return nullptr;
     }
@@ -163,6 +170,9 @@ public:
   Send(JS::Handle<JSObject*> aBody, ErrorResult& aRv);
 
   void
+  Send(File& aBody, ErrorResult& aRv);
+
+  void
   Send(const ArrayBuffer& aBody, ErrorResult& aRv);
 
   void
@@ -173,6 +183,12 @@ public:
 
   void
   Abort(ErrorResult& aRv);
+
+  void
+  GetResponseURL(nsAString& aUrl) const
+  {
+    aUrl = mStateData.mResponseURL;
+  }
 
   uint16_t
   GetStatus(ErrorResult& aRv) const
@@ -206,29 +222,18 @@ public:
   void
   SetResponseType(XMLHttpRequestResponseType aResponseType, ErrorResult& aRv);
 
-  jsval
-  GetResponse(JSContext* /* unused */, ErrorResult& aRv);
+  void
+  GetResponse(JSContext* /* unused */, JS::MutableHandle<JS::Value> aResponse,
+              ErrorResult& aRv);
 
   void
   GetResponseText(nsAString& aResponseText, ErrorResult& aRv);
 
-  JSObject*
-  GetResponseXML() const
-  {
-    return nullptr;
-  }
-
-  JSObject*
-  GetChannel() const
-  {
-    return nullptr;
-  }
-
-  JS::Value
-  GetInterface(JSContext* cx, JS::Handle<JSObject*> aIID, ErrorResult& aRv)
+  void
+  GetInterface(JSContext* cx, JS::Handle<JSObject*> aIID,
+               JS::MutableHandle<JS::Value> aRetval, ErrorResult& aRv)
   {
     aRv.Throw(NS_ERROR_FAILURE);
-    return JSVAL_NULL;
   }
 
   XMLHttpRequestUpload*
@@ -238,7 +243,7 @@ public:
   }
 
   void
-  UpdateState(const StateData& aStateData);
+  UpdateState(const StateData& aStateData, bool aUseCachedArrayBufferResponse);
 
   void
   NullResponseText()
@@ -257,8 +262,14 @@ public:
     return mMozSystem;
   }
 
+  bool
+  SendInProgress() const
+  {
+    return mRooted;
+  }
+
 private:
-  XMLHttpRequest(WorkerPrivate* aWorkerPrivate);
+  explicit XMLHttpRequest(WorkerPrivate* aWorkerPrivate);
   ~XMLHttpRequest();
 
   enum ReleaseType { Default, XHRIsGoingAway, WorkerIsGoingAway };
@@ -276,12 +287,6 @@ private:
   DispatchPrematureAbortEvent(EventTarget* aTarget,
                               const nsAString& aEventType, bool aUploadTarget,
                               ErrorResult& aRv);
-
-  bool
-  SendInProgress() const
-  {
-    return mRooted;
-  }
 
   void
   SendInternal(const nsAString& aStringBody,

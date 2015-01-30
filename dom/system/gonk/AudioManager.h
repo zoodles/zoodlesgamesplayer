@@ -38,16 +38,15 @@ namespace dom {
 namespace gonk {
 class RecoverTask;
 class AudioChannelVolInitCallback;
-class AudioManager : public nsIAudioManager
-                   , public nsIObserver
+class AudioManager MOZ_FINAL : public nsIAudioManager
+                             , public nsIObserver
 {
 public:
+  static already_AddRefed<AudioManager> GetInstance();
+
   NS_DECL_ISUPPORTS
   NS_DECL_NSIAUDIOMANAGER
   NS_DECL_NSIOBSERVER
-
-  AudioManager();
-  ~AudioManager();
 
   // When audio backend is dead, recovery task needs to read all volume
   // settings then set back into audio backend.
@@ -63,7 +62,7 @@ protected:
 
 private:
   nsAutoPtr<mozilla::hal::SwitchObserver> mObserver;
-  nsCOMPtr<AudioChannelAgent>             mPhoneAudioAgent;
+  nsCOMPtr<nsIAudioChannelAgent>          mPhoneAudioAgent;
 #ifdef MOZ_B2G_RIL
   bool                                    mMuteCallToRIL;
   // mIsMicMuted is only used for toggling mute call to RIL.
@@ -73,6 +72,10 @@ private:
   void HandleBluetoothStatusChanged(nsISupports* aSubject,
                                     const char* aTopic,
                                     const nsCString aAddress);
+  void HandleAudioChannelProcessChanged();
+
+  AudioManager();
+  ~AudioManager();
 };
 
 } /* namespace gonk */

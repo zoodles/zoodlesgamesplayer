@@ -21,7 +21,7 @@ namespace TestHashtables {
 class TestUniChar // for nsClassHashtable
 {
 public:
-  TestUniChar(uint32_t aWord)
+  explicit TestUniChar(uint32_t aWord)
   {
     printf("    TestUniChar::TestUniChar() %u\n", aWord);
     mWord = aWord;
@@ -70,7 +70,7 @@ public:
   typedef const char* KeyType;
   typedef const char* KeyTypePointer;
 
-  EntityToUnicodeEntry(const char* aKey) { mNode = nullptr; }
+  explicit EntityToUnicodeEntry(const char* aKey) { mNode = nullptr; }
   EntityToUnicodeEntry(const EntityToUnicodeEntry& aEntry) { mNode = aEntry.mNode; }
   ~EntityToUnicodeEntry() { }
 
@@ -199,8 +199,8 @@ class IFoo MOZ_FINAL : public nsISupports
 
       IFoo();
 
-      NS_IMETHOD_(nsrefcnt) AddRef();
-      NS_IMETHOD_(nsrefcnt) Release();
+      NS_IMETHOD_(MozExternalRefCountType) AddRef();
+      NS_IMETHOD_(MozExternalRefCountType) Release();
       NS_IMETHOD QueryInterface( const nsIID&, void** );
 
       NS_IMETHOD SetString(const nsACString& /*in*/ aString);
@@ -245,7 +245,7 @@ IFoo::~IFoo()
            static_cast<void*>(this), total_destructions_);
   }
 
-nsrefcnt
+MozExternalRefCountType
 IFoo::AddRef()
   {
     ++refcount_;
@@ -254,7 +254,7 @@ IFoo::AddRef()
     return refcount_;
   }
 
-nsrefcnt
+MozExternalRefCountType
 IFoo::Release()
   {
     int newcount = --refcount_;
@@ -547,8 +547,7 @@ main(void) {
     nsCOMPtr<IFoo> foo;
     CreateIFoo(getter_AddRefs(foo));
     foo->SetString(nsDependentCString(gEntities[i].mStr));
-    
-    
+
     fooArray.InsertObjectAt(foo, i);
 
     EntToUniClass2.Put(foo, gEntities[i].mUnicode);
@@ -613,7 +612,7 @@ main(void) {
     nsCOMPtr<IFoo> foo;
     CreateIFoo(getter_AddRefs(foo));
     foo->SetString(nsDependentCString(gEntities[i].mStr));
-    
+
     UniToEntClass2.Put(gEntities[i].mUnicode, foo);
     printf("OK...\n");
   }

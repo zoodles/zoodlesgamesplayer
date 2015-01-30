@@ -39,26 +39,31 @@ public:
 
   // nsIHTMLReflow overrides
 
-  virtual void MarkIntrinsicWidthsDirty() MOZ_OVERRIDE;
-  virtual nscoord GetMinWidth(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
-  virtual nscoord GetPrefWidth(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
+  virtual void MarkIntrinsicISizesDirty() MOZ_OVERRIDE;
+  virtual nscoord GetMinISize(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
+  virtual nscoord GetPrefISize(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
 
   // Our auto size is that provided by nsFrame, not nsLeafFrame
-  virtual nsSize ComputeAutoSize(nsRenderingContext *aRenderingContext,
-                                 nsSize aCBSize, nscoord aAvailableWidth,
-                                 nsSize aMargin, nsSize aBorder,
-                                 nsSize aPadding, bool aShrinkWrap) MOZ_OVERRIDE;
+  virtual mozilla::LogicalSize
+  ComputeAutoSize(nsRenderingContext *aRenderingContext,
+                  mozilla::WritingMode aWritingMode,
+                  const mozilla::LogicalSize& aCBSize,
+                  nscoord aAvailableISize,
+                  const mozilla::LogicalSize& aMargin,
+                  const mozilla::LogicalSize& aBorder,
+                  const mozilla::LogicalSize& aPadding,
+                  bool aShrinkWrap) MOZ_OVERRIDE;
 
-  virtual nsresult Reflow(nsPresContext*          aPresContext,
-                          nsHTMLReflowMetrics&     aDesiredSize,
-                          const nsHTMLReflowState& aReflowState,
-                          nsReflowStatus&          aStatus) MOZ_OVERRIDE;
+  virtual void Reflow(nsPresContext*           aPresContext,
+                      nsHTMLReflowMetrics&     aDesiredSize,
+                      const nsHTMLReflowState& aReflowState,
+                      nsReflowStatus&          aStatus) MOZ_OVERRIDE;
 
   virtual nsresult CharacterDataChanged(CharacterDataChangeInfo* aInfo) MOZ_OVERRIDE;
 
-  virtual void Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        asPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         asPrevInFlow) MOZ_OVERRIDE;
 
   virtual void BuildDisplayList(nsDisplayListBuilder*   aBuilder,
                                 const nsRect&           aDirtyRect,
@@ -78,9 +83,9 @@ protected:
   virtual void GetBoxName(nsAutoString& aName) MOZ_OVERRIDE;
 #endif
 
-  virtual nscoord GetIntrinsicWidth() MOZ_OVERRIDE;
+  virtual nscoord GetIntrinsicISize() MOZ_OVERRIDE;
 
- nsLeafBoxFrame(nsIPresShell* aShell, nsStyleContext* aContext);
+ explicit nsLeafBoxFrame(nsStyleContext* aContext);
 
 private:
 

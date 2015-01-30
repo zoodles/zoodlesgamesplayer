@@ -8,7 +8,7 @@ let openUILinkInCalled = false;
 let expectOpenUILinkInCall = false;
 this.originalOpenUILinkIn = openUILinkIn;
 openUILinkIn = (aUrl, aWhichTab) => {
-  is(aUrl, Services.search.defaultEngine.searchForm, "Search page should be requested to open.");
+  is(aUrl, "about:home", "about:home should be requested to open.");
   is(aWhichTab, "current", "Should use the current tab for the search page.");
   openUILinkInCalled = true;
   if (!expectOpenUILinkInCall) {
@@ -89,7 +89,7 @@ add_task(function() {
   let hiddenPanelPromise = promiseOverflowHidden(window);
   EventUtils.synthesizeKey("VK_ESCAPE", {});
   yield hiddenPanelPromise;
-  let navbar = document.getElementById(CustomizableUI.AREA_NAVBAR);
+  navbar = document.getElementById(CustomizableUI.AREA_NAVBAR);
   window.resizeTo(this.originalWindowWidth, window.outerHeight);
   yield waitForCondition(() => !navbar.hasAttribute("overflowing"));
   ok(!navbar.hasAttribute("overflowing"), "Should not have an overflowing toolbar.");

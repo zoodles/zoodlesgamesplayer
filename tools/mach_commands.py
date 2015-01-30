@@ -37,7 +37,7 @@ class SearchProvider(object):
     def dxr(self, term):
         import webbrowser
         term = ' '.join(term)
-        uri = 'http://dxr.mozilla.org/search?tree=mozilla-central&q=%s' % term
+        uri = 'http://dxr.mozilla.org/mozilla-central/search?q=%s&redirect=true' % term
         webbrowser.open_new_tab(uri)
 
     @Command('mdn', category='misc',
@@ -293,31 +293,6 @@ class PastebinProvider(object):
 
 
 @CommandProvider
-class ReviewboardToolsProvider(MachCommandBase):
-    @Command('rbt', category='devenv', allow_all_args=True,
-        description='Run Reviewboard Tools')
-    @CommandArgument('args', nargs='...', help='Arguments to rbt tool')
-    def rbt(self, args):
-        if not args:
-            args = ['help']
-
-        self._activate_virtualenv()
-        # We install RBTools from source control because the currently released
-        # version doesn't have patches that make Mercurial usable in many
-        # scenarios.
-        commit = '416a728292dff3f279e5d695f48a29749b51b77a'
-        self.virtualenv_manager.install_pip_package(
-            'git+https://github.com/reviewboard/rbtools.git@%s#egg=RBTools' %
-            commit)
-
-        from rbtools.commands.main import main
-
-        # main() doesn't accept arguments and instead reads from sys.argv. So,
-        # we fake it out.
-        sys.argv = ['rbt'] + args
-        return main()
-
-@CommandProvider
 class FormatProvider(MachCommandBase):
     @Command('clang-format', category='misc',
         description='Run clang-format on current changes')
@@ -328,7 +303,7 @@ class FormatProvider(MachCommandBase):
         fmt = plat.lower() + "/clang-format-3.5"
         fmt_diff = "clang-format-diff-3.5"
 
-        # We are currently using a modified verion of clang-format hosted on people.mozilla.org.
+        # We are currently using a modified version of clang-format hosted on people.mozilla.org.
         # This is a temporary work around until we upstream the necessary changes and we can use
         # a system version of clang-format. See bug 961541.
         if plat == "Windows":

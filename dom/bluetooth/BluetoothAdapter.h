@@ -8,13 +8,14 @@
 #define mozilla_dom_bluetooth_bluetoothadapter_h__
 
 #include "mozilla/Attributes.h"
+#include "mozilla/DOMEventTargetHelper.h"
 #include "BluetoothCommon.h"
 #include "BluetoothPropertyContainer.h"
 #include "nsCOMPtr.h"
-#include "nsDOMEventTargetHelper.h"
 
 namespace mozilla {
 namespace dom {
+class File;
 class DOMRequest;
 struct MediaMetaData;
 struct MediaPlayStatus;
@@ -28,7 +29,7 @@ class BluetoothSignal;
 class BluetoothNamedValue;
 class BluetoothValue;
 
-class BluetoothAdapter : public nsDOMEventTargetHelper
+class BluetoothAdapter : public DOMEventTargetHelper
                        , public BluetoothSignalObserver
                        , public BluetoothPropertyContainer
 {
@@ -36,7 +37,7 @@ public:
   NS_DECL_ISUPPORTS_INHERITED
 
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_INHERITED(BluetoothAdapter,
-                                                         nsDOMEventTargetHelper)
+                                                         DOMEventTargetHelper)
 
   static already_AddRefed<BluetoothAdapter>
   Create(nsPIDOMWindow* aOwner, const BluetoothValue& aValue);
@@ -45,6 +46,8 @@ public:
 
   void Unroot();
   virtual void SetPropertyByValue(const BluetoothNamedValue& aValue) MOZ_OVERRIDE;
+
+  virtual void DisconnectFromOwner() MOZ_OVERRIDE;
 
   void GetAddress(nsString& aAddress) const
   {
@@ -81,8 +84,10 @@ public:
     return mDiscoverableTimeout;
   }
 
-  JS::Value GetDevices(JSContext* aContext, ErrorResult& aRv);
-  JS::Value GetUuids(JSContext* aContext, ErrorResult& aRv);
+  void GetDevices(JSContext* aContext, JS::MutableHandle<JS::Value> aDevices,
+                  ErrorResult& aRv);
+  void GetUuids(JSContext* aContext, JS::MutableHandle<JS::Value> aUuids,
+                ErrorResult& aRv);
 
   already_AddRefed<mozilla::dom::DOMRequest>
     SetName(const nsAString& aName, ErrorResult& aRv);
@@ -115,16 +120,21 @@ public:
 
   already_AddRefed<DOMRequest>
     Connect(BluetoothDevice& aDevice,
-            const Optional<short unsigned int>& aServiceUuid, ErrorResult& aRv);
+            const Optional<uint16_t>& aServiceUuid, ErrorResult& aRv);
   already_AddRefed<DOMRequest>
     Disconnect(BluetoothDevice& aDevice,
-               const Optional<short unsigned int>& aServiceUuid,
+               const Optional<uint16_t>& aServiceUuid,
                ErrorResult& aRv);
+
+  already_AddRefed<DOMRequest>
+    IsConnected(const uint16_t aServiceUuid,
+                ErrorResult& aRv);
+
   already_AddRefed<DOMRequest>
     GetConnectedDevices(uint16_t aServiceUuid, ErrorResult& aRv);
 
   already_AddRefed<DOMRequest>
-    SendFile(const nsAString& aDeviceAddress, nsIDOMBlob* aBlob,
+    SendFile(const nsAString& aDeviceAddress, File& aBlob,
              ErrorResult& aRv);
   already_AddRefed<DOMRequest>
     StopSendingFile(const nsAString& aDeviceAddress, ErrorResult& aRv);
@@ -146,6 +156,7 @@ public:
     SendMediaPlayStatus(const MediaPlayStatus& aMediaPlayStatus, ErrorResult& aRv);
 
   IMPL_EVENT_HANDLER(devicefound);
+  IMPL_EVENT_HANDLER(discoverystatechanged);
   IMPL_EVENT_HANDLER(a2dpstatuschanged);
   IMPL_EVENT_HANDLER(hfpstatuschanged);
   IMPL_EVENT_HANDLER(pairedstatuschanged);
@@ -158,7 +169,7 @@ public:
   }
 
   virtual JSObject*
-    WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+    WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
 private:
   BluetoothAdapter(nsPIDOMWindow* aOwner, const BluetoothValue& aValue);

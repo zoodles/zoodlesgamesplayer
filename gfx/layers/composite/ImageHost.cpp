@@ -29,17 +29,22 @@ class ISurfaceAllocator;
 
 ImageHost::ImageHost(const TextureInfo& aTextureInfo)
   : CompositableHost(aTextureInfo)
-  , mFrontBuffer(nullptr)
   , mHasPictureRect(false)
+  , mLocked(false)
 {}
 
-ImageHost::~ImageHost() {}
+ImageHost::~ImageHost()
+{
+}
 
 void
 ImageHost::UseTextureHost(TextureHost* aTexture)
 {
   CompositableHost::UseTextureHost(aTexture);
   mFrontBuffer = aTexture;
+  if (mFrontBuffer) {
+    mFrontBuffer->PrepareTextureSource(mTextureSource);
+  }
 }
 
 void
@@ -47,7 +52,8 @@ ImageHost::RemoveTextureHost(TextureHost* aTexture)
 {
   CompositableHost::RemoveTextureHost(aTexture);
   if (aTexture && mFrontBuffer == aTexture) {
-    aTexture->SetCompositableBackendSpecificData(nullptr);
+    mFrontBuffer->UnbindTextureSource();
+    mTextureSource = nullptr;
     mFrontBuffer = nullptr;
   }
 }
@@ -64,8 +70,7 @@ ImageHost::Composite(EffectChain& aEffectChain,
                      const gfx::Matrix4x4& aTransform,
                      const gfx::Filter& aFilter,
                      const gfx::Rect& aClipRect,
-                     const nsIntRegion* aVisibleRegion,
-                     TiledLayerProperties* aLayerProperties)
+                     const nsIntRegion* aVisibleRegion)
 {
   if (!GetCompositor()) {
     // should only happen when a tab is dragged to another window and
@@ -79,26 +84,34 @@ ImageHost::Composite(EffectChain& aEffectChain,
 
   // Make sure the front buffer has a compositor
   mFrontBuffer->SetCompositor(GetCompositor());
-  mFrontBuffer->SetCompositableBackendSpecificData(GetCompositableBackendSpecificData());
 
-  AutoLockTextureHost autoLock(mFrontBuffer);
+  AutoLockCompositableHost autoLock(this);
   if (autoLock.Failed()) {
     NS_WARNING("failed to lock front buffer");
     return;
   }
-  RefPtr<NewTextureSource> source = mFrontBuffer->GetTextureSources();
-  if (!source) {
+
+  if (!mFrontBuffer->BindTextureSource(mTextureSource)) {
     return;
   }
+
+  if (!mTextureSource) {
+    // BindTextureSource above should have returned false!
+    MOZ_ASSERT(false);
+    return;
+  }
+
+  bool isAlphaPremultiplied = !(mFrontBuffer->GetFlags() & TextureFlags::NON_PREMULTIPLIED);
   RefPtr<TexturedEffect> effect = CreateTexturedEffect(mFrontBuffer->GetFormat(),
-                                                       source,
-                                                       aFilter);
+                                                       mTextureSource.get(),
+                                                       aFilter,
+                                                       isAlphaPremultiplied);
   if (!effect) {
     return;
   }
 
   aEffectChain.mPrimaryEffect = effect;
-  IntSize textureSize = source->GetSize();
+  IntSize textureSize = mTextureSource->GetSize();
   gfx::Rect gfxPictureRect
     = mHasPictureRect ? gfx::Rect(0, 0, mPictureRect.width, mPictureRect.height)
                       : gfx::Rect(0, 0, textureSize.width, textureSize.height);
@@ -106,12 +119,26 @@ ImageHost::Composite(EffectChain& aEffectChain,
   gfx::Rect pictureRect(0, 0,
                         mPictureRect.width,
                         mPictureRect.height);
-  //XXX: We might have multiple texture sources here (e.g. 3 YCbCr textures), and we're
-  // only iterating over the tiles of the first one. Are we assuming that the tiling
-  // will be identical? Can we ensure that somehow?
-  TileIterator* it = source->AsTileIterator();
+  BigImageIterator* it = mTextureSource->AsBigImageIterator();
   if (it) {
-    it->BeginTileIteration();
+
+    // This iteration does not work if we have multiple texture sources here
+    // (e.g. 3 YCbCr textures). There's nothing preventing the different
+    // planes from having different resolutions or tile sizes. For example, a
+    // YCbCr frame could have Cb and Cr planes that are half the resolution of
+    // the Y plane, in such a way that the Y plane overflows the maximum
+    // texture size and the Cb and Cr planes do not. Then the Y plane would be
+    // split into multiple tiles and the Cb and Cr planes would just be one
+    // tile each.
+    // To handle the general case correctly, we'd have to create a grid of
+    // intersected tiles over all planes, and then draw each grid tile using
+    // the corresponding source tiles from all planes, with appropriate
+    // per-plane per-tile texture coords.
+    // DrawQuad currently assumes that all planes use the same texture coords.
+    MOZ_ASSERT(it->GetTileCount() == 1 || !mTextureSource->GetNextSibling(),
+               "Can't handle multi-plane BigImages");
+
+    it->BeginBigImageIteration();
     do {
       nsIntRect tileRect = it->GetTileRect();
       gfx::Rect rect(tileRect.x, tileRect.y, tileRect.width, tileRect.height);
@@ -124,18 +151,22 @@ ImageHost::Composite(EffectChain& aEffectChain,
       } else {
         effect->mTextureCoords = Rect(0, 0, 1, 1);
       }
+      if (mFrontBuffer->GetFlags() & TextureFlags::ORIGIN_BOTTOM_LEFT) {
+        effect->mTextureCoords.y = effect->mTextureCoords.YMost();
+        effect->mTextureCoords.height = -effect->mTextureCoords.height;
+      }
       GetCompositor()->DrawQuad(rect, aClipRect, aEffectChain,
                                 aOpacity, aTransform);
-      GetCompositor()->DrawDiagnostics(DIAGNOSTIC_IMAGE|DIAGNOSTIC_BIGIMAGE,
+      GetCompositor()->DrawDiagnostics(DiagnosticFlags::IMAGE | DiagnosticFlags::BIGIMAGE,
                                        rect, aClipRect, aTransform, mFlashCounter);
     } while (it->NextTile());
-    it->EndTileIteration();
+    it->EndBigImageIteration();
     // layer border
-    GetCompositor()->DrawDiagnostics(DIAGNOSTIC_IMAGE,
+    GetCompositor()->DrawDiagnostics(DiagnosticFlags::IMAGE,
                                      gfxPictureRect, aClipRect,
                                      aTransform, mFlashCounter);
   } else {
-    IntSize textureSize = source->GetSize();
+    IntSize textureSize = mTextureSource->GetSize();
     gfx::Rect rect;
     if (mHasPictureRect) {
       effect->mTextureCoords = Rect(Float(mPictureRect.x) / textureSize.width,
@@ -148,14 +179,14 @@ ImageHost::Composite(EffectChain& aEffectChain,
       rect = gfx::Rect(0, 0, textureSize.width, textureSize.height);
     }
 
-    if (mFrontBuffer->GetFlags() & TEXTURE_NEEDS_Y_FLIP) {
+    if (mFrontBuffer->GetFlags() & TextureFlags::ORIGIN_BOTTOM_LEFT) {
       effect->mTextureCoords.y = effect->mTextureCoords.YMost();
       effect->mTextureCoords.height = -effect->mTextureCoords.height;
     }
 
     GetCompositor()->DrawQuad(rect, aClipRect, aEffectChain,
                               aOpacity, aTransform);
-    GetCompositor()->DrawDiagnostics(DIAGNOSTIC_IMAGE,
+    GetCompositor()->DrawDiagnostics(DiagnosticFlags::IMAGE,
                                      rect, aClipRect,
                                      aTransform, mFlashCounter);
   }
@@ -171,39 +202,34 @@ ImageHost::SetCompositor(Compositor* aCompositor)
 }
 
 void
-ImageHost::PrintInfo(nsACString& aTo, const char* aPrefix)
+ImageHost::PrintInfo(std::stringstream& aStream, const char* aPrefix)
 {
-  aTo += aPrefix;
-  aTo += nsPrintfCString("ImageHost (0x%p)", this);
+  aStream << aPrefix;
+  aStream << nsPrintfCString("ImageHost (0x%p)", this).get();
 
-  AppendToString(aTo, mPictureRect, " [picture-rect=", "]");
+  AppendToString(aStream, mPictureRect, " [picture-rect=", "]");
 
   if (mFrontBuffer) {
     nsAutoCString pfx(aPrefix);
     pfx += "  ";
-    aTo += "\n";
-    mFrontBuffer->PrintInfo(aTo, pfx.get());
+    aStream << "\n";
+    mFrontBuffer->PrintInfo(aStream, pfx.get());
   }
 }
 
-#ifdef MOZ_DUMP_PAINTING
 void
-ImageHost::Dump(FILE* aFile,
+ImageHost::Dump(std::stringstream& aStream,
                 const char* aPrefix,
                 bool aDumpHtml)
 {
-  if (!aFile) {
-    aFile = stderr;
-  }
   if (mFrontBuffer) {
-    fprintf_stderr(aFile, "%s", aPrefix);
-    fprintf_stderr(aFile, aDumpHtml ? "<ul><li>TextureHost: "
+    aStream << aPrefix;
+    aStream << (aDumpHtml ? "<ul><li>TextureHost: "
                              : "TextureHost: ");
-    DumpTextureHost(aFile, mFrontBuffer);
-    fprintf_stderr(aFile, aDumpHtml ? " </li></ul> " : " ");
+    DumpTextureHost(aStream, mFrontBuffer);
+    aStream << (aDumpHtml ? " </li></ul> " : " ");
   }
 }
-#endif
 
 LayerRenderState
 ImageHost::GetRenderState()
@@ -214,213 +240,142 @@ ImageHost::GetRenderState()
   return LayerRenderState();
 }
 
-#ifdef MOZ_DUMP_PAINTING
 TemporaryRef<gfx::DataSourceSurface>
 ImageHost::GetAsSurface()
 {
   return mFrontBuffer->GetAsSurface();
 }
-#endif
 
-void
-DeprecatedImageHostSingle::SetCompositor(Compositor* aCompositor) {
-  CompositableHost::SetCompositor(aCompositor);
-  if (mDeprecatedTextureHost) {
-    mDeprecatedTextureHost->SetCompositor(aCompositor);
+bool
+ImageHost::Lock()
+{
+  MOZ_ASSERT(!mLocked);
+  if (!mFrontBuffer) {
+    return false;
   }
+  if (!mFrontBuffer->Lock()) {
+    return false;
+  }
+  mLocked = true;
+  return true;
 }
 
 void
-DeprecatedImageHostSingle::EnsureDeprecatedTextureHost(TextureIdentifier aTextureId,
-                                                       const SurfaceDescriptor& aSurface,
-                                                       ISurfaceAllocator* aAllocator,
-                                                       const TextureInfo& aTextureInfo)
+ImageHost::Unlock()
 {
-  if (mDeprecatedTextureHost &&
-      mDeprecatedTextureHost->GetBuffer() &&
-      mDeprecatedTextureHost->GetBuffer()->type() == aSurface.type()) {
+  MOZ_ASSERT(mLocked);
+  if (mFrontBuffer) {
+    mFrontBuffer->Unlock();
+  }
+  mLocked = false;
+}
+
+IntSize
+ImageHost::GetImageSize() const
+{
+  if (mHasPictureRect) {
+    return IntSize(mPictureRect.width, mPictureRect.height);
+  }
+
+  if (mFrontBuffer) {
+    return mFrontBuffer->GetSize();
+  }
+
+  return IntSize();
+}
+
+TemporaryRef<TexturedEffect>
+ImageHost::GenEffect(const gfx::Filter& aFilter)
+{
+  if (!mFrontBuffer->BindTextureSource(mTextureSource)) {
+    return nullptr;
+  }
+  bool isAlphaPremultiplied = true;
+  if (mFrontBuffer->GetFlags() & TextureFlags::NON_PREMULTIPLIED)
+    isAlphaPremultiplied = false;
+
+  return CreateTexturedEffect(mFrontBuffer->GetFormat(),
+                              mTextureSource,
+                              aFilter,
+                              isAlphaPremultiplied);
+}
+
+#ifdef MOZ_WIDGET_GONK
+ImageHostOverlay::ImageHostOverlay(const TextureInfo& aTextureInfo)
+  : CompositableHost(aTextureInfo)
+  , mHasPictureRect(false)
+{
+}
+
+ImageHostOverlay::~ImageHostOverlay()
+{
+}
+
+void
+ImageHostOverlay::Composite(EffectChain& aEffectChain,
+                            float aOpacity,
+                            const gfx::Matrix4x4& aTransform,
+                            const gfx::Filter& aFilter,
+                            const gfx::Rect& aClipRect,
+                            const nsIntRegion* aVisibleRegion)
+{
+  if (!GetCompositor()) {
     return;
   }
 
-  MakeDeprecatedTextureHost(aTextureId,
-                  aSurface,
-                  aAllocator,
-                  aTextureInfo);
-}
+  if (mOverlay.handle().type() == OverlayHandle::Tnull_t)
+    return;
+  Color hollow(0.0f, 0.0f, 0.0f, 0.0f);
+  aEffectChain.mPrimaryEffect = new EffectSolidColor(hollow);
+  aEffectChain.mSecondaryEffects[EffectTypes::BLEND_MODE] = new EffectBlendMode(CompositionOp::OP_SOURCE);
 
-void
-DeprecatedImageHostSingle::MakeDeprecatedTextureHost(TextureIdentifier aTextureId,
-                                                     const SurfaceDescriptor& aSurface,
-                                                     ISurfaceAllocator* aAllocator,
-                                                     const TextureInfo& aTextureInfo)
-{
-  mDeprecatedTextureHost = DeprecatedTextureHost::CreateDeprecatedTextureHost(aSurface.type(),
-                                                mTextureInfo.mDeprecatedTextureHostFlags,
-                                                mTextureInfo.mTextureFlags,
-                                                this);
-
-  NS_ASSERTION(mDeprecatedTextureHost, "Failed to create texture host");
-
-  Compositor* compositor = GetCompositor();
-  if (compositor && mDeprecatedTextureHost) {
-    mDeprecatedTextureHost->SetCompositor(compositor);
+  gfx::Rect rect;
+  gfx::Rect clipRect(aClipRect.x, aClipRect.y,
+                     aClipRect.width, aClipRect.height);
+  if (mHasPictureRect) {
+    rect.SetRect(mPictureRect.x, mPictureRect.y,
+                 mPictureRect.width, mPictureRect.height);
+  } else {
+    rect.SetRect(0, 0,
+                 mOverlay.size().width, mOverlay.size().height);
   }
+
+  mCompositor->DrawQuad(rect, aClipRect, aEffectChain, aOpacity, aTransform);
+  mCompositor->DrawDiagnostics(DiagnosticFlags::IMAGE | DiagnosticFlags::BIGIMAGE,
+                               rect, aClipRect, aTransform, mFlashCounter);
 }
 
 LayerRenderState
-DeprecatedImageHostSingle::GetRenderState()
+ImageHostOverlay::GetRenderState()
 {
-  if (mDeprecatedTextureHost) {
-    return mDeprecatedTextureHost->GetRenderState();
+  LayerRenderState state;
+  if (mOverlay.handle().type() == OverlayHandle::Tint32_t) {
+    state.SetOverlayId(mOverlay.handle().get_int32_t());
   }
-  return LayerRenderState();
+  return state;
 }
 
 void
-DeprecatedImageHostSingle::Composite(EffectChain& aEffectChain,
-                                     float aOpacity,
-                                     const gfx::Matrix4x4& aTransform,
-                                     const gfx::Filter& aFilter,
-                                     const gfx::Rect& aClipRect,
-                                     const nsIntRegion* aVisibleRegion,
-                                     TiledLayerProperties* aLayerProperties)
+ImageHostOverlay::UseOverlaySource(OverlaySource aOverlay)
 {
-  if (!mDeprecatedTextureHost) {
-    NS_WARNING("Can't composite an invalid or null DeprecatedTextureHost");
-    return;
-  }
-
-  if (!mDeprecatedTextureHost->IsValid()) {
-    NS_WARNING("Can't composite an invalid DeprecatedTextureHost");
-    return;
-  }
-
-  if (!GetCompositor()) {
-    // should only happen during tabswitch if async-video is still sending frames.
-    return;
-  }
-
-  if (!mDeprecatedTextureHost->Lock()) {
-    NS_ASSERTION(false, "failed to lock texture host");
-    return;
-  }
-
-  RefPtr<TexturedEffect> effect =
-    CreateTexturedEffect(mDeprecatedTextureHost, aFilter);
-  if (!effect) {
-    return;
-  }
-
-  aEffectChain.mPrimaryEffect = effect;
-
-  TileIterator* it = mDeprecatedTextureHost->AsTileIterator();
-  if (it) {
-    it->BeginTileIteration();
-    do {
-      nsIntRect tileRect = it->GetTileRect();
-      gfx::Rect rect(tileRect.x, tileRect.y, tileRect.width, tileRect.height);
-      GetCompositor()->DrawQuad(rect, aClipRect, aEffectChain,
-                                aOpacity, aTransform);
-      GetCompositor()->DrawDiagnostics(DIAGNOSTIC_IMAGE|DIAGNOSTIC_BIGIMAGE,
-                                       rect, aClipRect, aTransform, mFlashCounter);
-    } while (it->NextTile());
-    it->EndTileIteration();
-  } else {
-    IntSize textureSize = mDeprecatedTextureHost->GetSize();
-    gfx::Rect rect(0, 0,
-                   mPictureRect.width,
-                   mPictureRect.height);
-    if (mHasPictureRect) {
-      effect->mTextureCoords = Rect(Float(mPictureRect.x) / textureSize.width,
-                                    Float(mPictureRect.y) / textureSize.height,
-                                    Float(mPictureRect.width) / textureSize.width,
-                                    Float(mPictureRect.height) / textureSize.height);
-    } else {
-      effect->mTextureCoords = Rect(0, 0, 1, 1);
-      rect = gfx::Rect(0, 0, textureSize.width, textureSize.height);
-    }
-
-    if (mDeprecatedTextureHost->GetFlags() & TEXTURE_NEEDS_Y_FLIP) {
-      effect->mTextureCoords.y = effect->mTextureCoords.YMost();
-      effect->mTextureCoords.height = -effect->mTextureCoords.height;
-    }
-
-    GetCompositor()->DrawQuad(rect, aClipRect, aEffectChain,
-                              aOpacity, aTransform);
-    GetCompositor()->DrawDiagnostics(DIAGNOSTIC_IMAGE,
-                                     rect, aClipRect, aTransform, mFlashCounter);
-  }
-
-  mDeprecatedTextureHost->Unlock();
+  mOverlay = aOverlay;
 }
 
 void
-DeprecatedImageHostSingle::PrintInfo(nsACString& aTo, const char* aPrefix)
+ImageHostOverlay::PrintInfo(std::stringstream& aStream, const char* aPrefix)
 {
-  aTo += aPrefix;
-  aTo += nsPrintfCString("DeprecatedImageHostSingle (0x%p)", this);
+  aStream << aPrefix;
+  aStream << nsPrintfCString("ImageHost (0x%p)", this).get();
 
-  AppendToString(aTo, mPictureRect, " [picture-rect=", "]");
+  AppendToString(aStream, mPictureRect, " [picture-rect=", "]");
 
-  if (mDeprecatedTextureHost) {
+  if (mOverlay.handle().type() == OverlayHandle::Tint32_t) {
     nsAutoCString pfx(aPrefix);
     pfx += "  ";
-    aTo += "\n";
-    mDeprecatedTextureHost->PrintInfo(aTo, pfx.get());
+    aStream << nsPrintfCString("Overlay: %d", mOverlay.handle().get_int32_t()).get();
   }
 }
 
-bool
-DeprecatedImageHostBuffered::Update(const SurfaceDescriptor& aImage,
-                                    SurfaceDescriptor* aResult) {
-  if (!GetDeprecatedTextureHost()) {
-    *aResult = aImage;
-    return false;
-  }
-  GetDeprecatedTextureHost()->SwapTextures(aImage, aResult);
-  return GetDeprecatedTextureHost()->IsValid();
-}
-
-void
-DeprecatedImageHostBuffered::MakeDeprecatedTextureHost(TextureIdentifier aTextureId,
-                                                       const SurfaceDescriptor& aSurface,
-                                                       ISurfaceAllocator* aAllocator,
-                                                       const TextureInfo& aTextureInfo)
-{
-  DeprecatedImageHostSingle::MakeDeprecatedTextureHost(aTextureId,
-                                                       aSurface,
-                                                       aAllocator,
-                                                       aTextureInfo);
-  if (mDeprecatedTextureHost) {
-    mDeprecatedTextureHost->SetBuffer(new SurfaceDescriptor(null_t()), aAllocator);
-  }
-}
-
-#ifdef MOZ_DUMP_PAINTING
-void
-DeprecatedImageHostSingle::Dump(FILE* aFile,
-                                const char* aPrefix,
-                                bool aDumpHtml)
-{
-  if (!aFile) {
-    aFile = stderr;
-  }
-  if (mDeprecatedTextureHost) {
-    fprintf_stderr(aFile, "%s", aPrefix);
-    fprintf_stderr(aFile, aDumpHtml ? "<ul><li>DeprecatedTextureHost: "
-                             : "DeprecatedTextureHost: ");
-    DumpDeprecatedTextureHost(aFile, mDeprecatedTextureHost);
-    fprintf_stderr(aFile, aDumpHtml ? " </li></ul> " : " ");
-  }
-}
-
-TemporaryRef<gfx::DataSourceSurface>
-DeprecatedImageHostSingle::GetAsSurface()
-{
-  return mDeprecatedTextureHost->GetAsSurface();
-}
 #endif
-
-
 }
 }

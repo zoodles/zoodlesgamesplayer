@@ -120,8 +120,10 @@ function start()
   SpecialPowers.addPermission("browser", true, { manifestURL: manifestURL,
                                                  isInBrowserElement: false });
   SpecialPowers.addPermission("embed-apps", true, document);
+  SpecialPowers.addPermission("indexedDB", true, { manifestURL: manifestURL,
+                                                   isInBrowserElement: false });
 
-  let originalAllAppsLaunchable = SpecialPowers.setAllAppsLaunchable(true);
+  SpecialPowers.setAllAppsLaunchable(true);
 
   window.addEventListener("unload", function cleanup(event) {
     if (event.target == document) {
@@ -131,7 +133,8 @@ function start()
       SpecialPowers.removePermission("browser",
                                      location.protocol + "//" + appDomain);
       SpecialPowers.removePermission("embed-apps", location.href);
-      SpecialPowers.setAllAppsLaunchable(originalAllAppsLaunchable);
+      SpecialPowers.removePermission("indexedDB",
+                                     location.protocol + "//" + appDomain);
     }
   }, false);
 

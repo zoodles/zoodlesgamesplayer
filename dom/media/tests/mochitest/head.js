@@ -1,4 +1,4 @@
-﻿/* This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -8,6 +8,16 @@ var Cr = SpecialPowers.Cr;
 
 // Specifies whether we are using fake streams to run this automation
 var FAKE_ENABLED = true;
+try {
+  var audioDevice = SpecialPowers.getCharPref('media.audio_loopback_dev');
+  var videoDevice = SpecialPowers.getCharPref('media.video_loopback_dev');
+  dump('TEST DEVICES: Using media devices:\n');
+  dump('audio: ' + audioDevice + '\nvideo: ' + videoDevice + '\n');
+  FAKE_ENABLED = false;
+} catch (e) {
+  dump('TEST DEVICES: No test devices found (in media.{audio,video}_loopback_dev, using fake streams.\n');
+  FAKE_ENABLED = true;
+}
 
 
 /**
@@ -97,7 +107,9 @@ function createMediaElement(type, label) {
  *        The error callback if the stream fails to be retrieved
  */
 function getUserMedia(constraints, onSuccess, onError) {
-  constraints["fake"] = FAKE_ENABLED;
+  if (!("fake" in constraints) && FAKE_ENABLED) {
+    constraints["fake"] = FAKE_ENABLED;
+  }
 
   info("Call getUserMedia for " + JSON.stringify(constraints));
   navigator.mozGetUserMedia(constraints, onSuccess, onError);
@@ -116,12 +128,16 @@ function runTest(aCallback) {
   if (window.SimpleTest) {
     // Running as a Mochitest.
     SimpleTest.waitForExplicitFinish();
+    SimpleTest.requestFlakyTimeout("WebRTC inherently depends on timeouts");
     SpecialPowers.pushPrefEnv({'set': [
       ['dom.messageChannel.enabled', true],
       ['media.peerconnection.enabled', true],
       ['media.peerconnection.identity.enabled', true],
-      ['media.peerconnection.identity.timeout', 3000],
-      ['media.navigator.permission.disabled', true]]
+      ['media.peerconnection.identity.timeout', 12000],
+      ['media.peerconnection.default_iceservers', '[]'],
+      ['media.navigator.permission.disabled', true],
+      ['media.getusermedia.screensharing.enabled', true],
+      ['media.getusermedia.screensharing.allowed_domains', "mochi.test"]]
     }, function () {
       try {
         aCallback();
@@ -258,3 +274,19 @@ function unexpectedEventAndFinish(message, eventName) {
     SimpleTest.finish();
   }
 }
+
+function IsMacOSX10_6orOlder() {
+    var is106orOlder = false;
+
+    if (navigator.platform.indexOf("Mac") == 0) {
+        var version = Cc["@mozilla.org/system-info;1"]
+                        .getService(SpecialPowers.Ci.nsIPropertyBag2)
+                        .getProperty("version");
+        // the next line is correct: Mac OS 10.6 corresponds to Darwin version 10.x !
+        // Mac OS 10.7 is Darwin version 11.x. the |version| string we've got here
+        // is the Darwin version.
+        is106orOlder = (parseFloat(version) < 11.0);
+    }
+    return is106orOlder;
+}
+

@@ -23,26 +23,37 @@ class ColorLayerComposite : public ColorLayer,
                             public LayerComposite
 {
 public:
-  ColorLayerComposite(LayerManagerComposite *aManager)
+  explicit ColorLayerComposite(LayerManagerComposite *aManager)
     : ColorLayer(aManager, nullptr)
     , LayerComposite(aManager)
   {
     MOZ_COUNT_CTOR(ColorLayerComposite);
     mImplData = static_cast<LayerComposite*>(this);
   }
+
+protected:
   ~ColorLayerComposite()
   {
     MOZ_COUNT_DTOR(ColorLayerComposite);
     Destroy();
   }
 
+public:
   // LayerComposite Implementation
   virtual Layer* GetLayer() MOZ_OVERRIDE { return this; }
+
+  virtual void SetLayerManager(LayerManagerComposite* aManager) MOZ_OVERRIDE
+  {
+    LayerComposite::SetLayerManager(aManager);
+    mManager = aManager;
+  }
 
   virtual void Destroy() MOZ_OVERRIDE { mDestroyed = true; }
 
   virtual void RenderLayer(const nsIntRect& aClipRect) MOZ_OVERRIDE;
   virtual void CleanupResources() MOZ_OVERRIDE {};
+
+  virtual void GenEffectChain(EffectChain& aEffect) MOZ_OVERRIDE;
 
   CompositableHost* GetCompositableHost() MOZ_OVERRIDE { return nullptr; }
 

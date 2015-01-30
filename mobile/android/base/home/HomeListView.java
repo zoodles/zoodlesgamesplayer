@@ -33,10 +33,10 @@ public class HomeListView extends ListView
     protected OnUrlOpenListener mUrlOpenListener;
 
     // Top divider
-    private boolean mShowTopDivider;
+    private final boolean mShowTopDivider;
 
     // ContextMenuInfo maker
-    private ContextMenuInfoFactory mContextMenuInfoFactory;
+    private HomeContextMenuInfo.Factory mContextMenuInfoFactory;
 
     public HomeListView(Context context) {
         this(context, null);
@@ -64,7 +64,7 @@ public class HomeListView extends ListView
         if (mShowTopDivider && divider != null) {
             final int dividerHeight = getDividerHeight();
             final View view = new View(getContext());
-            view.setLayoutParams(new LayoutParams(LayoutParams.FILL_PARENT, dividerHeight));
+            view.setLayoutParams(new LayoutParams(LayoutParams.MATCH_PARENT, dividerHeight));
             addHeaderView(view);
         }
     }
@@ -121,7 +121,7 @@ public class HomeListView extends ListView
         });
     }
 
-    public void setContextMenuInfoFactory(final ContextMenuInfoFactory factory) {
+    public void setContextMenuInfoFactory(final HomeContextMenuInfo.Factory factory) {
         mContextMenuInfoFactory = factory;
     }
 
@@ -131,12 +131,5 @@ public class HomeListView extends ListView
 
     public void setOnUrlOpenListener(OnUrlOpenListener listener) {
         mUrlOpenListener = listener;
-    }
-
-    /*
-     * Interface for creating ContextMenuInfo from cursors
-     */
-    public interface ContextMenuInfoFactory {
-    	public HomeContextMenuInfo makeInfoForCursor(View view, int position, long id, Cursor cursor);
     }
 }

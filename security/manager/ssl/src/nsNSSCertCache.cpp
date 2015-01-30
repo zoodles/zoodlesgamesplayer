@@ -11,7 +11,7 @@
 
 using namespace mozilla;
 
-NS_IMPL_ISUPPORTS1(nsNSSCertCache, nsINSSCertCache)
+NS_IMPL_ISUPPORTS(nsNSSCertCache, nsINSSCertCache)
 
 nsNSSCertCache::nsNSSCertCache()
 :mutex("nsNSSCertCache.mutex"), mCertList(nullptr)
@@ -46,8 +46,7 @@ nsNSSCertCache::CacheAllCerts()
 
   nsCOMPtr<nsIInterfaceRequestor> cxt = new PipUIContext();
   
-  mozilla::pkix::ScopedCERTCertList newList(
-    PK11_ListCerts(PK11CertListUnique, cxt));
+  ScopedCERTCertList newList(PK11_ListCerts(PK11CertListUnique, cxt));
 
   if (newList) {
     MutexAutoLock lock(mutex);

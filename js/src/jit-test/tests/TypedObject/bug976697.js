@@ -4,10 +4,12 @@
 // Any copyright is dedicated to the Public Domain.
 // http://creativecommons.org/licenses/publicdomain/
 
-if (!this.hasOwnProperty("TypedObject"))
-  quit();
+x = new ArrayBuffer();
+neuter(x, "same-data");
+new Uint32Array(x);
+gc();
 
-x = ArrayBuffer();
-neuter(x);
-Uint32Array(x);
+x = new ArrayBuffer();
+neuter(x, "change-data");
+new Uint32Array(x);
 gc();

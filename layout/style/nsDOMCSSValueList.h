@@ -23,7 +23,6 @@ public:
 
   // nsDOMCSSValueList
   nsDOMCSSValueList(bool aCommaDelimited, bool aReadonly);
-  ~nsDOMCSSValueList();
 
   /**
    * Adds a value to this list.
@@ -57,10 +56,11 @@ public:
     return nullptr;
   }
 
-  virtual JSObject *WrapObject(JSContext *cx,
-			       JS::Handle<JSObject*> scope) MOZ_OVERRIDE;
+  virtual JSObject *WrapObject(JSContext *cx) MOZ_OVERRIDE;
 
 private:
+  ~nsDOMCSSValueList();
+
   bool                        mCommaDelimited;  // some value lists use a comma
                                                 // as the delimiter, some just use
                                                 // spaces.

@@ -215,7 +215,10 @@ compressionEnabled(sslSocket *ss, SSLCompressionMethod compression)
 	return PR_TRUE;  /* Always enabled */
 #ifdef NSS_ENABLE_ZLIB
     case ssl_compression_deflate:
-	return ss->opt.enableDeflate;
+        if (ss->version < SSL_LIBRARY_VERSION_TLS_1_3) {
+            return ss->opt.enableDeflate;
+        }
+        return PR_FALSE;
 #endif
     default:
 	return PR_FALSE;
@@ -633,20 +636,49 @@ ssl3_CipherSuiteAllowedForVersionRange(
      *   TLS_DH_anon_EXPORT_WITH_DES40_CBC_SHA:  never implemented
      */
 	return vrange->min <= SSL_LIBRARY_VERSION_TLS_1_0;
+
     case TLS_DHE_RSA_WITH_AES_256_CBC_SHA256:
     case TLS_RSA_WITH_AES_256_CBC_SHA256:
     case TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256:
-    case TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:
     case TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256:
-    case TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:
     case TLS_DHE_RSA_WITH_AES_128_CBC_SHA256:
-    case TLS_DHE_RSA_WITH_AES_128_GCM_SHA256:
     case TLS_RSA_WITH_AES_128_CBC_SHA256:
     case TLS_RSA_WITH_AES_128_GCM_SHA256:
     case TLS_RSA_WITH_NULL_SHA256:
+        return vrange->max == SSL_LIBRARY_VERSION_TLS_1_2;
+
+    case TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:
+    case TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:
+    case TLS_DHE_RSA_WITH_AES_128_GCM_SHA256:
 	return vrange->max >= SSL_LIBRARY_VERSION_TLS_1_2;
+
+    /* RFC 4492: ECC cipher suites need TLS extensions to negotiate curves and
+     * point formats.*/
+    case TLS_ECDH_ECDSA_WITH_NULL_SHA:
+    case TLS_ECDH_ECDSA_WITH_RC4_128_SHA:
+    case TLS_ECDH_ECDSA_WITH_3DES_EDE_CBC_SHA:
+    case TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA:
+    case TLS_ECDH_ECDSA_WITH_AES_256_CBC_SHA:
+    case TLS_ECDHE_ECDSA_WITH_NULL_SHA:
+    case TLS_ECDHE_ECDSA_WITH_RC4_128_SHA:
+    case TLS_ECDHE_ECDSA_WITH_3DES_EDE_CBC_SHA:
+    case TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA:
+    case TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA:
+    case TLS_ECDH_RSA_WITH_NULL_SHA:
+    case TLS_ECDH_RSA_WITH_RC4_128_SHA:
+    case TLS_ECDH_RSA_WITH_3DES_EDE_CBC_SHA:
+    case TLS_ECDH_RSA_WITH_AES_128_CBC_SHA:
+    case TLS_ECDH_RSA_WITH_AES_256_CBC_SHA:
+    case TLS_ECDHE_RSA_WITH_NULL_SHA:
+    case TLS_ECDHE_RSA_WITH_RC4_128_SHA:
+    case TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA:
+    case TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA:
+    case TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:
+        return vrange->max >= SSL_LIBRARY_VERSION_TLS_1_0 &&
+               vrange->min < SSL_LIBRARY_VERSION_TLS_1_3;
+
     default:
-	return PR_TRUE;
+        return vrange->min < SSL_LIBRARY_VERSION_TLS_1_3;
     }
 }
 
@@ -872,7 +904,7 @@ ssl3_NegotiateVersion(sslSocket *ss, SSL3ProtocolVersion peerVersion,
 
     if (peerVersion < ss->vrange.min ||
 	(peerVersion > ss->vrange.max && !allowLargerPeerVersion)) {
-	PORT_SetError(SSL_ERROR_NO_CYPHER_OVERLAP);
+	PORT_SetError(SSL_ERROR_UNSUPPORTED_VERSION);
 	return SECFailure;
     }
 
@@ -3326,6 +3358,9 @@ ssl3_HandleAlert(sslSocket *ss, sslBuffer *buf)
     case certificate_unknown: 	error = SSL_ERROR_CERTIFICATE_UNKNOWN_ALERT;
 			        					  break;
     case illegal_parameter: 	error = SSL_ERROR_ILLEGAL_PARAMETER_ALERT;break;
+    case inappropriate_fallback:
+        error = SSL_ERROR_INAPPROPRIATE_FALLBACK_ALERT;
+        break;
 
     /* All alerts below are TLS only. */
     case unknown_ca: 		error = SSL_ERROR_UNKNOWN_CA_ALERT;       break;
@@ -3471,6 +3506,14 @@ ssl3_HandleChangeCipherSpecs(sslSocket *ss, sslBuffer *buf)
 		SSL_GETPID(), ss->fd));
 
     if (ws != wait_change_cipher) {
+	if (IS_DTLS(ss)) {
+	    /* Ignore this because it's out of order. */
+	    SSL_TRC(3, ("%d: SSL3[%d]: discard out of order "
+			"DTLS change_cipher_spec",
+			SSL_GETPID(), ss->fd));
+	    buf->len = 0;
+	    return SECSuccess;
+	}
 	(void)SSL3_SendAlert(ss, alert_fatal, unexpected_message);
 	PORT_SetError(SSL_ERROR_RX_UNEXPECTED_CHANGE_CIPHER);
 	return SECFailure;
@@ -4839,6 +4882,7 @@ ssl3_SendClientHello(sslSocket *ss, PRBool resending)
     int              num_suites;
     int              actual_count = 0;
     PRBool           isTLS = PR_FALSE;
+    PRBool           requestingResume = PR_FALSE, fallbackSCSV = PR_FALSE;
     PRInt32          total_exten_len = 0;
     unsigned         paddingExtensionLen;
     unsigned         numCompressionMethods;
@@ -4981,6 +5025,7 @@ ssl3_SendClientHello(sslSocket *ss, PRBool resending)
     }
 
     if (sid) {
+	requestingResume = PR_TRUE;
 	SSL_AtomicIncrementLong(& ssl3stats.sch_sid_cache_hits );
 
 	PRINT_BUF(4, (ss, "client, found session-id:", sid->u.ssl3.sessionID,
@@ -5071,7 +5116,6 @@ ssl3_SendClientHello(sslSocket *ss, PRBool resending)
 	    if (sid->u.ssl3.lock) { PR_RWLock_Unlock(sid->u.ssl3.lock); }
 	    return SECFailure;
 	}
-	maxBytes        -= extLen;
 	total_exten_len += extLen;
 
 	if (total_exten_len > 0)
@@ -5095,8 +5139,15 @@ ssl3_SendClientHello(sslSocket *ss, PRBool resending)
     	if (sid->u.ssl3.lock) { PR_RWLock_Unlock(sid->u.ssl3.lock); }
     	return SECFailure;	/* count_cipher_suites has set error code. */
     }
+
+    fallbackSCSV = ss->opt.enableFallbackSCSV && (!requestingResume ||
+						  ss->version < sid->version);
+    /* make room for SCSV */
     if (ss->ssl3.hs.sendingSCSV) {
-	++num_suites;   /* make room for SCSV */
+	++num_suites;
+    }
+    if (fallbackSCSV) {
+	++num_suites;
     }
 
     /* count compression methods */
@@ -5171,7 +5222,7 @@ ssl3_SendClientHello(sslSocket *ss, PRBool resending)
 	rv = ssl3_AppendHandshakeVariable(
 	    ss, sid->u.ssl3.sessionID, sid->u.ssl3.sessionIDLength, 1);
     else
-	rv = ssl3_AppendHandshakeVariable(ss, NULL, 0, 1);
+	rv = ssl3_AppendHandshakeNumber(ss, 0, 1);
     if (rv != SECSuccess) {
 	if (sid->u.ssl3.lock) { PR_RWLock_Unlock(sid->u.ssl3.lock); }
 	return rv;	/* err set by ssl3_AppendHandshake* */
@@ -5195,6 +5246,15 @@ ssl3_SendClientHello(sslSocket *ss, PRBool resending)
     if (ss->ssl3.hs.sendingSCSV) {
 	/* Add the actual SCSV */
 	rv = ssl3_AppendHandshakeNumber(ss, TLS_EMPTY_RENEGOTIATION_INFO_SCSV,
+					sizeof(ssl3CipherSuite));
+	if (rv != SECSuccess) {
+	    if (sid->u.ssl3.lock) { PR_RWLock_Unlock(sid->u.ssl3.lock); }
+	    return rv;	/* err set by ssl3_AppendHandshake* */
+	}
+	actual_count++;
+    }
+    if (fallbackSCSV) {
+	rv = ssl3_AppendHandshakeNumber(ss, TLS_FALLBACK_SCSV,
 					sizeof(ssl3CipherSuite));
 	if (rv != SECSuccess) {
 	    if (sid->u.ssl3.lock) { PR_RWLock_Unlock(sid->u.ssl3.lock); }
@@ -6227,7 +6287,7 @@ ssl3_HandleServerHello(sslSocket *ss, SSL3Opaque *b, PRUint32 length)
     if (rv != SECSuccess) {
     	desc = (version > SSL_LIBRARY_VERSION_3_0) ? protocol_version 
 						   : handshake_failure;
-	errCode = SSL_ERROR_NO_CYPHER_OVERLAP;
+	errCode = SSL_ERROR_UNSUPPORTED_VERSION;
 	goto alert_loser;
     }
     isTLS = (ss->version > SSL_LIBRARY_VERSION_3_0);
@@ -7639,7 +7699,7 @@ ssl3_HandleClientHello(sslSocket *ss, SSL3Opaque *b, PRUint32 length)
     if (rv != SECSuccess) {
     	desc = (version > SSL_LIBRARY_VERSION_3_0) ? protocol_version 
 	                                           : handshake_failure;
-	errCode = SSL_ERROR_NO_CYPHER_OVERLAP;
+	errCode = SSL_ERROR_UNSUPPORTED_VERSION;
 	goto alert_loser;
     }
 
@@ -7677,12 +7737,31 @@ ssl3_HandleClientHello(sslSocket *ss, SSL3Opaque *b, PRUint32 length)
 	goto loser;		/* malformed */
     }
 
+    /* If the ClientHello version is less than our maximum version, check for a
+     * TLS_FALLBACK_SCSV and reject the connection if found. */
+    if (ss->vrange.max > ss->clientHelloVersion) {
+	for (i = 0; i + 1 < suites.len; i += 2) {
+	    PRUint16 suite_i = (suites.data[i] << 8) | suites.data[i + 1];
+	    if (suite_i != TLS_FALLBACK_SCSV)
+		continue;
+	    desc = inappropriate_fallback;
+	    errCode = SSL_ERROR_INAPPROPRIATE_FALLBACK_ALERT;
+	    goto alert_loser;
+	}
+    }
+
     /* grab the list of compression methods. */
     rv = ssl3_ConsumeHandshakeVariable(ss, &comps, 1, &b, &length);
     if (rv != SECSuccess) {
 	goto loser;		/* malformed */
     }
 
+    /* TLS 1.3 requires that compression be empty */
+    if (ss->version >= SSL_LIBRARY_VERSION_TLS_1_3) {
+        if (comps.len != 1 || comps.data[0] != ssl_compression_null) {
+            goto loser;
+        }
+    }
     desc = handshake_failure;
 
     /* Handle TLS hello extensions for SSL3 & TLS. We do not know if
@@ -8393,8 +8472,9 @@ ssl3_HandleV2ClientHello(sslSocket *ss, unsigned char *buffer, int length)
     rv = ssl3_NegotiateVersion(ss, version, PR_TRUE);
     if (rv != SECSuccess) {
 	/* send back which ever alert client will understand. */
-    	desc = (version > SSL_LIBRARY_VERSION_3_0) ? protocol_version : handshake_failure;
-	errCode = SSL_ERROR_NO_CYPHER_OVERLAP;
+	desc = (version > SSL_LIBRARY_VERSION_3_0) ? protocol_version
+	                                           : handshake_failure;
+	errCode = SSL_ERROR_UNSUPPORTED_VERSION;
 	goto alert_loser;
     }
 
@@ -8614,7 +8694,7 @@ ssl3_SendServerHello(sslSocket *ss)
 	rv = ssl3_AppendHandshakeVariable(
 	    ss, sid->u.ssl3.sessionID, sid->u.ssl3.sessionIDLength, 1);
     else
-	rv = ssl3_AppendHandshakeVariable(ss, NULL, 0, 1);
+	rv = ssl3_AppendHandshakeNumber(ss, 0, 1);
     if (rv != SECSuccess) {
 	return rv;	/* err set by AppendHandshake. */
     }
@@ -8664,11 +8744,11 @@ ssl3_PickSignatureHashAlgorithm(sslSocket *ss,
     unsigned int i, j;
     /* hashPreference expresses our preferences for hash algorithms, most
      * preferable first. */
-    static const PRUint8 hashPreference[] = {
-	tls_hash_sha256,
-	tls_hash_sha384,
-	tls_hash_sha512,
-	tls_hash_sha1,
+    static const SECOidTag hashPreference[] = {
+        SEC_OID_SHA256,
+        SEC_OID_SHA384,
+        SEC_OID_SHA512,
+        SEC_OID_SHA1,
     };
 
     switch (ss->ssl3.hs.kea_def->kea) {
@@ -9345,6 +9425,10 @@ skip:
 	}
 	rv = ssl3_HandleECDHClientKeyExchange(ss, b, length, 
 					      serverPubKey, serverKey);
+	if (ss->ephemeralECDHKeyPair) {
+	    ssl3_FreeKeyPair(ss->ephemeralECDHKeyPair);
+	    ss->ephemeralECDHKeyPair = NULL;
+	}
 	if (rv != SECSuccess) {
 	    return SECFailure;	/* error code set */
 	}

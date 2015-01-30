@@ -38,7 +38,8 @@ enum nsMencloseNotation
     NOTATION_DOWNDIAGONALSTRIKE = 0x200,
     NOTATION_VERTICALSTRIKE = 0x400,
     NOTATION_HORIZONTALSTRIKE = 0x800,
-    NOTATION_UPDIAGONALARROW = 0x1000
+    NOTATION_UPDIAGONALARROW = 0x1000,
+    NOTATION_PHASORANGLE = 0x2000
   };
 
 class nsMathMLmencloseFrame : public nsMathMLContainerFrame {
@@ -81,8 +82,14 @@ public:
   virtual nscoord
   FixInterFrameSpacing(nsHTMLReflowMetrics& aDesiredSize) MOZ_OVERRIDE;
 
+  bool
+  IsMrowLike() MOZ_OVERRIDE {
+    return mFrames.FirstChild() != mFrames.LastChild() ||
+           !mFrames.FirstChild();
+  }
+
 protected:
-  nsMathMLmencloseFrame(nsStyleContext* aContext);
+  explicit nsMathMLmencloseFrame(nsStyleContext* aContext);
   virtual ~nsMathMLmencloseFrame();
 
   nsresult PlaceInternal(nsRenderingContext& aRenderingContext,
@@ -102,6 +109,7 @@ protected:
   }
 
   nscoord mRuleThickness;
+  nscoord mRadicalRuleThickness;
   nsTArray<nsMathMLChar> mMathMLChar;
   int8_t mLongDivCharIndex, mRadicalCharIndex;
   nscoord mContentWidth;

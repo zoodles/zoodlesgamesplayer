@@ -33,12 +33,12 @@ HttpChannelParentListener::~HttpChannelParentListener()
 // HttpChannelParentListener::nsISupports
 //-----------------------------------------------------------------------------
 
-NS_IMPL_ISUPPORTS5(HttpChannelParentListener,
-                   nsIInterfaceRequestor,
-                   nsIStreamListener,
-                   nsIRequestObserver,
-                   nsIChannelEventSink,
-                   nsIRedirectResultListener)
+NS_IMPL_ISUPPORTS(HttpChannelParentListener,
+                  nsIInterfaceRequestor,
+                  nsIStreamListener,
+                  nsIRequestObserver,
+                  nsIChannelEventSink,
+                  nsIRedirectResultListener)
 
 //-----------------------------------------------------------------------------
 // HttpChannelParentListener::nsIRequestObserver
@@ -219,6 +219,7 @@ HttpChannelParentListener::OnRedirectResult(bool succeeded)
     parent->Delete();
     mNextListener = do_QueryInterface(redirectChannel);
     MOZ_ASSERT(mNextListener);
+    redirectChannel->SetParentListener(this);
   } else if (redirectChannel) {
     // Delete the redirect target channel: continue using old channel
     redirectChannel->Delete();

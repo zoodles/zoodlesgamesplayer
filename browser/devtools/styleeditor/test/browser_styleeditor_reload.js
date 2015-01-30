@@ -2,6 +2,13 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
+///////////////////
+//
+// Whitelisting this test.
+// As part of bug 1077403, the leaking uncaught rejection should be fixed. 
+//
+thisTestLeaksUncaughtRejectionsAndShouldBeFixed("Error: Unknown sheet source");
+
 const TESTCASE_URI = TEST_BASE_HTTPS + "simple.html";
 const NEW_URI = TEST_BASE_HTTPS + "media.html";
 
@@ -15,18 +22,10 @@ function test()
 {
   waitForExplicitFinish();
 
-  addTabAndOpenStyleEditor(function(panel) {
-    gContentWin = gBrowser.selectedTab.linkedBrowser.contentWindow.wrappedJSObject;
+  addTabAndOpenStyleEditors(2, function(panel) {
+    gContentWin = gBrowser.selectedBrowser.contentWindow.wrappedJSObject;
     gUI = panel.UI;
-
-    let count = 0;
-    gUI.on("editor-added", function editorAdded(event, editor) {
-      if (++count == 2) {
-        info("all editors added to UI");
-        gUI.off("editor-added", editorAdded);
-        gUI.editors[0].getSourceEditor().then(runTests);
-      }
-    })
+    gUI.editors[0].getSourceEditor().then(runTests);
   });
 
   content.location = TESTCASE_URI;
@@ -35,7 +34,11 @@ function test()
 function runTests()
 {
   let count = 0;
-  gUI.once("editor-selected", (event, editor) => {
+  gUI.on("editor-selected", function editorSelected(event, editor) {
+    if (editor.styleSheet != gUI.editors[1].styleSheet) {
+      return;
+    }
+    gUI.off("editor-selected", editorSelected);
     editor.getSourceEditor().then(() => {
       info("selected second editor, about to reload page");
       reloadPage();
@@ -49,7 +52,7 @@ function runTests()
       })
     });
   });
-  gUI.selectStyleSheet(gUI.editors[1].styleSheet.href, LINE_NO, COL_NO);
+  gUI.selectStyleSheet(gUI.editors[1].styleSheet, LINE_NO, COL_NO);
 }
 
 function testRemembered()

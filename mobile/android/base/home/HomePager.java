@@ -9,15 +9,18 @@ import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
 
+import org.mozilla.gecko.AppConstants.Versions;
 import org.mozilla.gecko.R;
+import org.mozilla.gecko.Telemetry;
+import org.mozilla.gecko.TelemetryContract;
 import org.mozilla.gecko.animation.PropertyAnimator;
 import org.mozilla.gecko.animation.ViewHelper;
 import org.mozilla.gecko.home.HomeAdapter.OnAddPanelListener;
 import org.mozilla.gecko.home.HomeConfig.PanelConfig;
+import org.mozilla.gecko.util.ThreadUtils;
 
 import android.content.Context;
 import android.graphics.drawable.Drawable;
-import android.os.Build;
 import android.os.Bundle;
 import android.support.v4.app.FragmentManager;
 import android.support.v4.app.LoaderManager;
@@ -30,11 +33,10 @@ import android.view.View;
 import android.view.ViewGroup;
 
 public class HomePager extends ViewPager {
-
     private static final int LOADER_ID_CONFIG = 0;
 
     private final Context mContext;
-    private volatile boolean mLoaded;
+    private volatile boolean mVisible;
     private Decor mDecor;
     private View mTabStrip;
     private HomeBanner mHomeBanner;
@@ -43,22 +45,32 @@ public class HomePager extends ViewPager {
     private final OnAddPanelListener mAddPanelListener;
 
     private final HomeConfig mConfig;
-    private ConfigLoaderCallbacks mConfigLoaderCallbacks;
+    private final ConfigLoaderCallbacks mConfigLoaderCallbacks;
 
     private String mInitialPanelId;
 
     // Cached original ViewPager background.
     private final Drawable mOriginalBackground;
 
+    // Telemetry session for current panel.
+    private TelemetryContract.Session mCurrentPanelSession;
+    private String mCurrentPanelSessionSuffix;
+
+    // Current load state of HomePager.
+    private LoadState mLoadState;
+
+    // Listens for when the current panel changes.
+    private OnPanelChangeListener mPanelChangedListener;
+
     // This is mostly used by UI tests to easily fetch
     // specific list views at runtime.
-    static final String LIST_TAG_HISTORY = "history";
-    static final String LIST_TAG_BOOKMARKS = "bookmarks";
-    static final String LIST_TAG_READING_LIST = "reading_list";
-    static final String LIST_TAG_TOP_SITES = "top_sites";
-    static final String LIST_TAG_MOST_RECENT = "most_recent";
-    static final String LIST_TAG_LAST_TABS = "last_tabs";
-    static final String LIST_TAG_BROWSER_SEARCH = "browser_search";
+    public static final String LIST_TAG_HISTORY = "history";
+    public static final String LIST_TAG_BOOKMARKS = "bookmarks";
+    public static final String LIST_TAG_READING_LIST = "reading_list";
+    public static final String LIST_TAG_TOP_SITES = "top_sites";
+    public static final String LIST_TAG_RECENT_TABS = "recent_tabs";
+    public static final String LIST_TAG_BROWSER_SEARCH = "browser_search";
+    public static final String LIST_TAG_REMOTE_TABS = "remote_tabs";
 
     public interface OnUrlOpenListener {
         public enum Flags {
@@ -69,8 +81,37 @@ public class HomePager extends ViewPager {
         public void onUrlOpen(String url, EnumSet<Flags> flags);
     }
 
-    public interface OnNewTabsListener {
-        public void onNewTabs(String[] urls);
+    /**
+     * Interface for requesting a new tab be opened in the background.
+     * <p>
+     * This is the <code>HomeFragment</code> equivalent of opening a new tab by
+     * long clicking a link and selecting the "Open new [private] tab" context
+     * menu option.
+     */
+    public interface OnUrlOpenInBackgroundListener {
+        public enum Flags {
+            PRIVATE,
+        }
+
+        /**
+         * Open a new tab with the given URL
+         *
+         * @param url to open.
+         * @param flags to open new tab with.
+         */
+        public void onUrlOpenInBackground(String url, EnumSet<Flags> flags);
+    }
+
+    /**
+     * Interface for listening into ViewPager panel changes
+     */
+    public interface OnPanelChangeListener {
+        /**
+         * Called when a new panel is selected.
+         *
+         * @param panelId of the newly selected panel
+         */
+        public void onPanelSelected(String panelId);
     }
 
     interface OnTitleClickListener {
@@ -88,8 +129,17 @@ public class HomePager extends ViewPager {
         public void setOnTitleClickListener(OnTitleClickListener onTitleClickListener);
     }
 
-    static final String CAN_LOAD_ARG = "canLoad";
-    static final String PANEL_CONFIG_ARG = "panelConfig";
+    /**
+     * State of HomePager with respect to loading its configuration.
+     */
+    private enum LoadState {
+        UNLOADED,
+        LOADING,
+        LOADED
+    }
+
+    public static final String CAN_LOAD_ARG = "canLoad";
+    public static final String PANEL_CONFIG_ARG = "panelConfig";
 
     public HomePager(Context context) {
         this(context, null);
@@ -124,6 +174,8 @@ public class HomePager extends ViewPager {
 
         mOriginalBackground = getBackground();
         setOnPageChangeListener(new PageChangeListener());
+
+        mLoadState = LoadState.UNLOADED;
     }
 
     @Override
@@ -152,7 +204,9 @@ public class HomePager extends ViewPager {
      * @param fm FragmentManager for the adapter
      */
     public void load(LoaderManager lm, FragmentManager fm, String panelId, PropertyAnimator animator) {
-        mLoaded = true;
+        mLoadState = LoadState.LOADING;
+
+        mVisible = true;
         mInitialPanelId = panelId;
 
         // Update the home banner message each time the HomePager is loaded.
@@ -161,11 +215,11 @@ public class HomePager extends ViewPager {
         }
 
         // Only animate on post-HC devices, when a non-null animator is given
-        final boolean shouldAnimate = (animator != null && Build.VERSION.SDK_INT >= 11);
+        final boolean shouldAnimate = Versions.feature11Plus && animator != null;
 
         final HomeAdapter adapter = new HomeAdapter(mContext, fm);
         adapter.setOnAddPanelListener(mAddPanelListener);
-        adapter.setCanLoadHint(!shouldAnimate);
+        adapter.setCanLoadHint(true);
         setAdapter(adapter);
 
         // Don't show the tabs strip until we have the
@@ -185,7 +239,6 @@ public class HomePager extends ViewPager {
                 @Override
                 public void onPropertyAnimationEnd() {
                     setLayerType(View.LAYER_TYPE_NONE, null);
-                    adapter.setCanLoadHint(true);
                 }
             });
 
@@ -201,20 +254,24 @@ public class HomePager extends ViewPager {
      * Removes all child fragments to free memory.
      */
     public void unload() {
-        mLoaded = false;
+        mVisible = false;
         setAdapter(null);
+        mLoadState = LoadState.UNLOADED;
+
+        // Stop UI Telemetry sessions.
+        stopCurrentPanelTelemetrySession();
     }
 
     /**
-     * Determines whether the pager is loaded.
+     * Determines whether the pager is visible.
      *
      * Unlike getVisibility(), this method does not need to be called on the UI
      * thread.
      *
      * @return Whether the pager and its fragments are loaded
      */
-    public boolean isLoaded() {
-        return mLoaded;
+    public boolean isVisible() {
+        return mVisible;
     }
 
     @Override
@@ -227,6 +284,40 @@ public class HomePager extends ViewPager {
 
         if (mHomeBanner != null) {
             mHomeBanner.setActive(item == mDefaultPageIndex);
+        }
+    }
+
+    /**
+     * Shows a home panel. If the given panelId is null,
+     * the default panel will be shown. No action will be taken if:
+     *  * HomePager has not loaded yet
+     *  * Panel with the given panelId cannot be found
+     *
+     * @param panelId of the home panel to be shown.
+     */
+    public void showPanel(String panelId) {
+        if (!mVisible) {
+            return;
+        }
+
+        switch (mLoadState) {
+            case LOADING:
+                mInitialPanelId = panelId;
+                break;
+
+            case LOADED:
+                int position = mDefaultPageIndex;
+                if (panelId != null) {
+                    position = ((HomeAdapter) getAdapter()).getItemPosition(panelId);
+                }
+
+                if (position > -1) {
+                    setCurrentItem(position);
+                }
+                break;
+
+            default:
+                // Do nothing.
         }
     }
 
@@ -266,7 +357,7 @@ public class HomePager extends ViewPager {
     private void updateUiFromConfigState(HomeConfig.State configState) {
         // We only care about the adapter if HomePager is currently
         // loaded, which means it's visible in the activity.
-        if (!mLoaded) {
+        if (!mVisible) {
             return;
         }
 
@@ -275,6 +366,10 @@ public class HomePager extends ViewPager {
         }
 
         final HomeAdapter adapter = (HomeAdapter) getAdapter();
+
+        // Disable any fragment loading until we have the initial
+        // panel selection done.
+        adapter.setCanLoadHint(false);
 
         // Destroy any existing panels currently loaded
         // in the pager.
@@ -333,6 +428,36 @@ public class HomePager extends ViewPager {
                 setCurrentItem(mDefaultPageIndex, false);
             }
         }
+
+        // The selection is updated asynchronously so we need to post to
+        // UI thread to give the pager time to commit the new page selection
+        // internally and load the right initial panel.
+        ThreadUtils.getUiHandler().post(new Runnable() {
+            @Override
+            public void run() {
+                adapter.setCanLoadHint(true);
+            }
+        });
+    }
+
+    public void setOnPanelChangeListener(OnPanelChangeListener listener) {
+       mPanelChangedListener = listener;
+    }
+
+    /**
+     * Notify listeners of newly selected panel.
+     *
+     * @param position of the newly selected panel
+     */
+    private void notifyPanelSelected(int position) {
+        if (mDecor != null) {
+            mDecor.onPageSelected(position);
+        }
+
+        if (mPanelChangedListener != null) {
+            final String panelId = ((HomeAdapter) getAdapter()).getPanelIdAtPosition(position);
+            mPanelChangedListener.onPanelSelected(panelId);
+        }
     }
 
     private class ConfigLoaderCallbacks implements LoaderCallbacks<HomeConfig.State> {
@@ -343,24 +468,28 @@ public class HomePager extends ViewPager {
 
         @Override
         public void onLoadFinished(Loader<HomeConfig.State> loader, HomeConfig.State configState) {
+            mLoadState = LoadState.LOADED;
             updateUiFromConfigState(configState);
         }
 
         @Override
         public void onLoaderReset(Loader<HomeConfig.State> loader) {
+            mLoadState = LoadState.UNLOADED;
         }
     }
 
     private class PageChangeListener implements ViewPager.OnPageChangeListener {
         @Override
         public void onPageSelected(int position) {
-            if (mDecor != null) {
-                mDecor.onPageSelected(position);
-            }
+            notifyPanelSelected(position);
 
             if (mHomeBanner != null) {
                 mHomeBanner.setActive(position == mDefaultPageIndex);
             }
+
+            // Start a UI telemetry session for the newly selected panel.
+            final String newPanelId = ((HomeAdapter) getAdapter()).getPanelIdAtPosition(position);
+            startNewPanelTelemetrySession(newPanelId);
         }
 
         @Override
@@ -376,5 +505,32 @@ public class HomePager extends ViewPager {
 
         @Override
         public void onPageScrollStateChanged(int state) { }
+    }
+
+    /**
+     * Start UI telemetry session for the a panel.
+     * If there is currently a session open for a panel,
+     * it will be stopped before a new one is started.
+     *
+     * @param panelId of panel to start a session for
+     */
+    private void startNewPanelTelemetrySession(String panelId) {
+        // Stop the current panel's session if we have one.
+        stopCurrentPanelTelemetrySession();
+
+        mCurrentPanelSession = TelemetryContract.Session.HOME_PANEL;
+        mCurrentPanelSessionSuffix = panelId;
+        Telemetry.startUISession(mCurrentPanelSession, mCurrentPanelSessionSuffix);
+    }
+
+    /**
+     * Stop the current panel telemetry session if one exists.
+     */
+    private void stopCurrentPanelTelemetrySession() {
+        if (mCurrentPanelSession != null) {
+            Telemetry.stopUISession(mCurrentPanelSession, mCurrentPanelSessionSuffix);
+            mCurrentPanelSession = null;
+            mCurrentPanelSessionSuffix = null;
+        }
     }
 }

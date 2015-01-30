@@ -10,7 +10,7 @@
 #include "nsIPrintSettings.h"
 #include "nsDirectoryServiceDefs.h"
 
-NS_IMPL_ISUPPORTS1(nsDeviceContextSpecAndroid, nsIDeviceContextSpec)
+NS_IMPL_ISUPPORTS(nsDeviceContextSpecAndroid, nsIDeviceContextSpec)
 
 NS_IMETHODIMP
 nsDeviceContextSpecAndroid::GetSurfaceForPrinter(gfxASurface** aSurface)
@@ -82,11 +82,5 @@ nsDeviceContextSpecAndroid::EndDocument()
   NS_ENSURE_SUCCESS(rv, rv);
   
   destFile->SetPermissions(0666);
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-nsDeviceContextSpecAndroid::GetPath (const char** aPath)
-{
   return NS_OK;
 }

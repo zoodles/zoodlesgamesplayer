@@ -58,6 +58,7 @@
 #include <startup-notification-1.0/libsn/sn.h>
 #endif
 
+#include "mozilla/Assertions.h"
 #include "mozilla/Likely.h"
 #include "mozilla/Preferences.h"
 #include "nsIPrefService.h"
@@ -122,6 +123,10 @@ extern "C" {
 #include "NativeKeyBindings.h"
 #include "nsWindow.h"
 
+#include <dlfcn.h>
+
+#include "mozilla/layers/APZCTreeManager.h"
+
 using namespace mozilla;
 using namespace mozilla::gfx;
 using namespace mozilla::widget;
@@ -136,6 +141,9 @@ const gint kEvents = GDK_EXPOSURE_MASK | GDK_STRUCTURE_MASK |
                      GDK_VISIBILITY_NOTIFY_MASK |
                      GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK |
                      GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK |
+#if GTK_CHECK_VERSION(3,4,0)
+                     GDK_SMOOTH_SCROLL_MASK |
+#endif
                      GDK_SCROLL_MASK |
                      GDK_POINTER_MOTION_MASK;
 
@@ -291,7 +299,7 @@ protected:
     typedef pixman_region32 RawRef;
 
     nsSimpleRef() { data = nullptr; }
-    nsSimpleRef(const RawRef &aRawRef) : pixman_region32(aRawRef) { }
+    explicit nsSimpleRef(const RawRef &aRawRef) : pixman_region32(aRawRef) { }
 
     static void Release(pixman_region32& region) {
         pixman_region32_fini(&region);
@@ -381,6 +389,10 @@ nsWindow::nsWindow()
 
     mTransparencyBitmapWidth  = 0;
     mTransparencyBitmapHeight = 0;
+
+#if GTK_CHECK_VERSION(3,4,0)
+    mLastScrollEventTime = GDK_CURRENT_TIME;
+#endif
 }
 
 nsWindow::~nsWindow()
@@ -398,14 +410,18 @@ nsWindow::ReleaseGlobals()
 {
   for (uint32_t i = 0; i < ArrayLength(gCursorCache); ++i) {
     if (gCursorCache[i]) {
+#if (MOZ_WIDGET_GTK == 3)
+      g_object_unref(gCursorCache[i]);
+#else
       gdk_cursor_unref(gCursorCache[i]);
+#endif
       gCursorCache[i] = nullptr;
     }
   }
 }
 
-NS_IMPL_ISUPPORTS_INHERITED1(nsWindow, nsBaseWidget,
-                             nsISupportsWeakReference)
+NS_IMPL_ISUPPORTS_INHERITED(nsWindow, nsBaseWidget,
+                            nsISupportsWeakReference)
 
 void
 nsWindow::CommonCreate(nsIWidget *aParent, bool aListenForResizes)
@@ -459,6 +475,9 @@ nsWindow::DispatchEvent(WidgetGUIEvent* aEvent, nsEventStatus& aStatus)
     debug_DumpEvent(stdout, aEvent->widget, aEvent,
                     nsAutoCString("something"), 0);
 #endif
+    // Translate the mouse event into device pixels.
+    aEvent->refPoint.x = GdkCoordToDevicePixels(aEvent->refPoint.x);
+    aEvent->refPoint.y = GdkCoordToDevicePixels(aEvent->refPoint.y);
 
     aStatus = nsEventStatus_eIgnore;
     nsIWidgetListener* listener =
@@ -622,7 +641,7 @@ nsWindow::Destroy(void)
     if (rollupListener) {
         nsCOMPtr<nsIWidget> rollupWidget = rollupListener->GetRollupWidget();
         if (static_cast<nsIWidget *>(this) == rollupWidget) {
-            rollupListener->Rollup(0, nullptr, nullptr);
+            rollupListener->Rollup(0, false, nullptr, nullptr);
         }
     }
 
@@ -715,6 +734,12 @@ nsWindow::GetDPI()
         return 96.0f;
     }
     return float(DisplayHeight(dpy, defaultScreen)/heightInches);
+}
+
+double
+nsWindow::GetDefaultScaleInternal()
+{
+    return GdkScaleFactor();
 }
 
 NS_IMETHODIMP
@@ -815,8 +840,9 @@ nsWindow::ReparentNativeWidgetInternal(nsIWidget* aNewParent,
         }
 
         if (!mIsTopLevel) {
-            gdk_window_reparent(mGdkWindow, aNewParentWindow, mBounds.x,
-                                mBounds.y);
+            gdk_window_reparent(mGdkWindow, aNewParentWindow,
+                                DevicePixelsToGdkCoordRoundDown(mBounds.x),
+                                DevicePixelsToGdkCoordRoundDown(mBounds.y));
         }
     }
 
@@ -851,26 +877,26 @@ NS_IMETHODIMP
 nsWindow::ConstrainPosition(bool aAllowSlop, int32_t *aX, int32_t *aY)
 {
     if (mIsTopLevel && mShell) {
-        int32_t screenWidth = gdk_screen_width();
-        int32_t screenHeight = gdk_screen_height();
+        int width = GdkCoordToDevicePixels(gdk_screen_width());
+        int height = GdkCoordToDevicePixels(gdk_screen_height());
         if (aAllowSlop) {
             if (*aX < (kWindowPositionSlop - mBounds.width))
                 *aX = kWindowPositionSlop - mBounds.width;
-            if (*aX > (screenWidth - kWindowPositionSlop))
-                *aX = screenWidth - kWindowPositionSlop;
+            if (*aX > (width - kWindowPositionSlop))
+                *aX = width - kWindowPositionSlop;
             if (*aY < (kWindowPositionSlop - mBounds.height))
                 *aY = kWindowPositionSlop - mBounds.height;
-            if (*aY > (screenHeight - kWindowPositionSlop))
-                *aY = screenHeight - kWindowPositionSlop;
+            if (*aY > (height - kWindowPositionSlop))
+                *aY = height - kWindowPositionSlop;
         } else {
             if (*aX < 0)
                 *aX = 0;
-            if (*aX > (screenWidth - mBounds.width))
-                *aX = screenWidth - mBounds.width;
+            if (*aX > (width - mBounds.width))
+                *aX = width - mBounds.width;
             if (*aY < 0)
                 *aY = 0;
-            if (*aY > (screenHeight - mBounds.height))
-                *aY = screenHeight - mBounds.height;
+            if (*aY > (height - mBounds.height))
+                *aY = height - mBounds.height;
         }
     }
     return NS_OK;
@@ -883,10 +909,14 @@ void nsWindow::SetSizeConstraints(const SizeConstraints& aConstraints)
 
     if (mShell) {
         GdkGeometry geometry;
-        geometry.min_width = mSizeConstraints.mMinSize.width;
-        geometry.min_height = mSizeConstraints.mMinSize.height;
-        geometry.max_width = mSizeConstraints.mMaxSize.width;
-        geometry.max_height = mSizeConstraints.mMaxSize.height;
+        geometry.min_width = DevicePixelsToGdkCoordRoundUp(
+                             mSizeConstraints.mMinSize.width);
+        geometry.min_height = DevicePixelsToGdkCoordRoundUp(
+                              mSizeConstraints.mMinSize.height);
+        geometry.max_width = DevicePixelsToGdkCoordRoundDown(
+                             mSizeConstraints.mMaxSize.width);
+        geometry.max_height = DevicePixelsToGdkCoordRoundDown(
+                              mSizeConstraints.mMaxSize.height);
 
         uint32_t hints = GDK_HINT_MIN_SIZE | GDK_HINT_MAX_SIZE;
         gtk_window_set_geometry_hints(GTK_WINDOW(mShell), nullptr,
@@ -1149,11 +1179,13 @@ nsWindow::Move(double aX, double aY)
 
     mNeedsMove = false;
 
+    GdkPoint point = DevicePixelsToGdkPointRoundDown(nsIntPoint(x, y));
+
     if (mIsTopLevel) {
-        gtk_window_move(GTK_WINDOW(mShell), x, y);
+        gtk_window_move(GTK_WINDOW(mShell), point.x, point.y);
     }
     else if (mGdkWindow) {
-        gdk_window_move(mGdkWindow, x, y);
+        gdk_window_move(mGdkWindow, point.x, point.y);
     }
 
     NotifyRollupGeometryChange();
@@ -1283,13 +1315,7 @@ SetUserTimeAndStartupIDForActivatedWindow(GtkWidget* aWindow)
     }
 
     if (sn_launchee_context_get_id_has_timestamp(ctx)) {
-        PRLibrary* gtkLibrary;
-        SetUserTimeFunc setUserTimeFunc = (SetUserTimeFunc)
-            PR_FindFunctionSymbolAndLibrary("gdk_x11_window_set_user_time", &gtkLibrary);
-        if (setUserTimeFunc) {
-            setUserTimeFunc(gdkWindow, sn_launchee_context_get_timestamp(ctx));
-            PR_UnloadLibrary(gtkLibrary);
-        }
+        gdk_x11_window_set_user_time(gdkWindow, sn_launchee_context_get_timestamp(ctx));
     }
 
     sn_launchee_context_setup_window(ctx, gdk_x11_window_get_xid(gdkWindow));
@@ -1426,7 +1452,7 @@ nsWindow::GetScreenBounds(nsIntRect &aRect)
         // use the point including window decorations
         gint x, y;
         gdk_window_get_root_origin(gtk_widget_get_window(GTK_WIDGET(mContainer)), &x, &y);
-        aRect.MoveTo(x, y);
+        aRect.MoveTo(GdkPointToDevicePixels({ x, y }));
     }
     else {
         aRect.MoveTo(WidgetToScreenOffset());
@@ -1507,8 +1533,9 @@ nsWindow::SetCursor(nsCursor aCursor)
     }
 
     // Only change cursor if it's actually been changed
-    if (aCursor != mCursor) {
+    if (aCursor != mCursor || mUpdateCursor) {
         GdkCursor *newCursor = nullptr;
+        mUpdateCursor = false;
 
         newCursor = get_gtk_cursor(aCursor);
 
@@ -1579,7 +1606,11 @@ nsWindow::SetCursor(imgIContainer* aCursor,
             gdk_window_set_cursor(gtk_widget_get_window(GTK_WIDGET(mContainer)), cursor);
             rv = NS_OK;
         }
+#if (MOZ_WIDGET_GTK == 3)
+        g_object_unref(cursor);
+#else
         gdk_cursor_unref(cursor);
+#endif
     }
 
     return rv;
@@ -1591,16 +1622,11 @@ nsWindow::Invalidate(const nsIntRect &aRect)
     if (!mGdkWindow)
         return NS_OK;
 
-    GdkRectangle rect;
-    rect.x = aRect.x;
-    rect.y = aRect.y;
-    rect.width = aRect.width;
-    rect.height = aRect.height;
+    GdkRectangle rect = DevicePixelsToGdkRectRoundOut(aRect);
+    gdk_window_invalidate_rect(mGdkWindow, &rect, FALSE);
 
     LOGDRAW(("Invalidate (rect) [%p]: %d %d %d %d\n", (void *)this,
              rect.x, rect.y, rect.width, rect.height));
-
-    gdk_window_invalidate_rect(mGdkWindow, &rect, FALSE);
 
     return NS_OK;
 }
@@ -1739,7 +1765,7 @@ nsWindow::WidgetToScreenOffset()
         gdk_window_get_origin(mGdkWindow, &x, &y);
     }
 
-    return nsIntPoint(x, y);
+    return GdkPointToDevicePixels({ x, y });
 }
 
 NS_IMETHODIMP
@@ -2031,7 +2057,9 @@ nsWindow::OnExposeEvent(cairo_t *cr)
         return FALSE;
     }
 
-    nsIntRegion &region = exposeRegion.mRegion;
+    gint scale = GdkScaleFactor();
+    nsIntRegion& region = exposeRegion.mRegion;
+    region.ScaleRoundOut(scale, scale);
 
     ClientLayerManager *clientLayers =
         (GetLayerManager()->GetBackendType() == LayersBackend::LAYERS_CLIENT)
@@ -2134,18 +2162,21 @@ nsWindow::OnExposeEvent(cairo_t *cr)
     if (gfxPlatform::GetPlatform()->
             SupportsAzureContentForType(BackendType::CAIRO)) {
         IntSize intSize(surf->GetSize().width, surf->GetSize().height);
-        ctx = new gfxContext(gfxPlatform::GetPlatform()->
-            CreateDrawTargetForSurface(surf, intSize));
+        RefPtr<DrawTarget> dt =
+          gfxPlatform::GetPlatform()->CreateDrawTargetForSurface(surf, intSize);
+        ctx = new gfxContext(dt);
     } else if (gfxPlatform::GetPlatform()->
                    SupportsAzureContentForType(BackendType::SKIA) &&
-               surf->GetType() != gfxSurfaceType::Image) {
+               surf->GetType() == gfxSurfaceType::Image) {
        gfxImageSurface* imgSurf = static_cast<gfxImageSurface*>(surf);
        SurfaceFormat format = ImageFormatToSurfaceFormat(imgSurf->Format());
        IntSize intSize(surf->GetSize().width, surf->GetSize().height);
-       ctx = new gfxContext(gfxPlatform::GetPlatform()->CreateDrawTargetForData(
-           imgSurf->Data(), intSize, imgSurf->Stride(), format));
-    }  else {
-        ctx = new gfxContext(surf);
+       RefPtr<DrawTarget> dt =
+         gfxPlatform::GetPlatform()->CreateDrawTargetForData(
+                        imgSurf->Data(), intSize, imgSurf->Stride(), format);
+       ctx = new gfxContext(dt);
+    } else {
+        MOZ_CRASH("Unexpected content type");
     }
 
 #ifdef MOZ_X11
@@ -2220,7 +2251,7 @@ nsWindow::OnExposeEvent(cairo_t *cr)
         }
     }
 #  ifdef MOZ_HAVE_SHMIMAGE
-    if (nsShmImage::UseShm() && MOZ_LIKELY(!mIsDestroyed)) {
+    if (mShmImage && MOZ_LIKELY(!mIsDestroyed)) {
 #if (MOZ_WIDGET_GTK == 2)
         mShmImage->Put(mGdkWindow, exposeRegion.mRects, exposeRegion.mRectsEnd);
 #else
@@ -2267,7 +2298,10 @@ nsWindow::UpdateAlpha(gfxPattern* aPattern, nsIntRect aBoundsRect)
                                 stride, SurfaceFormat::A8);
 
     if (drawTarget) {
-        drawTarget->FillRect(Rect(0, 0, aBoundsRect.width, aBoundsRect.height),
+        Matrix transform = Matrix::Translation(-aBoundsRect.x, -aBoundsRect.y);
+        drawTarget->SetTransform(transform);
+
+        drawTarget->FillRect(Rect(aBoundsRect.x, aBoundsRect.y, aBoundsRect.width, aBoundsRect.height),
                              *aPattern->GetPattern(drawTarget),
                              DrawOptions(1.0, CompositionOp::OP_SOURCE));
     }
@@ -2365,21 +2399,24 @@ nsWindow::OnSizeAllocate(GtkAllocation *aAllocation)
          (void *)this, aAllocation->x, aAllocation->y,
          aAllocation->width, aAllocation->height));
 
-    nsIntSize size(aAllocation->width, aAllocation->height);
+    nsIntSize size = GdkRectToDevicePixels(*aAllocation).Size();
+
     if (mBounds.Size() == size)
         return;
+
+    nsIntRect rect;
 
     // Invalidate the new part of the window now for the pending paint to
     // minimize background flashes (GDK does not do this for external resizes
     // of toplevels.)
     if (mBounds.width < size.width) {
-        GdkRectangle rect =
-            { mBounds.width, 0, size.width - mBounds.width, size.height };
+        GdkRectangle rect = DevicePixelsToGdkRectRoundOut(
+            { mBounds.width, 0, size.width - mBounds.width, size.height });
         gdk_window_invalidate_rect(mGdkWindow, &rect, FALSE);
     }
     if (mBounds.height < size.height) {
-        GdkRectangle rect =
-            { 0, mBounds.height, size.width, size.height - mBounds.height };
+        GdkRectangle rect = DevicePixelsToGdkRectRoundOut(
+            { 0, mBounds.height, size.width, size.height - mBounds.height });
         gdk_window_invalidate_rect(mGdkWindow, &rect, FALSE);
     }
 
@@ -3017,19 +3054,21 @@ nsWindow::OnKeyPressEvent(GdkEventKey *aEvent)
     }
     else {
         // If the character code is in the BMP, send the key press event.
-        // Otherwise, send a text event with the equivalent UTF-16 string.
+        // Otherwise, send a compositionchange event with the equivalent UTF-16
+        // string.
         if (IS_IN_BMP(event.charCode)) {
             DispatchEvent(&event, status);
         }
         else {
-            WidgetTextEvent textEvent(true, NS_TEXT_TEXT, this);
+            WidgetCompositionEvent compositionChangeEvent(
+                                     true, NS_COMPOSITION_CHANGE, this);
             char16_t textString[3];
             textString[0] = H_SURROGATE(event.charCode);
             textString[1] = L_SURROGATE(event.charCode);
             textString[2] = 0;
-            textEvent.theText = textString;
-            textEvent.time = event.time;
-            DispatchEvent(&textEvent, status);
+            compositionChangeEvent.mData = textString;
+            compositionChangeEvent.time = event.time;
+            DispatchEvent(&compositionChangeEvent, status);
         }
     }
 
@@ -3071,10 +3110,37 @@ nsWindow::OnScrollEvent(GdkEventScroll *aEvent)
     // check to see if we should rollup
     if (CheckForRollup(aEvent->x_root, aEvent->y_root, true, false))
         return;
-
+#if GTK_CHECK_VERSION(3,4,0)
+    // check for duplicate legacy scroll event, see GNOME bug 726878
+    if (mLastScrollEventTime == aEvent->time)
+        return; 
+#endif
     WidgetWheelEvent wheelEvent(true, NS_WHEEL_WHEEL, this);
     wheelEvent.deltaMode = nsIDOMWheelEvent::DOM_DELTA_LINE;
     switch (aEvent->direction) {
+#if GTK_CHECK_VERSION(3,4,0)
+    case GDK_SCROLL_SMOOTH:
+    {
+        // As of GTK 3.4, all directional scroll events are provided by
+        // the GDK_SCROLL_SMOOTH direction on XInput2 devices.
+        mLastScrollEventTime = aEvent->time;
+        // TODO - use a more appropriate scrolling unit than lines.
+        // Multiply event deltas by 3 to emulate legacy behaviour.
+        wheelEvent.deltaX = aEvent->delta_x * 3;
+        wheelEvent.deltaY = aEvent->delta_y * 3;
+        wheelEvent.mIsNoLineOrPageDelta = true;
+        // This next step manually unsets smooth scrolling for touch devices 
+        // that trigger GDK_SCROLL_SMOOTH. We use the slave device, which 
+        // represents the actual input.
+        GdkDevice *device = gdk_event_get_source_device((GdkEvent*)aEvent);
+        GdkInputSource source = gdk_device_get_source(device);
+        if (source == GDK_SOURCE_TOUCHSCREEN ||
+            source == GDK_SOURCE_TOUCHPAD) {
+            wheelEvent.scrollType = WidgetWheelEvent::SCROLL_ASYNCHRONOUSELY;
+        }
+        break;
+    }
+#endif
     case GDK_SCROLL_UP:
         wheelEvent.deltaY = wheelEvent.lineOrPageDeltaY = -3;
         break;
@@ -3110,8 +3176,19 @@ nsWindow::OnScrollEvent(GdkEventScroll *aEvent)
 
     wheelEvent.time = aEvent->time;
 
-    nsEventStatus status;
-    DispatchEvent(&wheelEvent, status);
+    if (mAPZC) {
+        uint64_t inputBlockId = 0;
+        ScrollableLayerGuid guid;
+
+        nsEventStatus result = mAPZC->ReceiveInputEvent(*wheelEvent.AsWheelEvent(), &guid, &inputBlockId);
+        if (result == nsEventStatus_eConsumeNoDefault) {
+            return;
+        }
+        DispatchEventForAPZ(&wheelEvent, guid, inputBlockId);
+    } else {
+        nsEventStatus status;
+        DispatchEvent(&wheelEvent, status);
+    }
 }
 
 void
@@ -3134,10 +3211,8 @@ nsWindow::OnVisibilityNotifyEvent(GdkEventVisibility *aEvent)
 
         mIsFullyObscured = false;
 
-        if (!nsGtkIMModule::IsVirtualKeyboardOpened()) {
-            // if we have to retry the grab, retry it.
-            EnsureGrabs();
-        }
+        // if we have to retry the grab, retry it.
+        EnsureGrabs();
         break;
     default: // includes GDK_VISIBILITY_FULLY_OBSCURED
         mIsFullyObscured = true;
@@ -3289,7 +3364,7 @@ GetBrandName(nsXPIDLString& brandName)
             getter_Copies(brandName));
 
     if (brandName.IsEmpty())
-        brandName.Assign(NS_LITERAL_STRING("Mozilla"));
+        brandName.AssignLiteral(MOZ_UTF16("Mozilla"));
 }
 
 static GdkWindow *
@@ -3576,6 +3651,8 @@ nsWindow::Create(nsIWidget        *aParent,
     }
         break;
     case eWindowType_plugin:
+    case eWindowType_plugin_ipc_chrome:
+    case eWindowType_plugin_ipc_content:
     case eWindowType_child: {
         if (parentMozContainer) {
             mGdkWindow = CreateGdkWindow(parentGdkWindow, parentMozContainer);
@@ -3802,14 +3879,17 @@ nsWindow::SetWindowClass(const nsAString &xulWinType)
 void
 nsWindow::NativeResize(int32_t aWidth, int32_t aHeight, bool    aRepaint)
 {
+    gint width = DevicePixelsToGdkCoordRoundUp(aWidth);
+    gint height = DevicePixelsToGdkCoordRoundUp(aHeight);
+    
     LOG(("nsWindow::NativeResize [%p] %d %d\n", (void *)this,
-         aWidth, aHeight));
+         width, height));
 
     // clear our resize flag
     mNeedsResize = false;
 
     if (mIsTopLevel) {
-        gtk_window_resize(GTK_WINDOW(mShell), aWidth, aHeight);
+        gtk_window_resize(GTK_WINDOW(mShell), width, height);
     }
     else if (mContainer) {
         GtkWidget *widget = GTK_WIDGET(mContainer);
@@ -3817,12 +3897,12 @@ nsWindow::NativeResize(int32_t aWidth, int32_t aHeight, bool    aRepaint)
         gtk_widget_get_allocation(widget, &prev_allocation);
         allocation.x = prev_allocation.x;
         allocation.y = prev_allocation.y;
-        allocation.width = aWidth;
-        allocation.height = aHeight;
+        allocation.width = width;
+        allocation.height = height;
         gtk_widget_size_allocate(widget, &allocation);
     }
     else if (mGdkWindow) {
-        gdk_window_resize(mGdkWindow, aWidth, aHeight);
+        gdk_window_resize(mGdkWindow, width, height);
     }
 }
 
@@ -3831,28 +3911,33 @@ nsWindow::NativeResize(int32_t aX, int32_t aY,
                        int32_t aWidth, int32_t aHeight,
                        bool    aRepaint)
 {
+    gint width = DevicePixelsToGdkCoordRoundUp(aWidth);
+    gint height = DevicePixelsToGdkCoordRoundUp(aHeight);
+    gint x = DevicePixelsToGdkCoordRoundDown(aX);
+    gint y = DevicePixelsToGdkCoordRoundDown(aY);
+
     mNeedsResize = false;
     mNeedsMove = false;
 
     LOG(("nsWindow::NativeResize [%p] %d %d %d %d\n", (void *)this,
-         aX, aY, aWidth, aHeight));
+         x, y, width, height));
 
     if (mIsTopLevel) {
-        // aX and aY give the position of the window manager frame top-left.
-        gtk_window_move(GTK_WINDOW(mShell), aX, aY);
+        // x and y give the position of the window manager frame top-left.
+        gtk_window_move(GTK_WINDOW(mShell), x, y);
         // This sets the client window size.
-        gtk_window_resize(GTK_WINDOW(mShell), aWidth, aHeight);
+        gtk_window_resize(GTK_WINDOW(mShell), width, height);
     }
     else if (mContainer) {
         GtkAllocation allocation;
-        allocation.x = aX;
-        allocation.y = aY;
-        allocation.width = aWidth;
-        allocation.height = aHeight;
+        allocation.x = x;
+        allocation.y = y;
+        allocation.width = width;
+        allocation.height = height;
         gtk_widget_size_allocate(GTK_WIDGET(mContainer), &allocation);
     }
     else if (mGdkWindow) {
-        gdk_window_move_resize(mGdkWindow, aX, aY, aWidth, aHeight);
+        gdk_window_move_resize(mGdkWindow, x, y, width, height);
     }
 }
 
@@ -4035,6 +4120,13 @@ nsWindow::GetTransparencyMode()
 nsresult
 nsWindow::ConfigureChildren(const nsTArray<Configuration>& aConfigurations)
 {
+    // If this is a remotely updated widget we receive clipping, position, and
+    // size information from a source other than our owner. Don't let our parent
+    // update this information.
+    if (mWindowType == eWindowType_plugin_ipc_chrome) {
+      return NS_OK;
+    }
+
     for (uint32_t i = 0; i < aConfigurations.Length(); ++i) {
         const Configuration& configuration = aConfigurations[i];
         nsWindow* w = static_cast<nsWindow*>(configuration.mChild);
@@ -4102,7 +4194,7 @@ GetIntRects(pixman_region32& aRegion, nsTArray<nsIntRect>* aRects)
     }
 }
 
-void
+nsresult
 nsWindow::SetWindowClipRegion(const nsTArray<nsIntRect>& aRects,
                               bool aIntersectWithExisting)
 {
@@ -4126,7 +4218,7 @@ nsWindow::SetWindowClipRegion(const nsTArray<nsIntRect>& aRects,
         // need to set the clip even if it is equal.
         if (mClipRects &&
             pixman_region32_equal(&intersectRegion, &existingRegion)) {
-            return;
+            return NS_OK;
         }
 
         if (!pixman_region32_equal(&intersectRegion, &newRegion)) {
@@ -4136,10 +4228,10 @@ nsWindow::SetWindowClipRegion(const nsTArray<nsIntRect>& aRects,
     }
 
     if (!StoreWindowClipRegion(*newRects))
-        return;
+        return NS_OK;
 
     if (!mGdkWindow)
-        return;
+        return NS_OK;
 
 #if (MOZ_WIDGET_GTK == 2)
     GdkRegion *region = gdk_region_new(); // aborts on OOM
@@ -4162,8 +4254,8 @@ nsWindow::SetWindowClipRegion(const nsTArray<nsIntRect>& aRects,
     gdk_window_shape_combine_region(mGdkWindow, region, 0, 0);
     cairo_region_destroy(region);
 #endif
-  
-    return;
+
+    return NS_OK;
 }
 
 void
@@ -4564,7 +4656,11 @@ nsWindow::SetNonXEmbedPluginFocus()
                    RevertToNone,
                    CurrentTime);
     gdk_flush();
+#if (MOZ_WIDGET_GTK == 3)
+    gdk_error_trap_pop_ignored();
+#else
     gdk_error_trap_pop();
+#endif
     gPluginFocusWindow = this;
     gdk_window_add_filter(nullptr, plugin_client_message_filter, this);
 
@@ -4605,7 +4701,11 @@ nsWindow::LoseNonXEmbedPluginFocus()
                        RevertToParent,
                        CurrentTime);
         gdk_flush();
+#if (MOZ_WIDGET_GTK == 3)
+        gdk_error_trap_pop_ignored();
+#else
         gdk_error_trap_pop();
+#endif
     }
     gPluginFocusWindow = nullptr;
     mOldFocusWindow = 0;
@@ -4643,7 +4743,7 @@ nsWindow::ConvertBorderStyles(nsBorderStyle aStyle)
 }
 
 NS_IMETHODIMP
-nsWindow::MakeFullScreen(bool aFullScreen)
+nsWindow::MakeFullScreen(bool aFullScreen, nsIScreen* aTargetScreen)
 {
     LOG(("nsWindow::MakeFullScreen [%p] aFullScreen %d\n",
          (void *)this, aFullScreen));
@@ -4771,7 +4871,7 @@ nsWindow::CheckForRollup(gdouble aMouseX, gdouble aMouseY,
         // if we've determined that we should still rollup, do it.
         bool usePoint = !aIsWheel && !aAlwaysRollup;
         nsIntPoint point(aMouseX, aMouseY);
-        if (rollup && rollupListener->Rollup(popupsToRollup, usePoint ? &point : nullptr, nullptr)) {
+        if (rollup && rollupListener->Rollup(popupsToRollup, true, usePoint ? &point : nullptr, nullptr)) {
             retVal = true;
         }
     }
@@ -4946,8 +5046,6 @@ get_gtk_cursor(nsCursor aCursor)
     // Those two aren’t standardized. Trying both KDE’s and GNOME’s names
     case eCursor_grab:
         gdkcursor = gdk_cursor_new_from_name(defaultDisplay, "openhand");
-        if (!gdkcursor)
-            gdkcursor = gdk_cursor_new_from_name(defaultDisplay, "hand1");
         if (!gdkcursor)
             newType = MOZ_CURSOR_HAND_GRAB;
         break;
@@ -5825,7 +5923,7 @@ nsWindow::DispatchEventToRootAccessible(uint32_t aEventType)
     }
 
     nsCOMPtr<nsIAccessibilityService> accService =
-        do_GetService("@mozilla.org/accessibilityService;1");
+        services::GetAccessibilityService();
     if (!accService) {
         return;
     }
@@ -5879,30 +5977,16 @@ nsChildWindow::~nsChildWindow()
 {
 }
 
-NS_IMETHODIMP
-nsWindow::NotifyIME(const IMENotification& aIMENotification)
+nsresult
+nsWindow::NotifyIMEInternal(const IMENotification& aIMENotification)
 {
     if (MOZ_UNLIKELY(!mIMModule)) {
-        switch (aIMENotification.mMessage) {
-            case NOTIFY_IME_OF_CURSOR_POS_CHANGED:
-            case REQUEST_TO_COMMIT_COMPOSITION:
-            case REQUEST_TO_CANCEL_COMPOSITION:
-            case NOTIFY_IME_OF_FOCUS:
-            case NOTIFY_IME_OF_BLUR:
-              return NS_ERROR_NOT_AVAILABLE;
-            default:
-              break;
-        }
+        return NS_ERROR_NOT_AVAILABLE;
     }
     switch (aIMENotification.mMessage) {
-        // TODO: We should replace NOTIFY_IME_OF_CURSOR_POS_CHANGED with
-        //       NOTIFY_IME_OF_SELECTION_CHANGE.  The required behavior is
-        //       really different from committing composition.
-        case NOTIFY_IME_OF_CURSOR_POS_CHANGED:
         case REQUEST_TO_COMMIT_COMPOSITION:
-            return mIMModule->CommitIMEComposition(this);
         case REQUEST_TO_CANCEL_COMPOSITION:
-            return mIMModule->CancelIMEComposition(this);
+            return mIMModule->EndIMEComposition(this);
         case NOTIFY_IME_OF_FOCUS:
             mIMModule->OnFocusChangeInGecko(true);
             return NS_OK;
@@ -5911,6 +5995,9 @@ nsWindow::NotifyIME(const IMENotification& aIMENotification)
             return NS_OK;
         case NOTIFY_IME_OF_COMPOSITION_UPDATE:
             mIMModule->OnUpdateComposition();
+            return NS_OK;
+        case NOTIFY_IME_OF_SELECTION_CHANGE:
+            mIMModule->OnSelectionChange(this);
             return NS_OK;
         default:
             return NS_ERROR_NOT_IMPLEMENTED;
@@ -5945,12 +6032,91 @@ nsWindow::GetInputContext()
   return context;
 }
 
+nsIMEUpdatePreference
+nsWindow::GetIMEUpdatePreference()
+{
+    nsIMEUpdatePreference updatePreference(
+        nsIMEUpdatePreference::NOTIFY_SELECTION_CHANGE);
+    // We shouldn't notify IME of selection change caused by changes of
+    // composition string.  Therefore, we don't need to be notified selection
+    // changes which are caused by compositionchange events handled.
+    updatePreference.DontNotifyChangesCausedByComposition();
+    return updatePreference;
+}
+
+bool
+nsWindow::ExecuteNativeKeyBindingRemapped(NativeKeyBindingsType aType,
+                                          const WidgetKeyboardEvent& aEvent,
+                                          DoCommandCallback aCallback,
+                                          void* aCallbackData,
+                                          uint32_t aGeckoKeyCode,
+                                          uint32_t aNativeKeyCode)
+{
+    WidgetKeyboardEvent modifiedEvent(aEvent);
+    modifiedEvent.keyCode = aGeckoKeyCode;
+    static_cast<GdkEventKey*>(modifiedEvent.mNativeKeyEvent)->keyval =
+        aNativeKeyCode;
+
+    NativeKeyBindings* keyBindings = NativeKeyBindings::GetInstance(aType);
+    return keyBindings->Execute(modifiedEvent, aCallback, aCallbackData);
+}
+
 NS_IMETHODIMP_(bool)
 nsWindow::ExecuteNativeKeyBinding(NativeKeyBindingsType aType,
                                   const WidgetKeyboardEvent& aEvent,
                                   DoCommandCallback aCallback,
                                   void* aCallbackData)
 {
+    if (aEvent.keyCode >= nsIDOMKeyEvent::DOM_VK_LEFT &&
+        aEvent.keyCode <= nsIDOMKeyEvent::DOM_VK_DOWN) {
+
+        // Check if we're targeting content with vertical writing mode,
+        // and if so remap the arrow keys.
+        WidgetQueryContentEvent query(true, NS_QUERY_SELECTED_TEXT, this);
+        nsEventStatus status;
+        DispatchEvent(&query, status);
+
+        if (query.mSucceeded && query.mReply.mWritingMode.IsVertical()) {
+            uint32_t geckoCode = 0;
+            uint32_t gdkCode = 0;
+            switch (aEvent.keyCode) {
+            case nsIDOMKeyEvent::DOM_VK_LEFT:
+                if (query.mReply.mWritingMode.IsVerticalLR()) {
+                    geckoCode = nsIDOMKeyEvent::DOM_VK_UP;
+                    gdkCode = GDK_Up;
+                } else {
+                    geckoCode = nsIDOMKeyEvent::DOM_VK_DOWN;
+                    gdkCode = GDK_Down;
+                }
+                break;
+
+            case nsIDOMKeyEvent::DOM_VK_RIGHT:
+                if (query.mReply.mWritingMode.IsVerticalLR()) {
+                    geckoCode = nsIDOMKeyEvent::DOM_VK_DOWN;
+                    gdkCode = GDK_Down;
+                } else {
+                    geckoCode = nsIDOMKeyEvent::DOM_VK_UP;
+                    gdkCode = GDK_Up;
+                }
+                break;
+
+            case nsIDOMKeyEvent::DOM_VK_UP:
+                geckoCode = nsIDOMKeyEvent::DOM_VK_LEFT;
+                gdkCode = GDK_Left;
+                break;
+
+            case nsIDOMKeyEvent::DOM_VK_DOWN:
+                geckoCode = nsIDOMKeyEvent::DOM_VK_RIGHT;
+                gdkCode = GDK_Right;
+                break;
+            }
+
+            return ExecuteNativeKeyBindingRemapped(aType, aEvent, aCallback,
+                                                   aCallbackData,
+                                                   geckoCode, gdkCode);
+        }
+    }
+
     NativeKeyBindings* keyBindings = NativeKeyBindings::GetInstance(aType);
     return keyBindings->Execute(aEvent, aCallback, aCallbackData);
 }
@@ -6018,12 +6184,7 @@ nsWindow::GetSurfaceForGdkDrawable(GdkDrawable* aDrawable,
 TemporaryRef<DrawTarget>
 nsWindow::StartRemoteDrawing()
 {
-#if (MOZ_WIDGET_GTK == 2)
   gfxASurface *surf = GetThebesSurface();
-#else
-  // TODO GTK3
-  gfxASurface *surf = nullptr;
-#endif
   if (!surf) {
     return nullptr;
   }
@@ -6038,22 +6199,17 @@ nsWindow::StartRemoteDrawing()
 
 // return the gfxASurface for rendering to this widget
 gfxASurface*
-#if (MOZ_WIDGET_GTK == 2)
 nsWindow::GetThebesSurface()
-#else
+#if (MOZ_WIDGET_GTK == 3)
+{
+    return GetThebesSurface(nullptr);
+}
+gfxASurface*
 nsWindow::GetThebesSurface(cairo_t *cr)
 #endif
 {
     if (!mGdkWindow)
         return nullptr;
-
-#if (MOZ_WIDGET_GTK != 2)
-    cairo_surface_t *surf = cairo_get_target(cr);
-    if (cairo_surface_status(surf) != CAIRO_STATUS_SUCCESS) {
-      NS_NOTREACHED("Missing cairo target?");
-      return nullptr;
-    }
-#endif // MOZ_WIDGET_GTK2
 
 #ifdef MOZ_X11
     gint width, height;
@@ -6061,8 +6217,8 @@ nsWindow::GetThebesSurface(cairo_t *cr)
 #if (MOZ_WIDGET_GTK == 2)
     gdk_drawable_get_size(GDK_DRAWABLE(mGdkWindow), &width, &height);
 #else
-    width = gdk_window_get_width(mGdkWindow);
-    height = gdk_window_get_height(mGdkWindow);
+    width = GdkCoordToDevicePixels(gdk_window_get_width(mGdkWindow));
+    height = GdkCoordToDevicePixels(gdk_window_get_height(mGdkWindow));
 #endif
 
     // Owen Taylor says this is the right thing to do!
@@ -6087,22 +6243,14 @@ nsWindow::GetThebesSurface(cairo_t *cr)
     }
     if (!usingShm)
 #  endif  // MOZ_HAVE_SHMIMAGE
-
-#if (MOZ_WIDGET_GTK == 2)
-    mThebesSurface = new gfxXlibSurface
-        (GDK_WINDOW_XDISPLAY(mGdkWindow),
-         gdk_x11_window_get_xid(mGdkWindow),
-         visual,
-         size);
-#else
-#if MOZ_TREE_CAIRO
-#error "cairo-gtk3 target must be built with --enable-system-cairo"
-#else
-    mThebesSurface = gfxASurface::Wrap(surf);
-#endif
-#endif
-
-#endif
+    {
+        mThebesSurface = new gfxXlibSurface
+            (GDK_WINDOW_XDISPLAY(mGdkWindow),
+             gdk_x11_window_get_xid(mGdkWindow),
+             visual,
+             size);
+    }
+#endif // MOZ_X11
 
     // if the surface creation is reporting an error, then
     // we don't have a surface to give back
@@ -6158,7 +6306,7 @@ NS_IMETHODIMP
 nsWindow::BeginMoveDrag(WidgetMouseEvent* aEvent)
 {
     NS_ABORT_IF_FALSE(aEvent, "must have event");
-    NS_ABORT_IF_FALSE(aEvent->eventStructType == NS_MOUSE_EVENT,
+    NS_ABORT_IF_FALSE(aEvent->mClass == eMouseEventClass,
                       "event must have correct struct type");
 
     GdkWindow *gdk_window;
@@ -6168,6 +6316,8 @@ nsWindow::BeginMoveDrag(WidgetMouseEvent* aEvent)
     }
 
     // tell the window manager to start the move
+    screenX = DevicePixelsToGdkCoordRoundDown(screenX);
+    screenY = DevicePixelsToGdkCoordRoundDown(screenY);
     gdk_window_begin_move_drag(gdk_window, button, screenX, screenY,
                                aEvent->time);
 
@@ -6181,7 +6331,7 @@ nsWindow::BeginResizeDrag(WidgetGUIEvent* aEvent,
 {
     NS_ENSURE_ARG_POINTER(aEvent);
 
-    if (aEvent->eventStructType != NS_MOUSE_EVENT) {
+    if (aEvent->mClass != eMouseEventClass) {
         // you can only begin a resize drag with a mouse event
         return NS_ERROR_INVALID_ARG;
     }
@@ -6257,6 +6407,69 @@ nsWindow::ClearCachedResources()
             window->ClearCachedResources();
         }
     }
+}
+
+gint
+nsWindow::GdkScaleFactor()
+{
+#if (MOZ_WIDGET_GTK >= 3)
+    // Available as of GTK 3.10+
+    static auto sGdkWindowGetScaleFactorPtr = (gint (*)(GdkWindow*))
+        dlsym(RTLD_DEFAULT, "gdk_window_get_scale_factor");
+    if (sGdkWindowGetScaleFactorPtr)
+        return (*sGdkWindowGetScaleFactorPtr)(mGdkWindow);
+#endif
+    return 1;
+}
+
+
+gint
+nsWindow::DevicePixelsToGdkCoordRoundUp(int pixels) {
+    gint scale = GdkScaleFactor();
+    return (pixels + scale - 1) / scale;
+}
+
+gint
+nsWindow::DevicePixelsToGdkCoordRoundDown(int pixels) {
+    gint scale = GdkScaleFactor();
+    return pixels / scale;
+}
+
+GdkPoint
+nsWindow::DevicePixelsToGdkPointRoundDown(nsIntPoint point) {
+    gint scale = GdkScaleFactor();
+    return { point.x / scale, point.y / scale };
+}
+
+GdkRectangle
+nsWindow::DevicePixelsToGdkRectRoundOut(nsIntRect rect) {
+    gint scale = GdkScaleFactor();
+    int x = rect.x / scale;
+    int y = rect.y / scale;
+    int right = (rect.x + rect.width + scale - 1) / scale;
+    int bottom = (rect.y + rect.height + scale - 1) / scale;
+    return { x, y, right - x, bottom - y };
+}
+
+int
+nsWindow::GdkCoordToDevicePixels(gint coord) {
+    return coord * GdkScaleFactor();
+}
+
+nsIntPoint
+nsWindow::GdkPointToDevicePixels(GdkPoint point) {
+    gint scale = GdkScaleFactor();
+    return nsIntPoint(point.x * scale,
+                      point.y * scale);
+}
+
+nsIntRect
+nsWindow::GdkRectToDevicePixels(GdkRectangle rect) {
+    gint scale = GdkScaleFactor();
+    return nsIntRect(rect.x * scale,
+                     rect.y * scale,
+                     rect.width * scale,
+                     rect.height * scale);
 }
 
 nsresult

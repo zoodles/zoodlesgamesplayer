@@ -9,30 +9,22 @@
 #include "nsCoord.h"
 #include "nsColor.h"
 
-class nsRenderingContext;
-
 #define BOUND_INNER 0
 #define BOUND_OUTER 1
 
 #define DIR_VERTICAL 0
 #define DIR_HORIZONTAL 1
 
-class inFlasher : public inIFlasher
+class inFlasher MOZ_FINAL : public inIFlasher
 {
 public:
   NS_DECL_ISUPPORTS
   NS_DECL_INIFLASHER
 
   inFlasher();
-  virtual ~inFlasher();
 
 protected:
-  void DrawOutline(nscoord aX, nscoord aY, nscoord aWidth, nscoord aHeight,
-                   nsRenderingContext* aRenderContext,
-                   bool aDrawBegin, bool aDrawEnd);
-  void DrawLine(nscoord aX, nscoord aY, nscoord aLength,
-                bool aDir, bool aBounds,
-                nsRenderingContext* aRenderContext);
+  virtual ~inFlasher();
 
   nscolor mColor;
 

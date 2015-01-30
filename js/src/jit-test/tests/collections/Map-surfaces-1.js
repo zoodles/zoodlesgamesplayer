@@ -9,7 +9,7 @@ assertEq(desc.writable, true);
 
 assertEq(typeof Map, 'function');
 assertEq(Object.keys(Map).length, 0);
-assertEq(Map.length, 0);
+assertEq(Map.length, 1);
 assertEq(Map.name, "Map");
 
 assertEq(Object.getPrototypeOf(Map.prototype), Object.prototype);
@@ -46,4 +46,4 @@ assertEq(desc.set, undefined);
 checkMethod("clear", 0);
 
 // Map.prototype[@@iterator] and .entries are the same function object.
-assertEq(Map.prototype[std_iterator], Map.prototype.entries);
+assertEq(Map.prototype[Symbol.iterator], Map.prototype.entries);

@@ -4,22 +4,25 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-PARALLEL_DIRS += [
+DIRS += [
     'about',
-    'certerror',
     'customizableui',
     'dirprovider',
     'downloads',
     'feeds',
+    'loop',
+    'migration',
     'places',
     'preferences',
     'privatebrowsing',
     'search',
     'sessionstore',
     'shell',
+    'selfsupport',
     'sidebar',
     'tabview',
-    'migration',
+    'uitour',
+    'translation',
 ]
 
 DIRS += ['build']
@@ -31,10 +34,8 @@ XPIDL_SOURCES += [
 
 XPIDL_MODULE = 'browsercompsbase'
 
-EXTRA_COMPONENTS += [
-    'BrowserComponents.manifest',
-]
 EXTRA_PP_COMPONENTS += [
+    'BrowserComponents.manifest',
     'nsBrowserContentHandler.js',
     'nsBrowserGlue.js',
 ]
@@ -49,4 +50,3 @@ BROWSER_CHROME_MANIFESTS += [
 
 if CONFIG['MOZ_SAFE_BROWSING']:
     BROWSER_CHROME_MANIFESTS += ['safebrowsing/content/test/browser.ini']
-

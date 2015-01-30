@@ -23,6 +23,7 @@
 #include "nsString.h"
 #include "AutoRwLock.h"
 #include "nsPrintfCString.h"
+#include "nsClassHashtable.h"
 #include "ICameraControl.h"
 
 namespace mozilla {
@@ -37,6 +38,9 @@ public:
   // ALL public methods must hold mLock, for either reading or writing,
   // for the life of their operation. Not doing so was the cause of
   // bug 928856, which was -painful- to track down.
+  //
+  // Return values:
+  //  - see return values for GetTranslated() and SetTranslated() below.
   template<class T> nsresult
   Set(uint32_t aKey, const T& aValue)
   {
@@ -92,10 +96,14 @@ protected:
   bool mInitialized;
 
   // Required internal properties
-  double mExposureCompensationMin;
   double mExposureCompensationStep;
+  int32_t mExposureCompensationMinIndex;
+  int32_t mExposureCompensationMaxIndex;
   nsTArray<int> mZoomRatios;
   nsTArray<nsString> mIsoModes;
+  nsTArray<nsString> mSceneModes;
+  nsTArray<nsString> mMeteringModes;
+  nsClassHashtable<nsStringHashKey, nsCString> mIsoModeMap;
 
   // This subclass of android::CameraParameters just gives
   // all of the AOSP getters and setters the same signature.
@@ -103,13 +111,26 @@ protected:
   {
   public:
     using android::CameraParameters::set;
+    using android::CameraParameters::get;
+    using android::CameraParameters::TRUE;
+    using android::CameraParameters::FALSE;
 
     void set(const char* aKey, float aValue)      { setFloat(aKey, aValue); }
     void set(const char* aKey, double aValue)     { setFloat(aKey, aValue); }
+    void set(const char* aKey, bool aValue)       { set(aKey, aValue ? TRUE : FALSE); }
     void get(const char* aKey, float& aRet)       { aRet = getFloat(aKey); }
     void get(const char* aKey, double& aRet)      { aRet = getFloat(aKey); }
-    void get(const char* aKey, const char*& aRet) { aRet = android::CameraParameters::get(aKey); }
+    void get(const char* aKey, const char*& aRet) { aRet = get(aKey); }
     void get(const char* aKey, int& aRet)         { aRet = getInt(aKey); }
+
+    void
+    get(const char* aKey, bool& aRet)
+    {
+      const char* value = get(aKey);
+      aRet = value ? strcmp(value, TRUE) == 0 : false;
+    }
+
+    void remove(const char* aKey)                 { android::CameraParameters::remove(aKey); }
 
     static const char* GetTextKey(uint32_t aKey);
   };
@@ -119,11 +140,15 @@ protected:
   // The *Impl() templates handle converting the parameter keys from
   // their enum values to string types, if necessary. These are the
   // bottom layer accessors to mParams.
+  //
+  // Return values:
+  //  - NS_OK on success;
+  //  - NS_ERROR_NOT_IMPLEMENTED if the numeric 'aKey' value is invalid.
   template<typename T> nsresult
   SetImpl(uint32_t aKey, const T& aValue)
   {
     const char* key = Parameters::GetTextKey(aKey);
-    NS_ENSURE_TRUE(key, NS_ERROR_NOT_AVAILABLE);
+    NS_ENSURE_TRUE(key, NS_ERROR_NOT_IMPLEMENTED);
 
     mParams.set(key, aValue);
     return NS_OK;
@@ -133,7 +158,7 @@ protected:
   GetImpl(uint32_t aKey, T& aValue)
   {
     const char* key = Parameters::GetTextKey(aKey);
-    NS_ENSURE_TRUE(key, NS_ERROR_NOT_AVAILABLE);
+    NS_ENSURE_TRUE(key, NS_ERROR_NOT_IMPLEMENTED);
 
     mParams.get(key, aValue);
     return NS_OK;
@@ -153,10 +178,26 @@ protected:
     return NS_OK;
   }
 
+  nsresult
+  ClearImpl(const char* aKey)
+  {
+    mParams.remove(aKey);
+    return NS_OK;
+  }
+
   // The *Translated() functions allow us to handle special cases;
   // for example, where the thumbnail size setting is exposed as an
   // ICameraControl::Size object, but is handled by the AOSP layer
   // as two separate parameters.
+  //
+  // Return values:
+  //  - NS_OK on success;
+  //  - NS_ERROR_INVALID_ARG if 'aValue' contains an invalid value;
+  //  - NS_ERROR_NOT_IMPLEMENTED if 'aKey' is invalid;
+  //  - NS_ERROR_NOT_AVAILABLE if the getter fails to retrieve a valid value,
+  //      or if a setter fails because it requires one or more values that
+  //      could not be retrieved;
+  //  - NS_ERROR_FAILURE on unexpected internal failures.
   nsresult SetTranslated(uint32_t aKey, const nsAString& aValue);
   nsresult GetTranslated(uint32_t aKey, nsAString& aValue);
   nsresult SetTranslated(uint32_t aKey, const ICameraControl::Size& aSize);
@@ -173,14 +214,37 @@ protected:
   nsresult GetTranslated(uint32_t aKey, int& aValue);
   nsresult SetTranslated(uint32_t aKey, const uint32_t& aValue);
   nsresult GetTranslated(uint32_t aKey, uint32_t& aValue);
+  nsresult SetTranslated(uint32_t aKey, const bool& aValue);
+  nsresult GetTranslated(uint32_t aKey, bool& aValue);
   nsresult GetTranslated(uint32_t aKey, nsTArray<nsString>& aValues);
   nsresult GetTranslated(uint32_t aKey, nsTArray<double>& aValues);
 
+  // Converts a string of multiple, comma-separated values into an array
+  // of the appropriate type.
+  //
+  // Return values:
+  //  - NS_OK on success;
+  //  - NS_ERROR_NOT_IMPLEMENTED if 'aKey' is invalid;
+  //  - NS_ERROR_NOT_AVAILABLE if a valid value could not be returned.
   template<class T> nsresult GetListAsArray(uint32_t aKey, nsTArray<T>& aArray);
+
+  // Converts ISO values (e.g., "auto", "hjr", "100", "200", etc.) to and from
+  // values understood by Gonk (e.g., "auto", "ISO_HJR", "ISO100", "ISO200",
+  // respectively).
+  //
+  // Return values:
+  //  - NS_OK on success;
+  //  - NS_ERROR_INVALID_ARG if the 'aIso' argument is not a valid form.
   nsresult MapIsoToGonk(const nsAString& aIso, nsACString& aIsoOut);
   nsresult MapIsoFromGonk(const char* aIso, nsAString& aIsoOut);
 
+  // Call once to initialize local cached values used in translating other
+  // arguments between Gecko and Gonk. Always returns NS_OK.
   nsresult Initialize();
+
+  // Returns true if we're a memory-constrained platform that requires
+  // certain features to be disabled; returns false otherwise.
+  static bool IsLowMemoryPlatform();
 };
 
 } // namespace mozilla

@@ -15,9 +15,9 @@ KeyboardEvent::KeyboardEvent(EventTarget* aOwner,
                              WidgetKeyboardEvent* aEvent)
   : UIEvent(aOwner, aPresContext,
             aEvent ? aEvent : new WidgetKeyboardEvent(false, 0, nullptr))
+  , mInitializedByCtor(false)
+  , mInitializedWhichValue(0)
 {
-  NS_ASSERTION(mEvent->eventStructType == NS_KEY_EVENT, "event type mismatch");
-
   if (aEvent) {
     mEventIsInternal = false;
   }
@@ -105,6 +105,12 @@ KeyboardEvent::GetRepeat(bool* aIsRepeat)
   return NS_OK;
 }
 
+bool
+KeyboardEvent::IsComposing()
+{
+  return mEvent->AsKeyboardEvent()->mIsComposing;
+}
+
 NS_IMETHODIMP
 KeyboardEvent::GetModifierState(const nsAString& aKey,
                                 bool* aState)
@@ -122,6 +128,12 @@ KeyboardEvent::GetKey(nsAString& aKeyName)
   return NS_OK;
 }
 
+void
+KeyboardEvent::GetCode(nsAString& aCodeName)
+{
+  mEvent->AsKeyboardEvent()->GetDOMCodeName(aCodeName);
+}
+
 NS_IMETHODIMP
 KeyboardEvent::GetCharCode(uint32_t* aCharCode)
 {
@@ -133,9 +145,18 @@ KeyboardEvent::GetCharCode(uint32_t* aCharCode)
 uint32_t
 KeyboardEvent::CharCode()
 {
+  // If this event is initialized with ctor, we shouldn't check event type.
+  if (mInitializedByCtor) {
+    return mEvent->AsKeyboardEvent()->charCode;
+  }
+
   switch (mEvent->message) {
-  case NS_KEY_UP:
+  case NS_KEY_BEFORE_DOWN:
   case NS_KEY_DOWN:
+  case NS_KEY_AFTER_DOWN:
+  case NS_KEY_BEFORE_UP:
+  case NS_KEY_UP:
+  case NS_KEY_AFTER_UP:
     return 0;
   case NS_KEY_PRESS:
     return mEvent->AsKeyboardEvent()->charCode;
@@ -154,10 +175,12 @@ KeyboardEvent::GetKeyCode(uint32_t* aKeyCode)
 uint32_t
 KeyboardEvent::KeyCode()
 {
-  switch (mEvent->message) {
-  case NS_KEY_UP:
-  case NS_KEY_PRESS:
-  case NS_KEY_DOWN:
+  // If this event is initialized with ctor, we shouldn't check event type.
+  if (mInitializedByCtor) {
+    return mEvent->AsKeyboardEvent()->keyCode;
+  }
+
+  if (mEvent->HasKeyEventMessage()) {
     return mEvent->AsKeyboardEvent()->keyCode;
   }
   return 0;
@@ -166,9 +189,18 @@ KeyboardEvent::KeyCode()
 uint32_t
 KeyboardEvent::Which()
 {
+  // If this event is initialized with ctor, which can have independent value.
+  if (mInitializedByCtor) {
+    return mInitializedWhichValue;
+  }
+
   switch (mEvent->message) {
-    case NS_KEY_UP:
+    case NS_KEY_BEFORE_DOWN:
     case NS_KEY_DOWN:
+    case NS_KEY_AFTER_DOWN:
+    case NS_KEY_BEFORE_UP:
+    case NS_KEY_UP:
+    case NS_KEY_AFTER_UP:
       return KeyCode();
     case NS_KEY_PRESS:
       //Special case for 4xp bug 62878.  Try to make value of which
@@ -198,6 +230,47 @@ uint32_t
 KeyboardEvent::Location()
 {
   return mEvent->AsKeyboardEvent()->location;
+}
+
+// static
+already_AddRefed<KeyboardEvent>
+KeyboardEvent::Constructor(const GlobalObject& aGlobal,
+                           const nsAString& aType,
+                           const KeyboardEventInit& aParam,
+                           ErrorResult& aRv)
+{
+  nsCOMPtr<EventTarget> target = do_QueryInterface(aGlobal.GetAsSupports());
+  nsRefPtr<KeyboardEvent> newEvent =
+    new KeyboardEvent(target, nullptr, nullptr);
+  newEvent->InitWithKeyboardEventInit(target, aType, aParam, aRv);
+
+  return newEvent.forget();
+}
+
+void
+KeyboardEvent::InitWithKeyboardEventInit(EventTarget* aOwner,
+                                         const nsAString& aType,
+                                         const KeyboardEventInit& aParam,
+                                         ErrorResult& aRv)
+{
+  bool trusted = Init(aOwner);
+  aRv = InitKeyEvent(aType, aParam.mBubbles, aParam.mCancelable,
+                     aParam.mView, aParam.mCtrlKey, aParam.mAltKey,
+                     aParam.mShiftKey, aParam.mMetaKey,
+                     aParam.mKeyCode, aParam.mCharCode);
+  SetTrusted(trusted);
+  mDetail = aParam.mDetail;
+  mInitializedByCtor = true;
+  mInitializedWhichValue = aParam.mWhich;
+
+  WidgetKeyboardEvent* internalEvent = mEvent->AsKeyboardEvent();
+  internalEvent->location = aParam.mLocation;
+  internalEvent->mIsRepeat = aParam.mRepeat;
+  internalEvent->mIsComposing = aParam.mIsComposing;
+  internalEvent->mKeyNameIndex = KEY_NAME_INDEX_USE_STRING;
+  internalEvent->mCodeNameIndex = CODE_NAME_INDEX_USE_STRING;
+  internalEvent->mKeyValue = aParam.mKey;
+  internalEvent->mCodeValue = aParam.mCode;
 }
 
 NS_IMETHODIMP

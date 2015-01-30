@@ -40,12 +40,13 @@ public:
 
 class nsFtpControlConnection MOZ_FINAL : public nsIInputStreamCallback
 {
+    ~nsFtpControlConnection();
+
 public:
     NS_DECL_ISUPPORTS
     NS_DECL_NSIINPUTSTREAMCALLBACK
 
     nsFtpControlConnection(const nsCSubstring& host, uint32_t port);
-    ~nsFtpControlConnection();
 
     nsresult Connect(nsIProxyInfo* proxyInfo, nsITransportEventSink* eventSink);
     nsresult Disconnect(nsresult status);
@@ -68,6 +69,7 @@ public:
     int32_t          mSuspendedWrite;
     nsCString        mPwd;
     uint32_t         mSessionId;
+    bool             mUseUTF8;
 
 private:
     nsCString mHost;

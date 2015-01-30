@@ -13,6 +13,8 @@
 #include "AudioChannelService.h"
 #include "AudioChannelAgent.h"
 
+#include "nsThreadUtils.h"
+
 #define TEST_ENSURE_BASE(_test, _msg)       \
   PR_BEGIN_MACRO                            \
     if (!(_test)) {                         \
@@ -25,21 +27,21 @@
 
 using namespace mozilla::dom;
 
+void
+spin_events_loop_until_false(const bool* const aCondition)
+{
+  nsCOMPtr<nsIThread> thread(::do_GetCurrentThread());
+  nsresult rv = NS_OK;
+  bool processed = true;
+  while (*aCondition && NS_SUCCEEDED(rv)) {
+    rv = thread->ProcessNextEvent(true, &processed);
+  }
+}
+
 class Agent : public nsIAudioChannelAgentCallback,
               public nsSupportsWeakReference
 {
-public:
-  NS_DECL_ISUPPORTS
-
-  Agent(AudioChannelType aType)
-  : mType(aType)
-  , mWaitCallback(false)
-  , mRegistered(false)
-  , mCanPlay(AUDIO_CHANNEL_STATE_MUTED)
-  {
-    mAgent = do_CreateInstance("@mozilla.org/audiochannelagent;1");
-  }
-
+protected:
   virtual ~Agent()
   {
     if (mRegistered) {
@@ -47,14 +49,28 @@ public:
     }
   }
 
+public:
+  NS_DECL_ISUPPORTS
+
+  explicit Agent(AudioChannel aChannel)
+  : mChannel(aChannel)
+  , mWaitCallback(false)
+  , mRegistered(false)
+  , mCanPlay(AUDIO_CHANNEL_STATE_MUTED)
+  {
+    mAgent = do_CreateInstance("@mozilla.org/audiochannelagent;1");
+  }
+
   nsresult Init(bool video=false)
   {
     nsresult rv = NS_OK;
     if (video) {
-      rv = mAgent->InitWithVideo(nullptr, mType, this, true);
+      rv = mAgent->InitWithVideo(nullptr, static_cast<int32_t>(mChannel),
+                                 this, true);
     }
     else {
-      rv = mAgent->InitWithWeakCallback(nullptr, mType, this);
+      rv = mAgent->InitWithWeakCallback(nullptr, static_cast<int32_t>(mChannel),
+                                        this);
     }
     NS_ENSURE_SUCCESS(rv, rv);
 
@@ -75,17 +91,7 @@ public:
   nsresult StopPlaying()
   {
     mRegistered = false;
-    int loop = 0;
-    while (mWaitCallback) {
-      #ifdef XP_WIN
-      Sleep(1000);
-      #else
-      sleep(1);
-      #endif
-      if (loop++ == 5) {
-        TEST_ENSURE_BASE(false, "StopPlaying timeout");
-      }
-    }
+    spin_events_loop_until_false(&mWaitCallback);
     return mAgent->StopPlaying();
   }
 
@@ -97,49 +103,43 @@ public:
     return mAgent->SetVisibilityState(visible);
   }
 
-  NS_IMETHODIMP CanPlayChanged(int32_t canPlay)
+  NS_IMETHODIMP CanPlayChanged(int32_t canPlay) MOZ_OVERRIDE
   {
     mCanPlay = static_cast<AudioChannelState>(canPlay);
     mWaitCallback = false;
     return NS_OK;
   }
 
-  NS_IMETHODIMP WindowVolumeChanged()
+  NS_IMETHODIMP WindowVolumeChanged() MOZ_OVERRIDE
   {
     return NS_OK;
   }
 
-  nsresult GetCanPlay(AudioChannelState *_ret)
+  nsresult GetCanPlay(AudioChannelState *_ret, bool aWaitCallback = false)
   {
-    int loop = 0;
-    while (mWaitCallback) {
-      #ifdef XP_WIN
-      Sleep(1000);
-      #else
-      sleep(1);
-      #endif
-      if (loop++ == 5) {
-        TEST_ENSURE_BASE(false, "GetCanPlay timeout");
-      }
+    if (aWaitCallback) {
+      mWaitCallback = true;
     }
+
+    spin_events_loop_until_false(&mWaitCallback);
     *_ret = mCanPlay;
     return NS_OK;
   }
 
-  nsRefPtr<AudioChannelAgent> mAgent;
-  AudioChannelType mType;
+  nsCOMPtr<nsIAudioChannelAgent> mAgent;
+  AudioChannel mChannel;
   bool mWaitCallback;
   bool mRegistered;
   AudioChannelState mCanPlay;
 };
 
-NS_IMPL_ISUPPORTS2(Agent, nsIAudioChannelAgentCallback,
-                   nsISupportsWeakReference)
+NS_IMPL_ISUPPORTS(Agent, nsIAudioChannelAgentCallback,
+                  nsISupportsWeakReference)
 
 nsresult
 TestDoubleStartPlaying()
 {
-  nsRefPtr<Agent> agent = new Agent(AUDIO_CHANNEL_NORMAL);
+  nsRefPtr<Agent> agent = new Agent(AudioChannel::Normal);
 
   nsresult rv = agent->Init();
   NS_ENSURE_SUCCESS(rv, rv);
@@ -158,7 +158,7 @@ TestDoubleStartPlaying()
 nsresult
 TestOneNormalChannel()
 {
-  nsRefPtr<Agent> agent = new Agent(AUDIO_CHANNEL_NORMAL);
+  nsRefPtr<Agent> agent = new Agent(AudioChannel::Normal);
   nsresult rv = agent->Init();
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -182,11 +182,11 @@ TestOneNormalChannel()
 nsresult
 TestTwoNormalChannels()
 {
-  nsRefPtr<Agent> agent1 = new Agent(AUDIO_CHANNEL_NORMAL);
+  nsRefPtr<Agent> agent1 = new Agent(AudioChannel::Normal);
   nsresult rv = agent1->Init();
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsRefPtr<Agent> agent2 = new Agent(AUDIO_CHANNEL_NORMAL);
+  nsRefPtr<Agent> agent2 = new Agent(AudioChannel::Normal);
   rv = agent2->Init();
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -223,11 +223,11 @@ TestTwoNormalChannels()
 nsresult
 TestContentChannels()
 {
-  nsRefPtr<Agent> agent1 = new Agent(AUDIO_CHANNEL_CONTENT);
+  nsRefPtr<Agent> agent1 = new Agent(AudioChannel::Content);
   nsresult rv = agent1->Init();
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsRefPtr<Agent> agent2 = new Agent(AUDIO_CHANNEL_CONTENT);
+  nsRefPtr<Agent> agent2 = new Agent(AudioChannel::Content);
   rv = agent2->Init();
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -308,15 +308,15 @@ TestContentChannels()
 nsresult
 TestFadedState()
 {
-  nsRefPtr<Agent> normalAgent = new Agent(AUDIO_CHANNEL_NORMAL);
+  nsRefPtr<Agent> normalAgent = new Agent(AudioChannel::Normal);
   nsresult rv = normalAgent->Init();
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsRefPtr<Agent> contentAgent = new Agent(AUDIO_CHANNEL_CONTENT);
+  nsRefPtr<Agent> contentAgent = new Agent(AudioChannel::Content);
   rv = contentAgent->Init();
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsRefPtr<Agent> notificationAgent = new Agent(AUDIO_CHANNEL_NOTIFICATION);
+  nsRefPtr<Agent> notificationAgent = new Agent(AudioChannel::Notification);
   rv = notificationAgent->Init();
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -345,7 +345,7 @@ TestFadedState()
   TEST_ENSURE_BASE(playable == AUDIO_CHANNEL_STATE_NORMAL,
     "Test4: A notification channel visible agent must be playable");
 
-    rv = contentAgent->GetCanPlay(&playable);
+  rv = contentAgent->GetCanPlay(&playable, true);
   NS_ENSURE_SUCCESS(rv, rv);
   TEST_ENSURE_BASE(playable == AUDIO_CHANNEL_STATE_FADED,
     "Test4: A content channel unvisible agent must be faded because of "
@@ -372,7 +372,7 @@ TestFadedState()
   rv = notificationAgent->StopPlaying();
   NS_ENSURE_SUCCESS(rv, rv);
 
-  rv = contentAgent->GetCanPlay(&playable);
+  rv = contentAgent->GetCanPlay(&playable, true);
   NS_ENSURE_SUCCESS(rv, rv);
   TEST_ENSURE_BASE(playable == AUDIO_CHANNEL_STATE_NORMAL,
     "Test4: A content channel unvisible agent must be playable "
@@ -387,32 +387,32 @@ TestFadedState()
 nsresult
 TestPriorities()
 {
-  nsRefPtr<Agent> normalAgent = new Agent(AUDIO_CHANNEL_NORMAL);
+  nsRefPtr<Agent> normalAgent = new Agent(AudioChannel::Normal);
   nsresult rv = normalAgent->Init();
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsRefPtr<Agent> contentAgent = new Agent(AUDIO_CHANNEL_CONTENT);
+  nsRefPtr<Agent> contentAgent = new Agent(AudioChannel::Content);
   rv = contentAgent->Init();
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsRefPtr<Agent> notificationAgent = new Agent(AUDIO_CHANNEL_NOTIFICATION);
+  nsRefPtr<Agent> notificationAgent = new Agent(AudioChannel::Notification);
   rv = notificationAgent->Init();
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsRefPtr<Agent> alarmAgent = new Agent(AUDIO_CHANNEL_ALARM);
+  nsRefPtr<Agent> alarmAgent = new Agent(AudioChannel::Alarm);
   rv = alarmAgent->Init();
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsRefPtr<Agent> telephonyAgent = new Agent(AUDIO_CHANNEL_TELEPHONY);
+  nsRefPtr<Agent> telephonyAgent = new Agent(AudioChannel::Telephony);
   rv = telephonyAgent->Init();
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsRefPtr<Agent> ringerAgent = new Agent(AUDIO_CHANNEL_RINGER);
+  nsRefPtr<Agent> ringerAgent = new Agent(AudioChannel::Ringer);
   rv = ringerAgent->Init();
   NS_ENSURE_SUCCESS(rv, rv);
 
   nsRefPtr<Agent> pNotificationAgent =
-    new Agent(AUDIO_CHANNEL_PUBLICNOTIFICATION);
+    new Agent(AudioChannel::Publicnotification);
   rv = pNotificationAgent->Init();
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -544,11 +544,11 @@ TestPriorities()
 nsresult
 TestOneVideoNormalChannel()
 {
-  nsRefPtr<Agent> agent1 = new Agent(AUDIO_CHANNEL_NORMAL);
+  nsRefPtr<Agent> agent1 = new Agent(AudioChannel::Normal);
   nsresult rv = agent1->Init(true);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsRefPtr<Agent> agent2 = new Agent(AUDIO_CHANNEL_CONTENT);
+  nsRefPtr<Agent> agent2 = new Agent(AudioChannel::Content);
   rv = agent2->Init(false);
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -649,11 +649,11 @@ int main(int argc, char** argv)
     return 1;
   }
 
-  // Channel type with AUDIO_CHANNEL_TELEPHONY cannot be unregistered until the
+  // Channel type with AudioChannel::Telephony cannot be unregistered until the
   // main thread has chances to process 1500 millisecond timer. In order to
   // skip ambiguous return value of ChannelsActiveWithHigherPriorityThan(), new
   // test cases are added before any test case that registers the channel type
-  // with AUDIO_CHANNEL_TELEPHONY channel.
+  // with AudioChannel::Telephony channel.
   if (NS_FAILED(TestOneVideoNormalChannel())) {
     return 1;
   }

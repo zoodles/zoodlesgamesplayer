@@ -22,10 +22,9 @@ public:
                nsPresContext* aPresContext,
                WidgetPointerEvent* aEvent);
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE
+  virtual JSObject* WrapObjectInternal(JSContext* aCx) MOZ_OVERRIDE
   {
-    return PointerEventBinding::Wrap(aCx, aScope, this);
+    return PointerEventBinding::Wrap(aCx, this);
   }
 
   static already_AddRefed<PointerEvent>
@@ -33,6 +32,11 @@ public:
               const nsAString& aType,
               const PointerEventInit& aParam,
               ErrorResult& aRv);
+
+  static already_AddRefed<PointerEvent>
+  Constructor(EventTarget* aOwner,
+              const nsAString& aType,
+              const PointerEventInit& aParam);
 
   int32_t PointerId();
   int32_t Width();
@@ -43,6 +47,8 @@ public:
   bool IsPrimary();
   void GetPointerType(nsAString& aPointerType);
 };
+
+void ConvertPointerTypeToString(uint16_t aPointerTypeSrc, nsAString& aPointerTypeDest);
 
 } // namespace dom
 } // namespace mozilla

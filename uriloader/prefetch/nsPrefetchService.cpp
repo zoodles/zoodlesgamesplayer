@@ -10,7 +10,6 @@
 #include "nsIWebProgress.h"
 #include "nsCURILoader.h"
 #include "nsICachingChannel.h"
-#include "nsICacheVisitor.h"
 #include "nsIHttpChannel.h"
 #include "nsIURL.h"
 #include "nsISimpleEnumerator.h"
@@ -29,6 +28,7 @@
 #include "nsIDOMNode.h"
 #include "nsINode.h"
 #include "nsIDocument.h"
+#include "nsContentUtils.h"
 
 using namespace mozilla;
 
@@ -74,10 +74,11 @@ class nsPrefetchQueueEnumerator MOZ_FINAL : public nsISimpleEnumerator
 public:
     NS_DECL_ISUPPORTS
     NS_DECL_NSISIMPLEENUMERATOR
-    nsPrefetchQueueEnumerator(nsPrefetchService *aService);
-    ~nsPrefetchQueueEnumerator();
+    explicit nsPrefetchQueueEnumerator(nsPrefetchService *aService);
 
 private:
+    ~nsPrefetchQueueEnumerator();
+
     void Increment();
 
     nsRefPtr<nsPrefetchService> mService;
@@ -156,7 +157,7 @@ nsPrefetchQueueEnumerator::Increment()
 // nsPrefetchQueueEnumerator::nsISupports
 //-----------------------------------------------------------------------------
 
-NS_IMPL_ISUPPORTS1(nsPrefetchQueueEnumerator, nsISimpleEnumerator)
+NS_IMPL_ISUPPORTS(nsPrefetchQueueEnumerator, nsISimpleEnumerator)
 
 //-----------------------------------------------------------------------------
 // nsPrefetchNode <public>
@@ -188,9 +189,14 @@ nsPrefetchNode::OpenChannel()
     nsCOMPtr<nsILoadGroup> loadGroup = source->OwnerDoc()->GetDocumentLoadGroup();
     nsresult rv = NS_NewChannel(getter_AddRefs(mChannel),
                                 mURI,
-                                nullptr, loadGroup, this,
+                                nsContentUtils::GetSystemPrincipal(),
+                                nsILoadInfo::SEC_NORMAL,
+                                nsIContentPolicy::TYPE_OTHER,
+                                loadGroup, // aLoadGroup
+                                this,      // aCallbacks
                                 nsIRequest::LOAD_BACKGROUND |
                                 nsICachingChannel::LOAD_ONLY_IF_MODIFIED);
+
     NS_ENSURE_SUCCESS(rv, rv);
 
     // configure HTTP specific stuff
@@ -223,12 +229,12 @@ nsPrefetchNode::CancelChannel(nsresult error)
 // nsPrefetchNode::nsISupports
 //-----------------------------------------------------------------------------
 
-NS_IMPL_ISUPPORTS5(nsPrefetchNode,
-                   nsIRequestObserver,
-                   nsIStreamListener,
-                   nsIInterfaceRequestor,
-                   nsIChannelEventSink,
-                   nsIRedirectResultListener)
+NS_IMPL_ISUPPORTS(nsPrefetchNode,
+                  nsIRequestObserver,
+                  nsIStreamListener,
+                  nsIInterfaceRequestor,
+                  nsIChannelEventSink,
+                  nsIRedirectResultListener)
 
 //-----------------------------------------------------------------------------
 // nsPrefetchNode::nsIStreamListener
@@ -618,11 +624,11 @@ nsPrefetchService::StopPrefetching()
 // nsPrefetchService::nsISupports
 //-----------------------------------------------------------------------------
 
-NS_IMPL_ISUPPORTS4(nsPrefetchService,
-                   nsIPrefetchService,
-                   nsIWebProgressListener,
-                   nsIObserver,
-                   nsISupportsWeakReference)
+NS_IMPL_ISUPPORTS(nsPrefetchService,
+                  nsIPrefetchService,
+                  nsIWebProgressListener,
+                  nsIObserver,
+                  nsISupportsWeakReference)
 
 //-----------------------------------------------------------------------------
 // nsPrefetchService::nsIPrefetchService

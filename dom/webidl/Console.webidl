@@ -4,7 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-[ChromeOnly]
+[ChromeOnly,
+ Exposed=(Window,Worker)]
 interface Console {
   void log(any... data);
   void info(any... data);
@@ -12,18 +13,16 @@ interface Console {
   void error(any... data);
   void _exception(any... data);
   void debug(any... data);
+  void table(any... data);
   void trace();
   void dir(any... data);
   void group(any... data);
   void groupCollapsed(any... data);
   void groupEnd(any... data);
-  void time(any time);
-  void timeEnd(any time);
+  void time(optional any time);
+  void timeEnd(optional any time);
 
-  [Throws]
   void profile(any... data);
-
-  [Throws]
   void profileEnd(any... data);
 
   void assert(boolean condition, any... data);
@@ -39,11 +38,21 @@ dictionary ConsoleEvent {
   DOMString level = "";
   DOMString filename = "";
   unsigned long lineNumber = 0;
+  unsigned long columnNumber = 0;
   DOMString functionName = "";
   double timeStamp = 0;
   sequence<any> arguments;
+
+  // This array will only hold strings or null elements.
+  sequence<any> styles;
+
   boolean private = false;
-  sequence<ConsoleStackEntry> stacktrace;
+  // stacktrace is handled via a getter in some cases so we can construct it
+  // lazily.  Note that we're not making this whole thing an interface because
+  // consumers expect to see own properties on it, which would mean making the
+  // props unforgeable, which means lots of JSFunction allocations.  Maybe we
+  // should fix those consumers, of course....
+  // sequence<ConsoleStackEntry> stacktrace;
   DOMString groupName = "";
   any timer = null;
   any counter = null;
@@ -59,6 +68,7 @@ dictionary ConsoleProfileEvent {
 dictionary ConsoleStackEntry {
   DOMString filename = "";
   unsigned long lineNumber = 0;
+  unsigned long columnNumber = 0;
   DOMString functionName = "";
   unsigned long language = 0;
 };

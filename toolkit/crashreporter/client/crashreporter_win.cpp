@@ -23,7 +23,6 @@
 #include "resource.h"
 #include "client/windows/sender/crash_report_sender.h"
 #include "common/windows/string_utils-inl.h"
-#include "mozilla/NullPtr.h"
 
 #define CRASH_REPORTER_VALUE L"Enabled"
 #define SUBMIT_REPORT_VALUE  L"SubmitCrashReport"
@@ -52,8 +51,8 @@ using namespace CrashReporter;
 
 typedef struct {
   HWND hDlg;
-  wstring dumpFile;
   map<wstring,wstring> queryParameters;
+  map<wstring,wstring> files;
   wstring sendURL;
 
   wstring serverResponse;
@@ -399,7 +398,7 @@ static DWORD WINAPI SendThreadProc(LPVOID param)
     google_breakpad::CrashReportSender sender(L"");
     finishedOk = (sender.SendCrashReport(td->sendURL,
                                          td->queryParameters,
-                                         td->dumpFile,
+                                         td->files,
                                          &td->serverResponse)
                   == google_breakpad::RESULT_SUCCEEDED);
     if (finishedOk) {
@@ -1293,14 +1292,19 @@ void UIShowDefaultUI()
              MB_OK | MB_ICONSTOP);
 }
 
-bool UIShowCrashUI(const string& dumpFile,
+bool UIShowCrashUI(const StringTable& files,
                    const StringTable& queryParameters,
                    const string& sendURL,
                    const vector<string>& restartArgs)
 {
   gSendData.hDlg = nullptr;
-  gSendData.dumpFile = UTF8ToWide(dumpFile);
   gSendData.sendURL = UTF8ToWide(sendURL);
+
+  for (StringTable::const_iterator i = files.begin();
+       i != files.end();
+       i++) {
+    gSendData.files[UTF8ToWide(i->first)] = UTF8ToWide(i->second);
+  }
 
   for (StringTable::const_iterator i = queryParameters.begin();
        i != queryParameters.end();
@@ -1435,42 +1439,37 @@ ifstream* UIOpenRead(const string& filename)
 {
   // adapted from breakpad's src/common/windows/http_upload.cc
 
-  // The "open" method on pre-MSVC8 ifstream implementations doesn't accept a
-  // wchar_t* filename, so use _wfopen directly in that case.  For VC8 and
-  // later, _wfopen has been deprecated in favor of _wfopen_s, which does
-  // not exist in earlier versions, so let the ifstream open the file itself.
-#if _MSC_VER >= 1400  // MSVC 2005/8
+#if defined(_MSC_VER)
   ifstream* file = new ifstream();
   file->open(UTF8ToWide(filename).c_str(), ios::in);
-#elif defined(_MSC_VER)
-  ifstream* file = new ifstream(_wfopen(UTF8ToWide(filename).c_str(), L"r"));
 #else   // GCC
   ifstream* file = new ifstream(WideToMBCP(UTF8ToWide(filename), CP_ACP).c_str(),
                                 ios::in);
-#endif  // _MSC_VER >= 1400
+#endif  // _MSC_VER
 
   return file;
 }
 
-ofstream* UIOpenWrite(const string& filename, bool append) // append=false
+ofstream* UIOpenWrite(const string& filename,
+                      bool append, // append=false
+                      bool binary) // binary=false
 {
   // adapted from breakpad's src/common/windows/http_upload.cc
+  std::ios_base::openmode mode = ios::out;
+  if (append) {
+    mode = mode | ios::app;
+  }
+  if (binary) {
+    mode = mode | ios::binary;
+  }
 
-  // The "open" method on pre-MSVC8 ifstream implementations doesn't accept a
-  // wchar_t* filename, so use _wfopen directly in that case.  For VC8 and
-  // later, _wfopen has been deprecated in favor of _wfopen_s, which does
-  // not exist in earlier versions, so let the ifstream open the file itself.
-#if _MSC_VER >= 1400  // MSVC 2005/8
+#if defined(_MSC_VER)
   ofstream* file = new ofstream();
-  file->open(UTF8ToWide(filename).c_str(), append ? ios::out | ios::app
-                                                  : ios::out);
-#elif defined(_MSC_VER)
-  ofstream* file = new ofstream(_wfopen(UTF8ToWide(filename).c_str(),
-                                        append ? L"a" : L"w"));
+  file->open(UTF8ToWide(filename).c_str(), mode);
 #else   // GCC
   ofstream* file = new ofstream(WideToMBCP(UTF8ToWide(filename), CP_ACP).c_str(),
-                                append ? ios::out | ios::app : ios::out);
-#endif  // _MSC_VER >= 1400
+                                mode);
+#endif  // _MSC_VER
 
   return file;
 }

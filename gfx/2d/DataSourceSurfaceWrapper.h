@@ -16,8 +16,8 @@ namespace gfx {
 class DataSourceSurfaceWrapper : public DataSourceSurface
 {
 public:
-  MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(DataSourceSurfaceWrapper)
-  DataSourceSurfaceWrapper(DataSourceSurface *aSurface)
+  MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(DataSourceSurfaceWrapper, MOZ_OVERRIDE)
+  explicit DataSourceSurfaceWrapper(DataSourceSurface *aSurface)
    : mSurface(aSurface)
   {}
 

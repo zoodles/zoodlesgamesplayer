@@ -49,21 +49,20 @@ public:
   NS_DECL_NSICHILDCHANNEL
   NS_DECL_NSIDIVERTABLECHANNEL
 
-  NS_IMETHOD Cancel(nsresult status);
-  NS_IMETHOD Suspend();
-  NS_IMETHOD Resume();
+  NS_IMETHOD Cancel(nsresult status) MOZ_OVERRIDE;
+  NS_IMETHOD Suspend() MOZ_OVERRIDE;
+  NS_IMETHOD Resume() MOZ_OVERRIDE;
 
-  FTPChannelChild(nsIURI* uri);
-  virtual ~FTPChannelChild();
+  explicit FTPChannelChild(nsIURI* uri);
 
   void AddIPDLReference();
   void ReleaseIPDLReference();
 
-  NS_IMETHOD AsyncOpen(nsIStreamListener* listener, nsISupports* aContext);
+  NS_IMETHOD AsyncOpen(nsIStreamListener* listener, nsISupports* aContext) MOZ_OVERRIDE;
 
   // Note that we handle this ourselves, overriding the nsBaseChannel
   // default behavior, in order to be e10s-friendly.
-  NS_IMETHOD IsPending(bool* result);
+  NS_IMETHOD IsPending(bool* result) MOZ_OVERRIDE;
 
   nsresult OpenContentStream(bool async,
                              nsIInputStream** stream,
@@ -74,26 +73,32 @@ public:
   void FlushedForDiversion();
 
 protected:
-  bool RecvOnStartRequest(const int64_t& aContentLength,
+  virtual ~FTPChannelChild();
+
+  bool RecvOnStartRequest(const nsresult& aChannelStatus,
+                          const int64_t& aContentLength,
                           const nsCString& aContentType,
                           const PRTime& aLastModified,
                           const nsCString& aEntityID,
                           const URIParams& aURI) MOZ_OVERRIDE;
-  bool RecvOnDataAvailable(const nsCString& data,
+  bool RecvOnDataAvailable(const nsresult& channelStatus,
+                           const nsCString& data,
                            const uint64_t& offset,
                            const uint32_t& count) MOZ_OVERRIDE;
-  bool RecvOnStopRequest(const nsresult& statusCode) MOZ_OVERRIDE;
+  bool RecvOnStopRequest(const nsresult& channelStatus) MOZ_OVERRIDE;
   bool RecvFailedAsyncOpen(const nsresult& statusCode) MOZ_OVERRIDE;
   bool RecvFlushedForDiversion() MOZ_OVERRIDE;
   bool RecvDivertMessages() MOZ_OVERRIDE;
   bool RecvDeleteSelf() MOZ_OVERRIDE;
 
-  void DoOnStartRequest(const int64_t& aContentLength,
+  void DoOnStartRequest(const nsresult& aChannelStatus,
+                        const int64_t& aContentLength,
                         const nsCString& aContentType,
                         const PRTime& aLastModified,
                         const nsCString& aEntityID,
                         const URIParams& aURI);
-  void DoOnDataAvailable(const nsCString& data,
+  void DoOnDataAvailable(const nsresult& channelStatus,
+                         const nsCString& data,
                          const uint64_t& offset,
                          const uint32_t& count);
   void DoOnStopRequest(const nsresult& statusCode);

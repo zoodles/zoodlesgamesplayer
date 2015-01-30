@@ -12,11 +12,10 @@ class SyncProfile;
 class ProfilerBacktrace
 {
 public:
-  ProfilerBacktrace(SyncProfile* aProfile);
+  explicit ProfilerBacktrace(SyncProfile* aProfile);
   ~ProfilerBacktrace();
 
-  template<typename Builder> void
-  BuildJSObject(Builder& aObjBuilder, typename Builder::ObjectHandle aScope);
+  void StreamJSObject(JSStreamWriter& b);
 
 private:
   ProfilerBacktrace(const ProfilerBacktrace&);

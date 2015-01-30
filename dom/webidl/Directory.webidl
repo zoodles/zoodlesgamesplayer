@@ -4,8 +4,6 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-interface File;
-
 /*
  * All functions on Directory that accept DOMString arguments for file or
  * directory names only allow relative path to current directory itself. The
@@ -22,6 +20,25 @@ interface Directory {
   readonly attribute DOMString name;
 
   /*
+   * Creates a new file or replaces an existing file with given data. The file
+   * should be a descendent of current directory.
+   *
+   * @param path The relative path of the new file to current directory.
+   * @param options It has two optional properties, 'ifExists' and 'data'.
+   * If 'ifExists' is 'fail' and the path already exists, createFile must fail;
+   * If 'ifExists' is 'replace', the path already exists, and is a file, create
+   * a new file to replace the existing one;
+   * If 'ifExists' is 'replace', the path already exists, but is a directory,
+   * createFile must fail.
+   * Otherwise, if no other error occurs, createFile will create a new file.
+   * The 'data' property contains the new file's content.
+   * @return If succeeds, the promise is resolved with the new created
+   * File object. Otherwise, rejected with a DOM error.
+   */
+  [NewObject]
+  Promise<File> createFile(DOMString path, optional CreateFileOptions options);
+
+  /*
    * Creates a descendent directory. This method will create any intermediate
    * directories specified by the path segments.
    *
@@ -31,8 +48,7 @@ interface Directory {
    * Directory object. Otherwise, rejected with a DOM error.
    */
   [NewObject]
-  // Promise<Directory>
-  Promise createDirectory(DOMString path);
+  Promise<Directory> createDirectory(DOMString path);
 
   /*
    * Gets a descendent file or directory with the given path.
@@ -43,8 +59,7 @@ interface Directory {
    * rejected with a DOM error.
    */
   [NewObject]
-  // Promise<(File or Directory)>
-  Promise get(DOMString path);
+  Promise<(File or Directory)> get(DOMString path);
 
   /*
    * Deletes a file or an empty directory. The target must be a descendent of
@@ -58,8 +73,7 @@ interface Directory {
    * and was successfully deleted, the promise is resolved with boolean true.
    */
   [NewObject]
-  // Promise<boolean>
-  Promise remove((DOMString or File or Directory) path);
+  Promise<boolean> remove((DOMString or File or Directory) path);
 
   /*
    * Deletes a file or a directory recursively. The target should be a
@@ -73,7 +87,12 @@ interface Directory {
    * deleted, the promise is resolved with boolean true.
    */
   [NewObject]
-  // Promise<boolean>
-  Promise removeDeep((DOMString or File or Directory) path);
+  Promise<boolean> removeDeep((DOMString or File or Directory) path);
 };
 
+enum CreateIfExistsMode { "replace", "fail" };
+
+dictionary CreateFileOptions {
+  CreateIfExistsMode ifExists = "fail";
+  (DOMString or Blob or ArrayBuffer or ArrayBufferView) data;
+};

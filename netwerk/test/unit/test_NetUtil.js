@@ -1,4 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
  * vim: sw=2 ts=2 sts=2 et
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -10,7 +10,10 @@
 
 Cu.import("resource://testing-common/httpd.js");
 
-Components.utils.import("resource://gre/modules/NetUtil.jsm");
+Cu.import("resource://gre/modules/NetUtil.jsm");
+Cu.import("resource://gre/modules/Task.jsm");
+Cu.import("resource://gre/modules/Promise.jsm");
+Cu.import("resource://gre/modules/Services.jsm");
 
 // We need the profile directory so the test harness will clean up our test
 // files.
@@ -31,6 +34,8 @@ const SAFE_OUTPUT_STREAM_CONTRACT_ID = "@mozilla.org/network/safe-file-output-st
  */
 function getFileContents(aFile)
 {
+  "use strict";
+
   let fstream = Cc["@mozilla.org/network/file-input-stream;1"].
                 createInstance(Ci.nsIFileInputStream);
   fstream.init(aFile, -1, 0, 0);
@@ -44,6 +49,7 @@ function getFileContents(aFile)
   cstream.close();
   return string.value;
 }
+
 
 /**
  * Tests asynchronously writing a file using NetUtil.asyncCopy.
@@ -89,6 +95,100 @@ function async_write_file(aContractId, aDeferOpen)
 
 ////////////////////////////////////////////////////////////////////////////////
 //// Tests
+
+// Test NetUtil.asyncCopy for all possible buffering scenarios
+function test_async_copy()
+{
+  // Create a data sample
+  function make_sample(text) {
+    let data = [];
+    for (let i = 0; i <= 100; ++i) {
+      data.push(text);
+    }
+    return data.join();
+  }
+
+  // Create an input buffer holding some data
+  function make_input(isBuffered, data) {
+    if (isBuffered) {
+      // String input streams are buffered
+      let istream = Cc["@mozilla.org/io/string-input-stream;1"].
+        createInstance(Ci.nsIStringInputStream);
+      istream.setData(data, data.length);
+      return istream;
+    }
+
+    // File input streams are not buffered, so let's create a file
+    let file = Cc["@mozilla.org/file/directory_service;1"].
+      getService(Ci.nsIProperties).
+      get("ProfD", Ci.nsIFile);
+    file.append("NetUtil-asyncFetch-test-file.tmp");
+    file.createUnique(Ci.nsIFile.NORMAL_FILE_TYPE, 0666);
+
+    let ostream = Cc["@mozilla.org/network/file-output-stream;1"].
+      createInstance(Ci.nsIFileOutputStream);
+    ostream.init(file, -1, -1, 0);
+    ostream.write(data, data.length);
+    ostream.close();
+
+    let istream = Cc["@mozilla.org/network/file-input-stream;1"].
+      createInstance(Ci.nsIFileInputStream);
+    istream.init(file, -1, 0, 0);
+
+    return istream;
+  }
+
+  // Create an output buffer holding some data
+  function make_output(isBuffered) {
+    let file = Cc["@mozilla.org/file/directory_service;1"].
+      getService(Ci.nsIProperties).
+      get("ProfD", Ci.nsIFile);
+    file.append("NetUtil-asyncFetch-test-file.tmp");
+    file.createUnique(Ci.nsIFile.NORMAL_FILE_TYPE, 0666);
+
+    let ostream = Cc["@mozilla.org/network/file-output-stream;1"].
+      createInstance(Ci.nsIFileOutputStream);
+    ostream.init(file, -1, -1, 0);
+
+    if (!isBuffered) {
+      return {file: file, sink: ostream};
+    }
+
+    let bstream = Cc["@mozilla.org/network/buffered-output-stream;1"].
+      createInstance(Ci.nsIBufferedOutputStream);
+    bstream.init(ostream, 256);
+    return {file: file, sink: bstream};
+  }
+  Task.spawn(function*() {
+    do_test_pending();
+    for (let bufferedInput of [true, false]) {
+      for (let bufferedOutput of [true, false]) {
+        let text = "test_async_copy with "
+          + (bufferedInput?"buffered input":"unbuffered input")
+          + ", "
+          + (bufferedOutput?"buffered output":"unbuffered output");
+        do_print(text);
+        let TEST_DATA = "[" + make_sample(text) + "]";
+        let source = make_input(bufferedInput, TEST_DATA);
+        let {file, sink} = make_output(bufferedOutput);
+        let deferred = Promise.defer();
+        NetUtil.asyncCopy(source, sink, deferred.resolve);
+        let result = yield deferred.promise;
+
+        // Make sure the copy was successful!
+        if (!Components.isSuccessCode(result)) {
+          do_throw(new Components.Exception("asyncCopy error", result));
+        }
+
+        // Check the file contents.
+        do_check_eq(TEST_DATA, getFileContents(file));
+      }
+    }
+
+    do_test_finished();
+    run_next_test();
+  });
+}
 
 function test_async_write_file() {
   async_write_file(OUTPUT_STREAM_CONTRACT_ID);
@@ -161,7 +261,7 @@ function test_ioService()
 function test_asyncFetch_no_channel()
 {
   try {
-    NetUtil.asyncFetch(null, function() { });
+    NetUtil.asyncFetch2(null, function() { });
     do_throw("should throw!");
   }
   catch (e) {
@@ -174,7 +274,7 @@ function test_asyncFetch_no_channel()
 function test_asyncFetch_no_callback()
 {
   try {
-    NetUtil.asyncFetch({ });
+    NetUtil.asyncFetch2({ });
     do_throw("should throw!");
   }
   catch (e) {
@@ -199,11 +299,18 @@ function test_asyncFetch_with_nsIChannel()
 
   // Create our channel.
   let channel = NetUtil.ioService.
-                newChannel("http://localhost:" +
-                           server.identity.primaryPort + "/test", null, null);
+                newChannel2("http://localhost:" +
+                            server.identity.primaryPort + "/test",
+                            null,
+                            null,
+                            null,      // aLoadingNode
+                            Services.scriptSecurityManager.getSystemPrincipal(),
+                            null,      // aTriggeringPrincipal
+                            Ci.nsILoadInfo.SEC_NORMAL,
+                            Ci.nsIContentPolicy.TYPE_OTHER);
 
   // Open our channel asynchronously.
-  NetUtil.asyncFetch(channel, function(aInputStream, aResult) {
+  NetUtil.asyncFetch2(channel, function(aInputStream, aResult) {
     // Check that we had success.
     do_check_true(Components.isSuccessCode(aResult));
 
@@ -237,7 +344,7 @@ function test_asyncFetch_with_nsIURI()
                            server.identity.primaryPort + "/test");
 
   // Open our URI asynchronously.
-  NetUtil.asyncFetch(uri, function(aInputStream, aResult) {
+  NetUtil.asyncFetch2(uri, function(aInputStream, aResult) {
     // Check that we had success.
     do_check_true(Components.isSuccessCode(aResult));
 
@@ -250,7 +357,12 @@ function test_asyncFetch_with_nsIURI()
     do_check_eq(TEST_DATA, result);
 
     server.stop(run_next_test);
-  });
+  },
+  null,      // aLoadingNode
+  Services.scriptSecurityManager.getSystemPrincipal(),
+  null,      // aTriggeringPrincipal
+  Ci.nsILoadInfo.SEC_NORMAL,
+  Ci.nsIContentPolicy.TYPE_OTHER);
 }
 
 function test_asyncFetch_with_string()
@@ -267,7 +379,7 @@ function test_asyncFetch_with_string()
   server.start(-1);
 
   // Open our location asynchronously.
-  NetUtil.asyncFetch("http://localhost:" +
+  NetUtil.asyncFetch2("http://localhost:" +
                      server.identity.primaryPort + "/test",
                      function(aInputStream, aResult) {
     // Check that we had success.
@@ -282,7 +394,12 @@ function test_asyncFetch_with_string()
     do_check_eq(TEST_DATA, result);
 
     server.stop(run_next_test);
-  });
+  },
+  null,      // aLoadingNode
+  Services.scriptSecurityManager.getSystemPrincipal(),
+  null,      // aTriggeringPrincipal
+  Ci.nsILoadInfo.SEC_NORMAL,
+  Ci.nsIContentPolicy.TYPE_OTHER);
 }
 
 function test_asyncFetch_with_nsIFile()
@@ -306,7 +423,7 @@ function test_asyncFetch_with_nsIFile()
   do_check_eq(TEST_DATA, getFileContents(file));
 
   // Open our file asynchronously.
-  NetUtil.asyncFetch(file, function(aInputStream, aResult) {
+  NetUtil.asyncFetch2(file, function(aInputStream, aResult) {
     // Check that we had success.
     do_check_true(Components.isSuccessCode(aResult));
 
@@ -319,7 +436,12 @@ function test_asyncFetch_with_nsIFile()
     do_check_eq(TEST_DATA, result);
 
     run_next_test();
-  });
+  },
+  null,      // aLoadingNode
+  Services.scriptSecurityManager.getSystemPrincipal(),
+  null,      // aTriggeringPrincipal
+  Ci.nsILoadInfo.SEC_NORMAL,
+  Ci.nsIContentPolicy.TYPE_OTHER);
 }
 
 function test_asyncFetch_with_nsIInputString()
@@ -330,7 +452,7 @@ function test_asyncFetch_with_nsIInputString()
   istream.setData(TEST_DATA, TEST_DATA.length);
 
   // Read the input stream asynchronously.
-  NetUtil.asyncFetch(istream, function(aInputStream, aResult) {
+  NetUtil.asyncFetch2(istream, function(aInputStream, aResult) {
     // Check that we had success.
     do_check_true(Components.isSuccessCode(aResult));
 
@@ -340,17 +462,29 @@ function test_asyncFetch_with_nsIInputString()
                 TEST_DATA);
 
     run_next_test();
-  });
+  },
+  null,      // aLoadingNode
+  Services.scriptSecurityManager.getSystemPrincipal(),
+  null,      // aTriggeringPrincipal
+  Ci.nsILoadInfo.SEC_NORMAL,
+  Ci.nsIContentPolicy.TYPE_OTHER);
 }
 
 function test_asyncFetch_does_not_block()
 {
   // Create our channel that has no data.
   let channel = NetUtil.ioService.
-                newChannel("data:text/plain,", null, null);
+                newChannel2("data:text/plain,",
+                            null,
+                            null,
+                            null,      // aLoadingNode
+                            Services.scriptSecurityManager.getSystemPrincipal(),
+                            null,      // aTriggeringPrincipal
+                            Ci.nsILoadInfo.SEC_NORMAL,
+                            Ci.nsIContentPolicy.TYPE_OTHER);
 
   // Open our channel asynchronously.
-  NetUtil.asyncFetch(channel, function(aInputStream, aResult) {
+  NetUtil.asyncFetch2(channel, function(aInputStream, aResult) {
     // Check that we had success.
     do_check_true(Components.isSuccessCode(aResult));
 
@@ -374,7 +508,7 @@ function test_asyncFetch_does_not_block()
 function test_newChannel_no_specifier()
 {
   try {
-    NetUtil.newChannel();
+    NetUtil.newChannel2();
     do_throw("should throw!");
   }
   catch (e) {
@@ -391,8 +525,22 @@ function test_newChannel_with_string()
   // Check that we get the same URI back from channel the IO service creates and
   // the channel the utility method creates.
   let ios = NetUtil.ioService;
-  let iosChannel = ios.newChannel(TEST_SPEC, null, null);
-  let NetUtilChannel = NetUtil.newChannel(TEST_SPEC);
+  let iosChannel = ios.newChannel2(TEST_SPEC,
+                                   null,
+                                   null,
+                                   null,      // aLoadingNode
+                                   Services.scriptSecurityManager.getSystemPrincipal(),
+                                   null,      // aTriggeringPrincipal
+                                   Ci.nsILoadInfo.SEC_NORMAL,
+                                   Ci.nsIContentPolicy.TYPE_OTHER);
+  let NetUtilChannel = NetUtil.newChannel2(TEST_SPEC,
+                                           null,
+                                           null,
+                                           null,      // aLoadingNode
+                                           Services.scriptSecurityManager.getSystemPrincipal(),
+                                           null,      // aTriggeringPrincipal
+                                           Ci.nsILoadInfo.SEC_NORMAL,
+                                           Ci.nsIContentPolicy.TYPE_OTHER);
   do_check_true(iosChannel.URI.equals(NetUtilChannel.URI));
 
   run_next_test();
@@ -405,8 +553,20 @@ function test_newChannel_with_nsIURI()
   // Check that we get the same URI back from channel the IO service creates and
   // the channel the utility method creates.
   let uri = NetUtil.newURI(TEST_SPEC);
-  let iosChannel = NetUtil.ioService.newChannelFromURI(uri);
-  let NetUtilChannel = NetUtil.newChannel(uri);
+  let iosChannel = NetUtil.ioService.newChannelFromURI2(uri,
+                                                        null,      // aLoadingNode
+                                                        Services.scriptSecurityManager.getSystemPrincipal(),
+                                                        null,      // aTriggeringPrincipal
+                                                        Ci.nsILoadInfo.SEC_NORMAL,
+                                                        Ci.nsIContentPolicy.TYPE_OTHER);
+  let NetUtilChannel = NetUtil.newChannel2(uri,
+                                           null,
+                                           null,
+                                           null,      // aLoadingNode
+                                           Services.scriptSecurityManager.getSystemPrincipal(),
+                                           null,      // aTriggeringPrincipal
+                                           Ci.nsILoadInfo.SEC_NORMAL,
+                                           Ci.nsIContentPolicy.TYPE_OTHER);
   do_check_true(iosChannel.URI.equals(NetUtilChannel.URI));
 
   run_next_test();
@@ -422,8 +582,20 @@ function test_newChannel_with_nsIFile()
   // Check that we get the same URI back from channel the IO service creates and
   // the channel the utility method creates.
   let uri = NetUtil.newURI(file);
-  let iosChannel = NetUtil.ioService.newChannelFromURI(uri);
-  let NetUtilChannel = NetUtil.newChannel(uri);
+  let iosChannel = NetUtil.ioService.newChannelFromURI2(uri,
+                                                        null,      // aLoadingNode
+                                                        Services.scriptSecurityManager.getSystemPrincipal(),
+                                                        null,      // aTriggeringPrincipal
+                                                        Ci.nsILoadInfo.SEC_NORMAL,
+                                                        Ci.nsIContentPolicy.TYPE_OTHER);
+  let NetUtilChannel = NetUtil.newChannel2(uri,
+                                           null,
+                                           null,
+                                           null,      // aLoadingNode
+                                           Services.scriptSecurityManager.getSystemPrincipal(),
+                                           null,      // aTriggeringPrincipal
+                                           Ci.nsILoadInfo.SEC_NORMAL,
+                                           Ci.nsIContentPolicy.TYPE_OTHER);
   do_check_true(iosChannel.URI.equals(NetUtilChannel.URI));
 
   run_next_test();
@@ -563,6 +735,7 @@ function test_readInputStreamToString_invalid_sequence()
 //// Test Runner
 
 [
+  test_async_copy,
   test_async_write_file,
   test_async_write_file_deferred,
   test_async_write_file_safe,

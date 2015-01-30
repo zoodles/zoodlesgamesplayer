@@ -2,10 +2,11 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-import random
 import errno
-import types
+import random
 import os
+import subprocess
+import types
 import xml.etree.ElementTree as ET
 from .common import CommonBackend
 
@@ -26,27 +27,39 @@ class CppEclipseBackend(CommonBackend):
         CommonBackend._init(self)
 
         self._paths_to_defines = {}
-        self._workspace_dir = os.path.join(self.environment.topobjdir, 'eclipse_workspace')
-        self._project_dir = os.path.join(self._workspace_dir, 'gecko')
+        self._project_name = 'Gecko'
+        self._workspace_dir = self._get_workspace_path()
+        self._project_dir = os.path.join(self._workspace_dir, self._project_name)
+        self._overwriting_workspace = os.path.isdir(self._workspace_dir)
 
         self._macbundle = self.environment.substs['MOZ_MACBUNDLE_NAME']
         self._appname = self.environment.substs['MOZ_APP_NAME']
         self._bin_suffix = self.environment.substs['BIN_SUFFIX']
         self._cxx = self.environment.substs['CXX']
         # Note: We need the C Pre Processor (CPP) flags, not the CXX flags
-        self._cppflags = self.environment.substs['CPPFLAGS']
+        self._cppflags = self.environment.substs.get('CPPFLAGS', '')
 
         def detailed(summary):
-            return ('\n' + \
-                   'Generated Cpp Eclipse workspace in "%s".\n' + \
-                   'OPTIONAL: Setup & index the project using: eclipse -application org.eclipse.cdt.managedbuilder.core.headlessbuild -data %s -importAll %s\n' + \
-                   'NOTE: This will take about 10 minutes.\n\n' \
-                   'Run with: eclipse -data %s\n' \
-                   'Import the project using File > Import > General > Existing Project into workspace') \
-                   % (self._workspace_dir, self._workspace_dir, self._project_dir, self._workspace_dir)
+            return ('Generated Cpp Eclipse workspace in "%s".\n' + \
+                   'If missing, import the project using File > Import > General > Existing Project into workspace\n' + \
+                   '\n' + \
+                   'Run with: eclipse -data %s\n') \
+                   % (self._workspace_dir, self._workspace_dir)
 
         self.summary.backend_detailed_summary = types.MethodType(detailed,
             self.summary)
+
+    def _get_workspace_path(self):
+        return CppEclipseBackend.get_workspace_path(self.environment.topsrcdir, self.environment.topobjdir)
+
+    @staticmethod
+    def get_workspace_path(topsrcdir, topobjdir):
+        # Eclipse doesn't support having the workspace inside the srcdir.
+        # Since most people have their objdir inside their srcdir it's easier
+        # and more consistent to just put the workspace along side the srcdir
+        srcdir_parent = os.path.dirname(topsrcdir)
+        workspace_dirname = "eclipse_" + os.path.basename(topobjdir)
+        return os.path.join(srcdir_parent, workspace_dirname)
 
     def consume_object(self, obj):
         obj.ack()
@@ -100,6 +113,36 @@ class CppEclipseBackend(CommonBackend):
         editor_prefs_path = os.path.join(workspace_settings_dir, "org.eclipse.ui.editors.prefs");
         with open(editor_prefs_path, 'wb') as fh:
             fh.write(EDITOR_SETTINGS);
+
+        # Now import the project into the workspace
+        self._import_project()
+
+    def _import_project(self):
+        # If the workspace already exists then don't import the project again because
+        # eclipse doesn't handle this properly
+        if self._overwriting_workspace:
+            return
+
+        # We disable the indexer otherwise we're forced to index
+        # the whole codebase when importing the project. Indexing the project can take 20 minutes.
+        self._write_noindex()
+
+        try:
+            process = subprocess.check_call(
+                             ["eclipse", "-application", "-nosplash",
+                              "org.eclipse.cdt.managedbuilder.core.headlessbuild",
+                              "-data", self._workspace_dir, "-importAll", self._project_dir])
+        finally:
+            self._remove_noindex()
+
+    def _write_noindex(self):
+        noindex_path = os.path.join(self._project_dir, '.settings/org.eclipse.cdt.core.prefs')
+        with open(noindex_path, 'wb') as fh:
+            fh.write(NOINDEX_TEMPLATE);
+
+    def _remove_noindex(self):
+        noindex_path = os.path.join(self._project_dir, '.settings/org.eclipse.cdt.core.prefs')
+        os.remove(noindex_path)
 
     def _define_entry(self, name, value):
         define = ET.Element('entry')
@@ -157,7 +200,7 @@ class CppEclipseBackend(CommonBackend):
     def _write_project(self, fh):
         project = PROJECT_TEMPLATE;
 
-        project = project.replace('@PROJECT_NAME@', 'Gecko')
+        project = project.replace('@PROJECT_NAME@', self._project_name)
         project = project.replace('@PROJECT_TOPSRCDIR@', self.environment.topsrcdir)
         fh.write(project)
 
@@ -288,7 +331,7 @@ CPROJECT_TEMPLATE_HEADER = """<?xml version="1.0" encoding="UTF-8" standalone="n
                                         <folderInfo id="0.1674256904." name="/" resourcePath="">
                                                 <toolChain id="cdt.managedbuild.toolchain.gnu.cross.exe.debug.1276586933" name="Cross GCC" superClass="cdt.managedbuild.toolchain.gnu.cross.exe.debug">
                                                         <targetPlatform archList="all" binaryParser="org.eclipse.cdt.core.ELF" id="cdt.managedbuild.targetPlatform.gnu.cross.710759961" isAbstract="false" osList="all" superClass="cdt.managedbuild.targetPlatform.gnu.cross"/>
-							<builder arguments="build" buildPath="@PROJECT_TOPSRCDIR@" command="@MACH_COMMAND@" enableCleanBuild="false" incrementalBuildTarget="binaries" id="org.eclipse.cdt.build.core.settings.default.builder.1437267827" keepEnvironmentInBuildfile="false" name="Gnu Make Builder" superClass="org.eclipse.cdt.build.core.settings.default.builder"/>
+							<builder arguments="--log-no-times build" buildPath="@PROJECT_TOPSRCDIR@" command="@MACH_COMMAND@" enableCleanBuild="false" incrementalBuildTarget="binaries" id="org.eclipse.cdt.build.core.settings.default.builder.1437267827" keepEnvironmentInBuildfile="false" name="Gnu Make Builder" superClass="org.eclipse.cdt.build.core.settings.default.builder"/>
                                                 </toolChain>
                                         </folderInfo>
 """
@@ -411,7 +454,7 @@ GECKO_LAUNCH_CONFIG_TEMPLATE = """<?xml version="1.0" encoding="UTF-8" standalon
 <stringAttribute key="org.eclipse.cdt.launch.DEBUGGER_STOP_AT_MAIN_SYMBOL" value="main"/>
 <stringAttribute key="org.eclipse.cdt.launch.PROGRAM_ARGUMENTS" value="@LAUNCH_ARGS@"/>
 <stringAttribute key="org.eclipse.cdt.launch.PROGRAM_NAME" value="@LAUNCH_PROGRAM@"/>
-<stringAttribute key="org.eclipse.cdt.launch.PROJECT_ATTR" value="gecko"/>
+<stringAttribute key="org.eclipse.cdt.launch.PROJECT_ATTR" value="Gecko"/>
 <booleanAttribute key="org.eclipse.cdt.launch.PROJECT_BUILD_CONFIG_AUTO_ATTR" value="true"/>
 <stringAttribute key="org.eclipse.cdt.launch.PROJECT_BUILD_CONFIG_ID_ATTR" value=""/>
 <booleanAttribute key="org.eclipse.cdt.launch.use_terminal" value="true"/>
@@ -446,7 +489,7 @@ B2GFLASH_LAUNCH_CONFIG_TEMPLATE = """<?xml version="1.0" encoding="UTF-8" standa
 <booleanAttribute key="org.eclipse.cdt.launch.DEBUGGER_STOP_AT_MAIN" value="false"/>
 <stringAttribute key="org.eclipse.cdt.launch.DEBUGGER_STOP_AT_MAIN_SYMBOL" value="main"/>
 <stringAttribute key="org.eclipse.cdt.launch.PROGRAM_NAME" value="@LAUNCH_PROGRAM@"/>
-<stringAttribute key="org.eclipse.cdt.launch.PROJECT_ATTR" value="gecko"/>
+<stringAttribute key="org.eclipse.cdt.launch.PROJECT_ATTR" value="Gecko"/>
 <booleanAttribute key="org.eclipse.cdt.launch.PROJECT_BUILD_CONFIG_AUTO_ATTR" value="true"/>
 <stringAttribute key="org.eclipse.cdt.launch.PROJECT_BUILD_CONFIG_ID_ATTR" value=""/>
 <stringAttribute key="org.eclipse.cdt.launch.WORKING_DIRECTORY" value="@OBJDIR@"/>
@@ -641,4 +684,8 @@ org.eclipse.cdt.core.formatter.put_empty_statement_on_new_line=true
 org.eclipse.cdt.core.formatter.tabulation.char=space
 org.eclipse.cdt.core.formatter.tabulation.size=2
 org.eclipse.cdt.core.formatter.use_tabs_only_for_leading_indentations=false
+"""
+
+NOINDEX_TEMPLATE = """eclipse.preferences.version=1
+indexer/indexerId=org.eclipse.cdt.core.nullIndexer
 """

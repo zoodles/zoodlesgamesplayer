@@ -68,23 +68,25 @@ public:
   NS_DECL_QUERYFRAME
   NS_DECL_FRAMEARENA_HELPERS
 
-  nsHTMLFramesetFrame(nsStyleContext* aContext);
+  explicit nsHTMLFramesetFrame(nsStyleContext* aContext);
 
   virtual ~nsHTMLFramesetFrame();
 
-  virtual void Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
 
-  virtual nsresult SetInitialChildList(ChildListID  aListID,
-                                       nsFrameList& aChildList) MOZ_OVERRIDE;
+  virtual void SetInitialChildList(ChildListID  aListID,
+                                   nsFrameList& aChildList) MOZ_OVERRIDE;
 
   static bool    gDragInProgress;
 
-  void GetSizeOfChild(nsIFrame* aChild, nsSize& aSize);
+  void GetSizeOfChild(nsIFrame* aChild, mozilla::WritingMode aWM,
+                      mozilla::LogicalSize& aSize);
 
-  void GetSizeOfChildAt(int32_t  aIndexInParent, 
-                        nsSize&  aSize, 
+  void GetSizeOfChildAt(int32_t  aIndexInParent,
+                        mozilla::WritingMode aWM,
+                        mozilla::LogicalSize&  aSize,
                         nsIntPoint& aCellIndex);
 
   virtual nsresult HandleEvent(nsPresContext* aPresContext, 
@@ -98,10 +100,10 @@ public:
                                 const nsRect&           aDirtyRect,
                                 const nsDisplayListSet& aLists) MOZ_OVERRIDE;
 
-  virtual nsresult Reflow(nsPresContext*           aPresContext,
-                          nsHTMLReflowMetrics&     aDesiredSize,
-                          const nsHTMLReflowState& aReflowState,
-                          nsReflowStatus&          aStatus) MOZ_OVERRIDE;
+  virtual void Reflow(nsPresContext*           aPresContext,
+                      nsHTMLReflowMetrics&     aDesiredSize,
+                      const nsHTMLReflowState& aReflowState,
+                      nsReflowStatus&          aStatus) MOZ_OVERRIDE;
 
   virtual nsIAtom* GetType() const MOZ_OVERRIDE;
 #ifdef DEBUG_FRAME_DUMP

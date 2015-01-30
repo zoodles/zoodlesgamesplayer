@@ -38,9 +38,6 @@
  *
  * ***** END LICENSE BLOCK ***** */
 
-#ifdef MOZ_LOGGING
-#define FORCE_PR_LOG /* Allow logging in the release build */
-#endif
 #include "prlog.h"
 
 #include <algorithm>
@@ -52,15 +49,16 @@
 #include "gfxMacFont.h"
 #include "gfxUserFontSet.h"
 #include "harfbuzz/hb.h"
-#include "harfbuzz/hb-ot.h"
 
 #include "nsServiceManagerUtils.h"
 #include "nsTArray.h"
 
 #include "nsDirectoryServiceUtils.h"
 #include "nsDirectoryServiceDefs.h"
+#include "nsAppDirectoryServiceDefs.h"
 #include "nsISimpleEnumerator.h"
 #include "nsCharTraits.h"
+#include "nsCocoaFeatures.h"
 #include "gfxFontConstants.h"
 
 #include "mozilla/MemoryReporting.h"
@@ -156,71 +154,6 @@ static NSString* GetNSStringForString(const nsAString& aSrc)
 // cmap-masking on other platforms to avoid using fonts that won't shape
 // properly.
 
-struct ScriptRange {
-    uint32_t         rangeStart;
-    uint32_t         rangeEnd;
-    hb_tag_t         tags[3]; // one or two OpenType script tags to check,
-                              // plus a NULL terminator
-};
-
-static const ScriptRange sComplexScripts[] = {
-    // Actually, now that harfbuzz supports presentation-forms shaping for
-    // Arabic, we can render it without layout tables. So maybe we don't
-    // want to mask the basic Arabic block here?
-    // This affects the arabic-fallback-*.html reftests, which rely on
-    // loading a font that *doesn't* have any GSUB table.
-    { 0x0600, 0x06FF, { TRUETYPE_TAG('a','r','a','b'), 0, 0 } },
-    { 0x0700, 0x074F, { TRUETYPE_TAG('s','y','r','c'), 0, 0 } },
-    { 0x0750, 0x077F, { TRUETYPE_TAG('a','r','a','b'), 0, 0 } },
-    { 0x08A0, 0x08FF, { TRUETYPE_TAG('a','r','a','b'), 0, 0 } },
-    { 0x0900, 0x097F, { TRUETYPE_TAG('d','e','v','2'),
-                        TRUETYPE_TAG('d','e','v','a'), 0 } },
-    { 0x0980, 0x09FF, { TRUETYPE_TAG('b','n','g','2'),
-                        TRUETYPE_TAG('b','e','n','g'), 0 } },
-    { 0x0A00, 0x0A7F, { TRUETYPE_TAG('g','u','r','2'),
-                        TRUETYPE_TAG('g','u','r','u'), 0 } },
-    { 0x0A80, 0x0AFF, { TRUETYPE_TAG('g','j','r','2'),
-                        TRUETYPE_TAG('g','u','j','r'), 0 } },
-    { 0x0B00, 0x0B7F, { TRUETYPE_TAG('o','r','y','2'),
-                        TRUETYPE_TAG('o','r','y','a'), 0 } },
-    { 0x0B80, 0x0BFF, { TRUETYPE_TAG('t','m','l','2'),
-                        TRUETYPE_TAG('t','a','m','l'), 0 } },
-    { 0x0C00, 0x0C7F, { TRUETYPE_TAG('t','e','l','2'),
-                        TRUETYPE_TAG('t','e','l','u'), 0 } },
-    { 0x0C80, 0x0CFF, { TRUETYPE_TAG('k','n','d','2'),
-                        TRUETYPE_TAG('k','n','d','a'), 0 } },
-    { 0x0D00, 0x0D7F, { TRUETYPE_TAG('m','l','m','2'),
-                        TRUETYPE_TAG('m','l','y','m'), 0 } },
-    { 0x0D80, 0x0DFF, { TRUETYPE_TAG('s','i','n','h'), 0, 0 } },
-    { 0x0E80, 0x0EFF, { TRUETYPE_TAG('l','a','o',' '), 0, 0 } },
-    { 0x0F00, 0x0FFF, { TRUETYPE_TAG('t','i','b','t'), 0, 0 } },
-    { 0x1000, 0x109f, { TRUETYPE_TAG('m','y','m','r'),
-                        TRUETYPE_TAG('m','y','m','2'), 0 } },
-    { 0x1780, 0x17ff, { TRUETYPE_TAG('k','h','m','r'), 0, 0 } },
-    // Khmer Symbols (19e0..19ff) don't seem to need any special shaping
-    { 0xaa60, 0xaa7f, { TRUETYPE_TAG('m','y','m','r'),
-                        TRUETYPE_TAG('m','y','m','2'), 0 } },
-    // Thai seems to be "renderable" without AAT morphing tables
-};
-
-static bool
-SupportsScriptInGSUB(gfxFontEntry* aFontEntry, const hb_tag_t* aScriptTags)
-{
-    hb_face_t *face = aFontEntry->GetHBFace();
-    if (!face) {
-        return false;
-    }
-
-    unsigned int index;
-    hb_tag_t     chosenScript;
-    bool found =
-        hb_ot_layout_table_choose_script(face, TRUETYPE_TAG('G','S','U','B'),
-                                         aScriptTags, &index, &chosenScript);
-    hb_face_destroy(face);
-
-    return found && chosenScript != TRUETYPE_TAG('D','F','L','T');
-}
-
 nsresult
 MacOSFontEntry::ReadCMAP(FontInfoData *aFontInfoData)
 {
@@ -272,12 +205,10 @@ MacOSFontEntry::ReadCMAP(FontInfoData *aFontInfoData)
             mRequiresAAT = true; // prefer CoreText if font has no OTL tables
         }
 
-        uint32_t numScripts = ArrayLength(sComplexScripts);
-
-        for (uint32_t s = 0; s < numScripts; s++) {
+        for (const ScriptRange* sr = gfxPlatformFontList::sComplexScriptRanges;
+             sr->rangeStart; sr++) {
             // check to see if the cmap includes complex script codepoints
-            const ScriptRange& sr = sComplexScripts[s];
-            if (charmap->TestRange(sr.rangeStart, sr.rangeEnd)) {
+            if (charmap->TestRange(sr->rangeStart, sr->rangeEnd)) {
                 if (hasAATLayout) {
                     // prefer CoreText for Apple's complex-script fonts,
                     // even if they also have some OpenType tables
@@ -289,11 +220,11 @@ MacOSFontEntry::ReadCMAP(FontInfoData *aFontInfoData)
                 }
 
                 // We check for GSUB here, as GPOS alone would not be ok.
-                if (hasGSUB && SupportsScriptInGSUB(this, sr.tags)) {
+                if (hasGSUB && SupportsScriptInGSUB(sr->tags)) {
                     continue;
                 }
 
-                charmap->ClearRange(sr.rangeStart, sr.rangeEnd);
+                charmap->ClearRange(sr->rangeStart, sr->rangeEnd);
             }
         }
     }
@@ -357,7 +288,8 @@ MacOSFontEntry::MacOSFontEntry(const nsAString& aPostscriptName,
                                CGFontRef aFontRef,
                                uint16_t aWeight, uint16_t aStretch,
                                uint32_t aItalicStyle,
-                               bool aIsUserFont, bool aIsLocal)
+                               bool aIsDataUserFont,
+                               bool aIsLocalUserFont)
     : gfxFontEntry(aPostscriptName, false),
       mFontRef(NULL),
       mFontRefInitialized(false),
@@ -373,8 +305,11 @@ MacOSFontEntry::MacOSFontEntry(const nsAString& aPostscriptName,
     mStretch = aStretch;
     mFixedPitch = false; // xxx - do we need this for downloaded fonts?
     mItalic = (aItalicStyle & (NS_FONT_STYLE_ITALIC | NS_FONT_STYLE_OBLIQUE)) != 0;
-    mIsUserFont = aIsUserFont;
-    mIsLocalUserFont = aIsLocal;
+
+    NS_ASSERTION(!(aIsDataUserFont && aIsLocalUserFont),
+                 "userfont is either a data font or a local font");
+    mIsDataUserFont = aIsDataUserFont;
+    mIsLocalUserFont = aIsLocalUserFont;
 }
 
 CGFontRef
@@ -446,7 +381,7 @@ MacOSFontEntry::AddSizeOfIncludingThis(MallocSizeOf aMallocSizeOf,
 class gfxMacFontFamily : public gfxFontFamily
 {
 public:
-    gfxMacFontFamily(nsAString& aName) :
+    explicit gfxMacFontFamily(nsAString& aName) :
         gfxFontFamily(aName)
     {}
 
@@ -609,9 +544,11 @@ gfxMacFontFamily::FindStyleVariations(FontInfoData *aFontInfoData)
 class gfxSingleFaceMacFontFamily : public gfxFontFamily
 {
 public:
-    gfxSingleFaceMacFontFamily(nsAString& aName) :
+    explicit gfxSingleFaceMacFontFamily(nsAString& aName) :
         gfxFontFamily(aName)
-    {}
+    {
+        mFaceNamesInitialized = true; // omit from face name lists
+    }
 
     virtual ~gfxSingleFaceMacFontFamily() {}
 
@@ -679,6 +616,10 @@ gfxMacPlatformFontList::gfxMacPlatformFontList() :
     gfxPlatformFontList(false),
     mDefaultFont(nullptr)
 {
+#ifdef MOZ_BUNDLED_FONTS
+    ActivateBundledFonts();
+#endif
+
     ::CFNotificationCenterAddObserver(::CFNotificationCenterGetLocalCenter(),
                                       this,
                                       RegisteredFontsChangedNotificationCallback,
@@ -707,6 +648,7 @@ gfxMacPlatformFontList::InitFontList()
 
     // reset font lists
     gfxPlatformFontList::InitFontList();
+    mSystemFontFamilies.Clear();
     
     // iterate over available families
 
@@ -722,10 +664,14 @@ gfxMacPlatformFontList::InitFontList()
         // CTFontManager includes weird internal family names and
         // LastResort, skip over those
         if (!family ||
-            ::CFStringHasPrefix(family, CFSTR(".")) ||
             CFStringCompare(family, CFSTR("LastResort"),
                             kCFCompareCaseInsensitive) == kCFCompareEqualTo) {
             continue;
+        }
+
+        bool hiddenSystemFont = false;
+        if (::CFStringHasPrefix(family, CFSTR("."))) {
+            hiddenSystemFont = true;
         }
 
         nsAutoTArray<UniChar, 1024> buffer;
@@ -742,7 +688,11 @@ gfxMacPlatformFontList::InitFontList()
 
         // add the family entry to the hash table
         ToLowerCase(familyName);
-        mFontFamilies.Put(familyName, familyEntry);
+        if (!hiddenSystemFont) {
+            mFontFamilies.Put(familyName, familyEntry);
+        } else {
+            mSystemFontFamilies.Put(familyName, familyEntry);
+        }
 
         // check the bad underline blacklist
         if (mBadUnderlineFamilyNames.Contains(familyName))
@@ -776,7 +726,9 @@ gfxMacPlatformFontList::InitSingleFaceList()
         LOG_FONTLIST(("(fontlist-singleface) face name: %s\n",
                       NS_ConvertUTF16toUTF8(singleFaceFonts[i]).get()));
 #endif
-        gfxFontEntry *fontEntry = LookupLocalFont(nullptr, singleFaceFonts[i]);
+        gfxFontEntry *fontEntry = LookupLocalFont(singleFaceFonts[i],
+                                                  400, 0,
+                                                  NS_FONT_STYLE_NORMAL);
         if (fontEntry) {
             nsAutoString familyName, key;
             familyName = singleFaceFonts[i];
@@ -791,6 +743,8 @@ gfxMacPlatformFontList::InitSingleFaceList()
             if (!mFontFamilies.GetWeak(key)) {
                 gfxFontFamily *familyEntry =
                     new gfxSingleFaceMacFontFamily(familyName);
+                // LookupLocalFont sets this, need to clear
+                fontEntry->mIsLocalUserFont = false;
                 familyEntry->AddFontEntry(fontEntry);
                 familyEntry->SetHasStyles(true);
                 mFontFamilies.Put(key, familyEntry);
@@ -827,13 +781,13 @@ gfxMacPlatformFontList::RegisteredFontsChangedNotificationCallback(CFNotificatio
         return;
     }
 
+    gfxMacPlatformFontList* fl = static_cast<gfxMacPlatformFontList*>(observer);
+
     // xxx - should be carefully pruning the list of fonts, not rebuilding it from scratch
-    static_cast<gfxMacPlatformFontList*>(observer)->UpdateFontList();
+    fl->UpdateFontList();
 
     // modify a preference that will trigger reflow everywhere
-    static const char kPrefName[] = "font.internaluseonly.changed";
-    bool fontInternalChange = Preferences::GetBool(kPrefName, false);
-    Preferences::SetBool(kPrefName, !fontInternalChange);
+    fl->ForceGlobalReflow();
 }
 
 gfxFontEntry*
@@ -908,7 +862,7 @@ gfxMacPlatformFontList::GlobalFontFallback(const uint32_t aCh,
             if (family) {
                 fontEntry = family->FindFontForStyle(*aMatchStyle, needsBold);
                 if (fontEntry) {
-                    if (fontEntry->TestCharacterMap(aCh)) {
+                    if (fontEntry->HasCharacter(aCh)) {
                         *aMatchedFamily = family;
                     } else {
                         fontEntry = nullptr;
@@ -955,8 +909,10 @@ gfxMacPlatformFontList::AppleWeightToCSSWeight(int32_t aAppleWeight)
 }
 
 gfxFontEntry*
-gfxMacPlatformFontList::LookupLocalFont(const gfxProxyFontEntry *aProxyEntry,
-                                        const nsAString& aFontName)
+gfxMacPlatformFontList::LookupLocalFont(const nsAString& aFontName,
+                                        uint16_t aWeight,
+                                        int16_t aStretch,
+                                        bool aItalic)
 {
     nsAutoreleasePool localPool;
 
@@ -969,22 +925,15 @@ gfxMacPlatformFontList::LookupLocalFont(const gfxProxyFontEntry *aProxyEntry,
         return nullptr;
     }
 
-    if (aProxyEntry) {
-        uint16_t w = aProxyEntry->mWeight;
-        NS_ASSERTION(w >= 100 && w <= 900, "bogus font weight value!");
+    NS_ASSERTION(aWeight >= 100 && aWeight <= 900,
+                 "bogus font weight value!");
 
-        newFontEntry =
-            new MacOSFontEntry(aFontName, fontRef,
-                               w, aProxyEntry->mStretch,
-                               aProxyEntry->mItalic ?
-                                   NS_FONT_STYLE_ITALIC : NS_FONT_STYLE_NORMAL,
-                               true, true);
-    } else {
-        newFontEntry =
-            new MacOSFontEntry(aFontName, fontRef,
-                               400, 0, NS_FONT_STYLE_NORMAL,
-                               false, false);
-    }
+    newFontEntry =
+        new MacOSFontEntry(aFontName, fontRef,
+                           aWeight, aStretch,
+                           aItalic ?
+                               NS_FONT_STYLE_ITALIC : NS_FONT_STYLE_NORMAL,
+                           false, true);
     ::CFRelease(fontRef);
 
     return newFontEntry;
@@ -996,14 +945,16 @@ static void ReleaseData(void *info, const void *data, size_t size)
 }
 
 gfxFontEntry*
-gfxMacPlatformFontList::MakePlatformFont(const gfxProxyFontEntry *aProxyEntry,
-                                         const uint8_t *aFontData,
+gfxMacPlatformFontList::MakePlatformFont(const nsAString& aFontName,
+                                         uint16_t aWeight,
+                                         int16_t aStretch,
+                                         bool aItalic,
+                                         const uint8_t* aFontData,
                                          uint32_t aLength)
 {
     NS_ASSERTION(aFontData, "MakePlatformFont called with null data");
 
-    uint16_t w = aProxyEntry->mWeight;
-    NS_ASSERTION(w >= 100 && w <= 900, "bogus font weight value!");
+    NS_ASSERTION(aWeight >= 100 && aWeight <= 900, "bogus font weight value!");
 
     // create the font entry
     nsAutoString uniqueName;
@@ -1024,9 +975,9 @@ gfxMacPlatformFontList::MakePlatformFont(const gfxProxyFontEntry *aProxyEntry,
     }
 
     nsAutoPtr<MacOSFontEntry>
-        newFontEntry(new MacOSFontEntry(uniqueName, fontRef, w,
-                                        aProxyEntry->mStretch,
-                                        aProxyEntry->mItalic ?
+        newFontEntry(new MacOSFontEntry(uniqueName, fontRef, aWeight,
+                                        aStretch,
+                                        aItalic ?
                                             NS_FONT_STYLE_ITALIC :
                                             NS_FONT_STYLE_NORMAL,
                                         true, false));
@@ -1059,7 +1010,10 @@ public:
 
     virtual void Load() {
         nsAutoreleasePool localPool;
-        FontInfoData::Load();
+        // bug 975460 - async font loader crashes sometimes under 10.6, disable
+        if (nsCocoaFeatures::OnLionOrLater()) {
+            FontInfoData::Load();
+        }
     }
 
     // loads font data for all members of a given family
@@ -1123,7 +1077,8 @@ MacFontInfo::LoadFontFamilyData(const nsAString& aFamilyName)
             // load the cmap data
             FontFaceData fontData;
             CFDataRef cmapTable = CTFontCopyTable(fontRef, kCTFontTableCmap,
-                                                 kCTFontTableOptionNoOptions);
+                                                  kCTFontTableOptionNoOptions);
+
             if (cmapTable) {
                 bool unicodeFont = false, symbolFont = false; // ignored
                 const uint8_t *cmapData =
@@ -1151,6 +1106,7 @@ MacFontInfo::LoadFontFamilyData(const nsAString& aFamilyName)
         if (mLoadOtherNames && hasOtherFamilyNames) {
             CFDataRef nameTable = CTFontCopyTable(fontRef, kCTFontTableName,
                                                   kCTFontTableOptionNoOptions);
+
             if (nameTable) {
                 const char *nameData = (const char*)CFDataGetBytePtr(nameTable);
                 uint32_t nameLen = CFDataGetLength(nameTable);
@@ -1185,3 +1141,57 @@ gfxMacPlatformFontList::CreateFontInfoData()
     return fi.forget();
 }
 
+#ifdef MOZ_BUNDLED_FONTS
+
+void
+gfxMacPlatformFontList::ActivateBundledFonts()
+{
+    nsCOMPtr<nsIFile> localDir;
+    nsresult rv = NS_GetSpecialDirectory(NS_GRE_DIR, getter_AddRefs(localDir));
+    if (NS_FAILED(rv)) {
+        return;
+    }
+    if (NS_FAILED(localDir->Append(NS_LITERAL_STRING("fonts")))) {
+        return;
+    }
+    bool isDir;
+    if (NS_FAILED(localDir->IsDirectory(&isDir)) || !isDir) {
+        return;
+    }
+
+    nsCOMPtr<nsISimpleEnumerator> e;
+    rv = localDir->GetDirectoryEntries(getter_AddRefs(e));
+    if (NS_FAILED(rv)) {
+        return;
+    }
+
+    bool hasMore;
+    while (NS_SUCCEEDED(e->HasMoreElements(&hasMore)) && hasMore) {
+        nsCOMPtr<nsISupports> entry;
+        if (NS_FAILED(e->GetNext(getter_AddRefs(entry)))) {
+            break;
+        }
+        nsCOMPtr<nsIFile> file = do_QueryInterface(entry);
+        if (!file) {
+            continue;
+        }
+        nsCString path;
+        if (NS_FAILED(file->GetNativePath(path))) {
+            continue;
+        }
+        CFURLRef fontURL =
+            ::CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault,
+                                                      (uint8_t*)path.get(),
+                                                      path.Length(),
+                                                      false);
+        if (fontURL) {
+            CFErrorRef error = nullptr;
+            ::CTFontManagerRegisterFontsForURL(fontURL,
+                                               kCTFontManagerScopeProcess,
+                                               &error);
+            ::CFRelease(fontURL);
+        }
+    }
+}
+
+#endif

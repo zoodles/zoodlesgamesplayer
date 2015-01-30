@@ -24,10 +24,9 @@ public:
   {
   }
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE
+  virtual JSObject* WrapObjectInternal(JSContext* aCx) MOZ_OVERRIDE
   {
-    return BeforeUnloadEventBinding::Wrap(aCx, aScope, this);
+    return BeforeUnloadEventBinding::Wrap(aCx, this);
   }
 
   NS_DECL_ISUPPORTS_INHERITED
@@ -39,6 +38,8 @@ public:
   NS_DECL_NSIDOMBEFOREUNLOADEVENT
 
 protected:
+  ~BeforeUnloadEvent() {}
+
   nsString mText;
 };
 

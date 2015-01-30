@@ -23,85 +23,30 @@
          JSMSG_EMPTY_ARRAY_REDUCE: false, JSMSG_CANT_CONVERT_TO: false,
 */
 
-/* Utility macros */
-#define TO_INT32(x) ((x) | 0)
-#define TO_UINT32(x) ((x) >>> 0)
-#define IS_UINT32(x) ((x) >>> 0 === (x))
+#include "SelfHostingDefines.h"
 
-/* Assertions */
-#ifdef DEBUG
-#define assert(b, info) if (!(b)) AssertionFailed(info)
-#else
-#define assert(b, info)
-#endif
-
-/* cache built-in functions before applications can change them */
-var std_isFinite = isFinite;
-var std_isNaN = isNaN;
+// All C++-implemented standard builtins library functions used in self-hosted
+// code are installed via the std_functions JSFunctionSpec[] in
+// SelfHosting.cpp.
+//
+// The few items below here are either self-hosted or installing them under a
+// std_Foo name would require ugly contortions, so they just get aliased here.
 var std_Array_indexOf = ArrayIndexOf;
-var std_Array_iterator = Array.prototype.iterator;
-var std_Array_join = Array.prototype.join;
-var std_Array_push = Array.prototype.push;
-var std_Array_pop = Array.prototype.pop;
-var std_Array_shift = Array.prototype.shift;
-var std_Array_slice = Array.prototype.slice;
-var std_Array_sort = Array.prototype.sort;
-var std_Array_unshift = Array.prototype.unshift;
-var std_Boolean_toString = Boolean.prototype.toString;
-var Std_Date = Date;
-var std_Date_now = Date.now;
-var std_Date_valueOf = Date.prototype.valueOf;
-var std_Function_bind = Function.prototype.bind;
-var std_Function_apply = Function.prototype.apply;
-var std_Math_floor = Math.floor;
-var std_Math_max = Math.max;
-var std_Math_min = Math.min;
-var std_Math_imul = Math.imul;
-var std_Math_log2 = Math.log2;
-var std_Number_valueOf = Number.prototype.valueOf;
-var std_Number_POSITIVE_INFINITY = Number.POSITIVE_INFINITY;
-var std_Object_create = Object.create;
-var std_Object_defineProperty = Object.defineProperty;
-var std_Object_getOwnPropertyNames = Object.getOwnPropertyNames;
-var std_Object_hasOwnProperty = Object.prototype.hasOwnProperty;
-var std_RegExp_test = RegExp.prototype.test;
-var Std_String = String;
-var std_String_fromCharCode = String.fromCharCode;
-var std_String_charCodeAt = String.prototype.charCodeAt;
-var std_String_indexOf = String.prototype.indexOf;
-var std_String_lastIndexOf = String.prototype.lastIndexOf;
-var std_String_match = String.prototype.match;
-var std_String_replace = String.prototype.replace;
-var std_String_split = String.prototype.split;
-var std_String_startsWith = String.prototype.startsWith;
-var std_String_substring = String.prototype.substring;
-var std_String_toLowerCase = String.prototype.toLowerCase;
-var std_String_toUpperCase = String.prototype.toUpperCase;
+var std_String_substring = String_substring;
+// WeakMap is a bare constructor without properties or methods.
 var std_WeakMap = WeakMap;
-var std_WeakMap_get = WeakMap.prototype.get;
-var std_WeakMap_has = WeakMap.prototype.has;
-var std_WeakMap_set = WeakMap.prototype.set;
-var std_Map_has = Map.prototype.has;
-var std_Set_has = Set.prototype.has;
-var std_iterator = '@@iterator'; // FIXME: Change to be a symbol.
+// StopIteration is a bare constructor without properties or methods.
 var std_StopIteration = StopIteration;
-var std_Map_iterator = Map.prototype[std_iterator];
-var std_Set_iterator = Set.prototype[std_iterator];
-var std_Map_iterator_next = Object.getPrototypeOf(Map()[std_iterator]()).next;
-var std_Set_iterator_next = Object.getPrototypeOf(Set()[std_iterator]()).next;
-
-/* Safe versions of ARRAY.push(ELEMENT) */
-#define ARRAY_PUSH(ARRAY, ELEMENT) \
-  callFunction(std_Array_push, ARRAY, ELEMENT);
-#define ARRAY_SLICE(ARRAY, ELEMENT) \
-  callFunction(std_Array_slice, ARRAY, ELEMENT);
 
 
 /********** List specification type **********/
 
 
 /* Spec: ECMAScript Language Specification, 5.1 edition, 8.8 */
-function List() {}
+function List() {
+    this.length = 0;
+}
+
 {
   let ListProto = std_Object_create(null);
   ListProto.indexOf = std_Array_indexOf;
@@ -144,63 +89,67 @@ function ToNumber(v) {
 }
 
 
-/* Spec: ECMAScript Language Specification, 5.1 edition, 9.8 and 15.2.1.1 */
-function ToString(v) {
-    assert(arguments.length > 0, "__toString");
-    return Std_String(v);
-}
-
-
 /* Spec: ECMAScript Language Specification, 5.1 edition, 9.10 */
 function CheckObjectCoercible(v) {
     if (v === undefined || v === null)
         ThrowError(JSMSG_CANT_CONVERT_TO, ToString(v), "object");
 }
 
+/* Spec: ECMAScript Draft, 6 edition May 22, 2014, 7.1.15 */
+function ToLength(v) {
+    v = ToInteger(v);
 
-/********** Various utility functions **********/
+    if (v <= 0)
+        return 0;
 
-
-/** Returns true iff Type(v) is Object; see ES5 8.6. */
-function IsObject(v) {
-    // Watch out for |typeof null === "object"| as the most obvious pitfall.
-    // But also be careful of SpiderMonkey's objects that emulate undefined
-    // (i.e. |document.all|), which have bogus |typeof| behavior.  Detect
-    // these objects using strict equality, which said bogosity doesn't affect.
-    return (typeof v === "object" && v !== null) ||
-           typeof v === "function" ||
-           (typeof v === "undefined" && v !== undefined);
+    // Math.pow(2, 53) - 1 = 0x1fffffffffffff
+    return std_Math_min(v, 0x1fffffffffffff);
 }
 
-
-/********** Testing code **********/
-
-#ifdef ENABLE_PARALLEL_JS
-
-/**
- * Internal debugging tool: checks that the given `mode` permits
- * sequential execution
- */
-function AssertSequentialIsOK(mode) {
-  if (mode && mode.mode && mode.mode !== "seq" && ParallelTestsShouldPass())
-    ThrowError(JSMSG_WRONG_VALUE, "parallel execution", "sequential was forced");
+/* Spec: ECMAScript Draft, 6th edition Oct 14, 2014, 7.2.4 */
+function SameValueZero(x, y) {
+    return x === y || (x !== x && y !== y);
 }
 
-function ForkJoinMode(mode) {
-  // WARNING: this must match the enum ForkJoinMode in ForkJoin.cpp
-  if (!mode || !mode.mode) {
-    return 0;
-  } else if (mode.mode === "compile") {
-    return 1;
-  } else if (mode.mode === "par") {
-    return 2;
-  } else if (mode.mode === "recover") {
-    return 3;
-  } else if (mode.mode === "bailout") {
-    return 4;
-  }
-  ThrowError(JSMSG_PAR_ARRAY_BAD_ARG);
-  return undefined;
+/* Spec: ECMAScript Draft, 6th edition Dec 24, 2014, 7.3.8 */
+function GetMethod(O, P) {
+    // Step 1.
+    assert(IsPropertyKey(P), "Invalid property key");
+
+    // Steps 2-3.
+    var func = ToObject(O)[P];
+
+    // Step 4.
+    if (func === undefined || func === null)
+        return undefined;
+
+    // Step 5.
+    if (!IsCallable(func))
+        ThrowError(JSMSG_NOT_FUNCTION, typeof func);
+
+    // Step 6.
+    return func;
 }
 
-#endif
+/* Spec: ECMAScript Draft, 6th edition Dec 24, 2014, 7.2.7 */
+function IsPropertyKey(argument) {
+    var type = typeof argument;
+    return type === "string" || type === "symbol";
+}
+
+/* Spec: ECMAScript Draft, 6th edition Dec 24, 2014, 7.4.1 */
+function GetIterator(obj, method) {
+    // Steps 1-2.
+    if (arguments.length === 1)
+        method = GetMethod(obj, std_iterator);
+
+    // Steps 3-4.
+    var iterator = callFunction(method, obj);
+
+    // Step 5.
+    if (!IsObject(iterator))
+        ThrowError(JSMSG_NOT_ITERABLE, ToString(iterator));
+
+    // Step 6.
+    return iterator;
+}

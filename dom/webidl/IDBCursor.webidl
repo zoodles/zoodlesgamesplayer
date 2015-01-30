@@ -14,6 +14,7 @@ enum IDBCursorDirection {
     "prevunique"
 };
 
+[Exposed=(Window,Worker)]
 interface IDBCursor {
     readonly    attribute (IDBObjectStore or IDBIndex) source;
 
@@ -32,7 +33,7 @@ interface IDBCursor {
     void       advance ([EnforceRange] unsigned long count);
 
     [Throws]
-    void       continue (any key);
+    void       continue (optional any key);
 
     [Throws]
     IDBRequest delete ();

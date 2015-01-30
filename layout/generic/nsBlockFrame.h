@@ -99,27 +99,29 @@ public:
   line_iterator line(nsLineBox* aList) { return mLines.begin(aList); }
   reverse_line_iterator rline(nsLineBox* aList) { return mLines.rbegin(aList); }
 
-  friend nsIFrame* NS_NewBlockFrame(nsIPresShell* aPresShell, nsStyleContext* aContext, nsFrameState aFlags);
+  friend nsBlockFrame* NS_NewBlockFrame(nsIPresShell* aPresShell,
+                                        nsStyleContext* aContext,
+                                        nsFrameState aFlags);
 
   // nsQueryFrame
   NS_DECL_QUERYFRAME
 
   // nsIFrame
-  virtual void Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        aPrevInFlow) MOZ_OVERRIDE;
-  virtual nsresult SetInitialChildList(ChildListID     aListID,
-                                       nsFrameList&    aChildList) MOZ_OVERRIDE;
-  virtual nsresult  AppendFrames(ChildListID     aListID,
-                                 nsFrameList&    aFrameList) MOZ_OVERRIDE;
-  virtual nsresult  InsertFrames(ChildListID     aListID,
-                                 nsIFrame*       aPrevFrame,
-                                 nsFrameList&    aFrameList) MOZ_OVERRIDE;
-  virtual nsresult  RemoveFrame(ChildListID     aListID,
-                                nsIFrame*       aOldFrame) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
+  virtual void SetInitialChildList(ChildListID     aListID,
+                                   nsFrameList&    aChildList) MOZ_OVERRIDE;
+  virtual void AppendFrames(ChildListID     aListID,
+                            nsFrameList&    aFrameList) MOZ_OVERRIDE;
+  virtual void InsertFrames(ChildListID     aListID,
+                            nsIFrame*       aPrevFrame,
+                            nsFrameList&    aFrameList) MOZ_OVERRIDE;
+  virtual void RemoveFrame(ChildListID     aListID,
+                           nsIFrame*       aOldFrame) MOZ_OVERRIDE;
   virtual const nsFrameList& GetChildList(ChildListID aListID) const MOZ_OVERRIDE;
   virtual void GetChildLists(nsTArray<ChildList>* aLists) const MOZ_OVERRIDE;
-  virtual nscoord GetBaseline() const MOZ_OVERRIDE;
+  virtual nscoord GetLogicalBaseline(mozilla::WritingMode aWritingMode) const MOZ_OVERRIDE;
   virtual nscoord GetCaretBaseline() const MOZ_OVERRIDE;
   virtual void DestroyFrom(nsIFrame* aDestructRoot) MOZ_OVERRIDE;
   virtual nsSplittableType GetSplittableType() const MOZ_OVERRIDE;
@@ -191,7 +193,7 @@ public:
   /**
    * Return the bullet text equivalent.
    */
-  void GetBulletText(nsAString& aText) const;
+  void GetSpokenBulletText(nsAString& aText) const;
 
   /**
    * Return true if there's a bullet.
@@ -222,49 +224,47 @@ public:
     return outside ? outside : GetInsideBullet();
   }
 
-  virtual void MarkIntrinsicWidthsDirty() MOZ_OVERRIDE;
+  virtual void MarkIntrinsicISizesDirty() MOZ_OVERRIDE;
 private:
   void CheckIntrinsicCacheAgainstShrinkWrapState();
 public:
-  virtual nscoord GetMinWidth(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
-  virtual nscoord GetPrefWidth(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
+  virtual nscoord GetMinISize(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
+  virtual nscoord GetPrefISize(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
 
   virtual nsRect ComputeTightBounds(gfxContext* aContext) const MOZ_OVERRIDE;
-  
+
   virtual nsresult GetPrefWidthTightBounds(nsRenderingContext* aContext,
                                            nscoord* aX,
                                            nscoord* aXMost) MOZ_OVERRIDE;
 
   /**
-   * Compute the final height of this frame.
+   * Compute the final block size of this frame.
    *
    * @param aReflowState Data structure passed from parent during reflow.
-   * @param aReflowStatus A pointed to the reflow status for when we're finished
-   *        doing reflow. this will get set appropriately if the height causes
-   *        us to exceed the current available (page) height.
-   * @param aContentHeight The height of content, precomputed outside of this
-   *        function. The final height that is used in aMetrics will be set to
-   *        either this or the available height, whichever is larger, in the
-   *        case where our available height is constrained, and we overflow that
-   *        available height.
+   * @param aReflowStatus A pointer to the reflow status for when we're finished
+   *        doing reflow. this will get set appropriately if the block-size
+   *        causes us to exceed the current available (page) block-size.
+   * @param aContentBSize The block-size of content, precomputed outside of this
+   *        function. The final block-size that is used in aMetrics will be set
+   *        to either this or the available block-size, whichever is larger, in
+   *        the case where our available block-size is constrained, and we
+   *        overflow that available block-size.
    * @param aBorderPadding The margins representing the border padding for block
    *        frames. Can be 0.
-   * @param aMetrics Out parameter for final height. Taken as an
-   *        nsHTMLReflowMetrics object so that aMetrics can be passed in
-   *        directly during reflow.
-   * @param aConsumed The height already consumed by our previous-in-flows.
+   * @param aFinalSize Out parameter for final block-size.
+   * @param aConsumed The block-size already consumed by our previous-in-flows.
    */
-  void ComputeFinalHeight(const nsHTMLReflowState& aReflowState,
-                          nsReflowStatus*          aStatus,
-                          nscoord                  aContentHeight,
-                          const nsMargin&          aBorderPadding,
-                          nsHTMLReflowMetrics&     aMetrics,
-                          nscoord                  aConsumed);
+  void ComputeFinalBSize(const nsHTMLReflowState&      aReflowState,
+                         nsReflowStatus*               aStatus,
+                         nscoord                       aContentBSize,
+                         const mozilla::LogicalMargin& aBorderPadding,
+                         mozilla::LogicalSize&         aFinalSize,
+                         nscoord                       aConsumed);
 
-  virtual nsresult Reflow(nsPresContext*           aPresContext,
-                          nsHTMLReflowMetrics&     aDesiredSize,
-                          const nsHTMLReflowState& aReflowState,
-                          nsReflowStatus&          aStatus) MOZ_OVERRIDE;
+  virtual void Reflow(nsPresContext*           aPresContext,
+                      nsHTMLReflowMetrics&     aDesiredSize,
+                      const nsHTMLReflowState& aReflowState,
+                      nsReflowStatus&          aStatus) MOZ_OVERRIDE;
 
   virtual nsresult AttributeChanged(int32_t         aNameSpaceID,
                                     nsIAtom*        aAttribute,
@@ -295,14 +295,14 @@ public:
    * line includes the margin-top of a line with clearance (in which
    * case we must avoid collapsing that margin with our bottom margin)
    */
-  bool CheckForCollapsedBottomMarginFromClearanceLine();
+  bool CheckForCollapsedBEndMarginFromClearanceLine();
 
   static nsresult GetCurrentLine(nsBlockReflowState *aState, nsLineBox **aOutCurrentLine);
 
   /**
    * Determine if this block is a margin root at the top/bottom edges.
    */
-  void IsMarginRoot(bool* aTopMarginRoot, bool* aBottomMarginRoot);
+  void IsMarginRoot(bool* aBStartMarginRoot, bool* aBEndMarginRoot);
 
   static bool BlockNeedsFloatManager(nsIFrame* aBlock);
 
@@ -314,19 +314,19 @@ public:
   static bool BlockCanIntersectFloats(nsIFrame* aFrame);
 
   /**
-   * Returns the width that needs to be cleared past floats for blocks
-   * that cannot intersect floats.  aState must already have
-   * GetAvailableSpace called on it for the vertical position that we
-   * care about (which need not be its current mY)
+   * Returns the inline size that needs to be cleared past floats for
+   * blocks that cannot intersect floats.  aState must already have
+   * GetAvailableSpace called on it for the block-dir position that we
+   * care about (which need not be its current mBCoord)
    */
-  struct ReplacedElementWidthToClear {
-    nscoord marginLeft, borderBoxWidth, marginRight;
-    nscoord MarginBoxWidth() const
-      { return marginLeft + borderBoxWidth + marginRight; }
+  struct ReplacedElementISizeToClear {
+    nscoord marginIStart, borderBoxISize, marginIEnd;
+    nscoord MarginBoxISize() const
+      { return marginIStart + borderBoxISize + marginIEnd; }
   };
-  static ReplacedElementWidthToClear
-    WidthToClearPastFloats(nsBlockReflowState& aState,
-                           const nsRect& aFloatAvailableSpace,
+  static ReplacedElementISizeToClear
+    ISizeToClearPastFloats(nsBlockReflowState& aState,
+                           const mozilla::LogicalRect& aFloatAvailableSpace,
                            nsIFrame* aFrame);
 
   /**
@@ -352,7 +352,7 @@ public:
   };
 
 protected:
-  nsBlockFrame(nsStyleContext* aContext)
+  explicit nsBlockFrame(nsStyleContext* aContext)
     : nsContainerFrame(aContext)
     , mMinWidth(NS_INTRINSIC_WIDTH_UNKNOWN)
     , mPrefWidth(NS_INTRINSIC_WIDTH_UNKNOWN)
@@ -408,11 +408,17 @@ protected:
     mState |= aFlags;
   }
 
-  /** move the frames contained by aLine by aDY
+  /** move the frames contained by aLine by aDeltaBCoord
     * if aLine is a block, its child floats are added to the state manager
     */
   void SlideLine(nsBlockReflowState& aState,
-                 nsLineBox* aLine, nscoord aDY);
+                 nsLineBox* aLine, nscoord aDeltaBCoord);
+
+  void UpdateLineContainerWidth(nsLineBox* aLine,
+                                nscoord aNewContainerWidth);
+
+  // helper for SlideLine and UpdateLineContainerWidth
+  void MoveChildFramesOfLine(nsLineBox* aLine, nscoord aDeltaBCoord);
 
   void ComputeFinalSize(const nsHTMLReflowState& aReflowState,
                         nsBlockReflowState&      aState,
@@ -434,7 +440,6 @@ protected:
    */
   void AddFrames(nsFrameList& aFrameList, nsIFrame* aPrevSibling);
 
-#ifdef IBMBIDI
   /**
    * Perform Bidi resolution on this frame
    */
@@ -449,7 +454,6 @@ protected:
    * @return whether the frame is a BIDI form control
    */
   bool IsVisualFormControl(nsPresContext* aPresContext);
-#endif
 
 public:
   /**
@@ -466,7 +470,7 @@ public:
     REMOVE_FIXED_CONTINUATIONS = 0x02,
     FRAMES_ARE_EMPTY           = 0x04
   };
-  nsresult DoRemoveFrame(nsIFrame* aDeletedFrame, uint32_t aFlags);
+  void DoRemoveFrame(nsIFrame* aDeletedFrame, uint32_t aFlags);
 
   void ReparentFloats(nsIFrame* aFirstFrame, nsBlockFrame* aOldParent,
                       bool aReparentSiblings);
@@ -478,8 +482,10 @@ public:
    *  assumes float manager is in aFrame's parent's coord system.
    *  Safe to call on non-blocks (does nothing).
    */
-  static void RecoverFloatsFor(nsIFrame*       aFrame,
-                               nsFloatManager& aFloatManager);
+  static void RecoverFloatsFor(nsIFrame*            aFrame,
+                               nsFloatManager&      aFloatManager,
+                               mozilla::WritingMode aWM,
+                               nscoord              aContainerWidth);
 
   /**
    * Determine if we have any pushed floats from a previous continuation.
@@ -543,7 +549,9 @@ protected:
   /** Load all our floats into the float manager (without reflowing them).
    *  Assumes float manager is in our own coordinate system.
    */
-  void RecoverFloats(nsFloatManager& aFloatManager);
+  void RecoverFloats(nsFloatManager&      aFloatManager,
+                     mozilla::WritingMode aWM,
+                     nscoord              aContainerWidth);
 
   /** Reflow pushed floats
    */
@@ -582,7 +590,7 @@ protected:
   void PrepareResizeReflow(nsBlockReflowState& aState);
 
   /** reflow all lines that have been marked dirty */
-  nsresult ReflowDirtyLines(nsBlockReflowState& aState);
+  void ReflowDirtyLines(nsBlockReflowState& aState);
 
   /** Mark a given line dirty due to reflow being interrupted on or before it */
   void MarkLineDirtyForInterrupt(nsLineBox* aLine);
@@ -596,20 +604,20 @@ protected:
    *                         or contain 1 or more inline frames.
    * @param aKeepReflowGoing [OUT] indicates whether the caller should continue to reflow more lines
    */
-  nsresult ReflowLine(nsBlockReflowState& aState,
-                      line_iterator aLine,
-                      bool* aKeepReflowGoing);
+  void ReflowLine(nsBlockReflowState& aState,
+                  line_iterator aLine,
+                  bool* aKeepReflowGoing);
 
   // Return false if it needs another reflow because of reduced space
   // between floats that are next to it (but not next to its top), and
   // return true otherwise.
-  bool PlaceLine(nsBlockReflowState& aState,
-                   nsLineLayout&       aLineLayout,
-                   line_iterator       aLine,
+  bool PlaceLine(nsBlockReflowState&           aState,
+                   nsLineLayout&               aLineLayout,
+                   line_iterator               aLine,
                    nsFloatManager::SavedState* aFloatStateBeforeLine,
-                   nsRect&             aFloatAvailableSpace, /* in-out */
-                   nscoord&            aAvailableSpaceHeight, /* in-out */
-                   bool*             aKeepReflowGoing);
+                   mozilla::LogicalRect&       aFloatAvailableSpace, //in-out
+                   nscoord&                    aAvailableSpaceHeight, // in-out
+                   bool*                       aKeepReflowGoing);
 
   /**
     * If NS_BLOCK_LOOK_FOR_DIRTY_FRAMES is set, call MarkLineDirty
@@ -638,56 +646,58 @@ protected:
   //----------------------------------------
   // Methods for individual frame reflow
 
-  bool ShouldApplyTopMargin(nsBlockReflowState& aState,
-                              nsLineBox* aLine);
+  bool ShouldApplyBStartMargin(nsBlockReflowState& aState,
+                               nsLineBox* aLine,
+                               nsIFrame* aChildFrame);
 
-  nsresult ReflowBlockFrame(nsBlockReflowState& aState,
+  void ReflowBlockFrame(nsBlockReflowState& aState,
+                        line_iterator aLine,
+                        bool* aKeepGoing);
+
+  void ReflowInlineFrames(nsBlockReflowState& aState,
+                          line_iterator aLine,
+                          bool* aKeepLineGoing);
+
+  void DoReflowInlineFrames(nsBlockReflowState& aState,
+                            nsLineLayout& aLineLayout,
                             line_iterator aLine,
-                            bool* aKeepGoing);
+                            nsFlowAreaRect& aFloatAvailableSpace,
+                            nscoord& aAvailableSpaceHeight,
+                            nsFloatManager::SavedState*
+                            aFloatStateBeforeLine,
+                            bool* aKeepReflowGoing,
+                            LineReflowStatus* aLineReflowStatus,
+                            bool aAllowPullUp);
 
-  nsresult ReflowInlineFrames(nsBlockReflowState& aState,
-                              line_iterator aLine,
-                              bool* aKeepLineGoing);
+  void ReflowInlineFrame(nsBlockReflowState& aState,
+                         nsLineLayout& aLineLayout,
+                         line_iterator aLine,
+                         nsIFrame* aFrame,
+                         LineReflowStatus* aLineReflowStatus);
 
-  nsresult DoReflowInlineFrames(nsBlockReflowState& aState,
-                                nsLineLayout& aLineLayout,
-                                line_iterator aLine,
-                                nsFlowAreaRect& aFloatAvailableSpace,
-                                nscoord& aAvailableSpaceHeight,
-                                nsFloatManager::SavedState*
-                                  aFloatStateBeforeLine,
-                                bool* aKeepReflowGoing,
-                                LineReflowStatus* aLineReflowStatus,
-                                bool aAllowPullUp);
-
-  nsresult ReflowInlineFrame(nsBlockReflowState& aState,
-                             nsLineLayout& aLineLayout,
-                             line_iterator aLine,
-                             nsIFrame* aFrame,
-                             LineReflowStatus* aLineReflowStatus);
-
-  // Compute the available width for a float. 
-  nsRect AdjustFloatAvailableSpace(nsBlockReflowState& aState,
-                                   const nsRect&       aFloatAvailableSpace,
-                                   nsIFrame*           aFloatFrame);
-  // Computes the border-box width of the float
-  nscoord ComputeFloatWidth(nsBlockReflowState& aState,
-                            const nsRect&       aFloatAvailableSpace,
-                            nsIFrame*           aFloat);
+  // Compute the available inline size for a float.
+  mozilla::LogicalRect AdjustFloatAvailableSpace(
+                         nsBlockReflowState&         aState,
+                         const mozilla::LogicalRect& aFloatAvailableSpace,
+                         nsIFrame*                   aFloatFrame);
+  // Computes the border-box inline size of the float
+  nscoord ComputeFloatISize(nsBlockReflowState&         aState,
+                            const mozilla::LogicalRect& aFloatAvailableSpace,
+                            nsIFrame*                   aFloat);
   // An incomplete aReflowStatus indicates the float should be split
   // but only if the available height is constrained.
   // aAdjustedAvailableSpace is the result of calling
   // nsBlockFrame::AdjustFloatAvailableSpace.
-  nsresult ReflowFloat(nsBlockReflowState& aState,
-                       const nsRect&       aAdjustedAvailableSpace,
-                       nsIFrame*           aFloat,
-                       nsMargin&           aFloatMargin,
-                       nsMargin&           aFloatOffsets,
-                       // Whether the float's position
-                       // (aAdjustedAvailableSpace) has been pushed down
-                       // due to the presence of other floats.
-                       bool                aFloatPushedDown,
-                       nsReflowStatus&     aReflowStatus);
+  void ReflowFloat(nsBlockReflowState&         aState,
+                   const mozilla::LogicalRect& aAdjustedAvailableSpace,
+                   nsIFrame*                   aFloat,
+                   mozilla::LogicalMargin&     aFloatMargin,
+                   mozilla::LogicalMargin&     aFloatOffsets,
+                   // Whether the float's position
+                   // (aAdjustedAvailableSpace) has been pushed down
+                   // due to the presence of other floats.
+                   bool                        aFloatPushedDown,
+                   nsReflowStatus&             aReflowStatus);
 
   //----------------------------------------
   // Methods for pushing/pulling lines/frames
@@ -753,7 +763,7 @@ protected:
 
   void PropagateFloatDamage(nsBlockReflowState& aState,
                             nsLineBox* aLine,
-                            nscoord aDeltaY);
+                            nscoord aDeltaBCoord);
 
   void CheckFloats(nsBlockReflowState& aState);
 
@@ -806,7 +816,7 @@ protected:
   struct nsAutoOOFFrameList {
     nsFrameList mList;
 
-    nsAutoOOFFrameList(nsBlockFrame* aBlock)
+    explicit nsAutoOOFFrameList(nsBlockFrame* aBlock)
       : mPropValue(aBlock->GetOverflowOutOfFlows())
       , mBlock(aBlock) {
       if (mPropValue) {
@@ -899,7 +909,7 @@ protected:
 #ifdef DEBUG
 class AutoNoisyIndenter {
 public:
-  AutoNoisyIndenter(bool aDoIndent) : mIndented(aDoIndent) {
+  explicit AutoNoisyIndenter(bool aDoIndent) : mIndented(aDoIndent) {
     if (mIndented) {
       nsBlockFrame::gNoiseIndent++;
     }

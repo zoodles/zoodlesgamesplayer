@@ -36,19 +36,20 @@ public:
   explicit TimeManager(nsPIDOMWindow* aWindow)
     : mWindow(aWindow)
   {
-    SetIsDOMBinding();
   }
 
   nsPIDOMWindow* GetParentObject() const
   {
     return mWindow;
   }
-  JSObject* WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope);
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   void Set(Date& aDate);
   void Set(double aTime);
 
 private:
+  ~TimeManager() {}
+
   nsCOMPtr<nsPIDOMWindow> mWindow;
 };
 

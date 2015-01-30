@@ -23,6 +23,8 @@ namespace crashreporter {
 
 class LSPAnnotationGatherer : public nsRunnable
 {
+  ~LSPAnnotationGatherer() {}
+
 public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIRUNNABLE
@@ -32,7 +34,7 @@ public:
   nsCOMPtr<nsIThread> mThread;
 };
 
-NS_IMPL_ISUPPORTS1(LSPAnnotationGatherer, nsIRunnable)
+NS_IMPL_ISUPPORTS(LSPAnnotationGatherer, nsIRunnable)
 
 void
 LSPAnnotationGatherer::Annotate()

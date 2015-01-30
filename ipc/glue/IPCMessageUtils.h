@@ -11,11 +11,13 @@
 #include "chrome/common/ipc_message_utils.h"
 
 #include "mozilla/ArrayUtils.h"
+#include "mozilla/DebugOnly.h"
 #include "mozilla/TimeStamp.h"
 #ifdef XP_WIN
 #include "mozilla/TimeStamp_windows.h"
 #endif
-#include "mozilla/TypedEnum.h"
+#include "mozilla/TypeTraits.h"
+#include "mozilla/IntegerTypeTraits.h"
 
 #include <stdint.h>
 
@@ -60,7 +62,7 @@ struct SerializedStructuredCloneBuffer
   : data(nullptr), dataLength(0)
   { }
 
-  SerializedStructuredCloneBuffer(const JSAutoStructuredCloneBuffer& aOther)
+  explicit SerializedStructuredCloneBuffer(const JSAutoStructuredCloneBuffer& aOther)
   {
     *this = aOther;
   }
@@ -91,43 +93,31 @@ namespace IPC {
 /**
  * Generic enum serializer.
  *
+ * Consider using the specializations below, such as ContiguousEnumSerializer.
+ *
  * This is a generic serializer for any enum type used in IPDL.
  * Programmers can define ParamTraits<E> for enum type E by deriving
- * EnumSerializer<E, smallestLegal, highGuard>.
- *
- * The serializer would check value againts a range specified by
- * smallestLegal and highGuard.  Only values from smallestLegal to
- * highGuard are valid, include smallestLegal but highGuard.
- *
- * For example, following is definition of serializer for enum type FOO.
- * \code
- * enum FOO { FOO_FIRST, FOO_SECOND, FOO_LAST, NUM_FOO };
- *
- * template <>
- * struct ParamTraits<FOO>:
- *     public EnumSerializer<FOO, FOO_FIRST, NUM_FOO> {};
- * \endcode
- * FOO_FIRST, FOO_SECOND, and FOO_LAST are valid value.
+ * EnumSerializer<E, MyEnumValidator> where MyEnumValidator is a struct
+ * that has to define a static IsLegalValue function returning whether
+ * a given value is a legal value of the enum type at hand.
  *
  * \sa https://developer.mozilla.org/en/IPDL/Type_Serialization
  */
-template <typename E, E smallestLegal, E highBound>
+template <typename E, typename EnumValidator>
 struct EnumSerializer {
   typedef E paramType;
-
-  static bool IsLegalValue(const paramType &aValue) {
-    return smallestLegal <= aValue && aValue < highBound;
-  }
+  typedef typename mozilla::UnsignedStdintTypeForSize<sizeof(paramType)>::Type
+          uintParamType;
 
   static void Write(Message* aMsg, const paramType& aValue) {
-    MOZ_ASSERT(IsLegalValue(aValue));
-    WriteParam(aMsg, (int32_t)aValue);
+    MOZ_ASSERT(EnumValidator::IsLegalValue(aValue));
+    WriteParam(aMsg, uintParamType(aValue));
   }
 
   static bool Read(const Message* aMsg, void** aIter, paramType* aResult) {
-    int32_t value;
+    uintParamType value;
     if(!ReadParam(aMsg, aIter, &value) ||
-       !IsLegalValue(paramType(value))) {
+       !EnumValidator::IsLegalValue(paramType(value))) {
       return false;
     }
     *aResult = paramType(value);
@@ -135,48 +125,90 @@ struct EnumSerializer {
   }
 };
 
-/**
- * Variant of EnumSerializer for MFBT's typed enums
- * defined by MOZ_BEGIN_ENUM_CLASS in mfbt/TypedEnum.h
- *
- * This is only needed on non-C++11 compilers such as B2G's GCC 4.4,
- * where MOZ_BEGIN_ENUM_CLASS is implemented using a nested enum, T::Enum,
- * in a wrapper class T. In this case, the "typed enum" type T cannot be
- * used as an integer template parameter type. MOZ_TEMPLATE_ENUM_CLASS_ENUM_TYPE(T)
- * is how we get at the integer enum type.
- */
 template <typename E,
-          MOZ_TEMPLATE_ENUM_CLASS_ENUM_TYPE(E) smallestLegal,
-          MOZ_TEMPLATE_ENUM_CLASS_ENUM_TYPE(E) highBound>
-struct TypedEnumSerializer {
-  typedef E paramType;
-  typedef MOZ_TEMPLATE_ENUM_CLASS_ENUM_TYPE(E) intParamType;
+          E MinLegal,
+          E HighBound>
+class ContiguousEnumValidator
+{
+  // Silence overzealous -Wtype-limits bug in GCC fixed in GCC 4.8:
+  // "comparison of unsigned expression >= 0 is always true"
+  // http://gcc.gnu.org/bugzilla/show_bug.cgi?id=11856
+  template <typename T>
+  static bool IsLessThanOrEqual(T a, T b) { return a <= b; }
 
-  static bool IsLegalValue(const paramType &aValue) {
-    return smallestLegal <= intParamType(aValue) && intParamType(aValue) < highBound;
-  }
-
-  static void Write(Message* aMsg, const paramType& aValue) {
-    MOZ_ASSERT(IsLegalValue(aValue));
-    WriteParam(aMsg, int32_t(intParamType(aValue)));
-  }
-
-  static bool Read(const Message* aMsg, void** aIter, paramType* aResult) {
-    int32_t value;
-    if(!ReadParam(aMsg, aIter, &value) ||
-       !IsLegalValue(intParamType(value))) {
-      return false;
-    }
-    *aResult = intParamType(value);
-    return true;
+public:
+  static bool IsLegalValue(E e)
+  {
+    return IsLessThanOrEqual(MinLegal, e) && e < HighBound;
   }
 };
 
+template <typename E,
+          E AllBits>
+struct BitFlagsEnumValidator
+{
+  static bool IsLegalValue(E e)
+  {
+    return (e & AllBits) == e;
+  }
+};
+
+/**
+ * Specialization of EnumSerializer for enums with contiguous enum values.
+ *
+ * Provide two values: MinLegal, HighBound. An enum value x will be
+ * considered legal if MinLegal <= x < HighBound.
+ *
+ * For example, following is definition of serializer for enum type FOO.
+ * \code
+ * enum FOO { FOO_FIRST, FOO_SECOND, FOO_LAST, NUM_FOO };
+ *
+ * template <>
+ * struct ParamTraits<FOO>:
+ *     public ContiguousEnumSerializer<FOO, FOO_FIRST, NUM_FOO> {};
+ * \endcode
+ * FOO_FIRST, FOO_SECOND, and FOO_LAST are valid value.
+ */
+template <typename E,
+          E MinLegal,
+          E HighBound>
+struct ContiguousEnumSerializer
+  : EnumSerializer<E,
+                   ContiguousEnumValidator<E, MinLegal, HighBound>>
+{};
+
+/**
+ * Specialization of EnumSerializer for enums representing bit flags.
+ *
+ * Provide one value: AllBits. An enum value x will be
+ * considered legal if (x & AllBits) == x;
+ *
+ * Example:
+ * \code
+ * enum FOO {
+ *   FOO_FIRST =  1 << 0,
+ *   FOO_SECOND = 1 << 1,
+ *   FOO_LAST =   1 << 2,
+ *   ALL_BITS =   (1 << 3) - 1
+ * };
+ *
+ * template <>
+ * struct ParamTraits<FOO>:
+ *     public BitFlagsEnumSerializer<FOO, FOO::ALL_BITS> {};
+ * \endcode
+ */
+template <typename E,
+          E AllBits>
+struct BitFlagsEnumSerializer
+  : EnumSerializer<E,
+                   BitFlagsEnumValidator<E, AllBits>>
+{};
+
 template <>
 struct ParamTraits<base::ChildPrivileges>
-  : public EnumSerializer<base::ChildPrivileges,
-                          base::PRIVILEGES_DEFAULT,
-                          base::PRIVILEGES_LAST>
+  : public ContiguousEnumSerializer<base::ChildPrivileges,
+                                    base::PRIVILEGES_DEFAULT,
+                                    base::PRIVILEGES_LAST>
 { };
 
 template<>
@@ -385,12 +417,51 @@ struct ParamTraits<FallibleTArray<E> >
 {
   typedef FallibleTArray<E> paramType;
 
+  // We write arrays of integer or floating-point data using a single pickling
+  // call, rather than writing each element individually.  We deliberately do
+  // not use mozilla::IsPod here because it is perfectly reasonable to have
+  // a data structure T for which IsPod<T>::value is true, yet also have a
+  // ParamTraits<T> specialization.
+  static const bool sUseWriteBytes = (mozilla::IsIntegral<E>::value ||
+                                      mozilla::IsFloatingPoint<E>::value);
+
+  // Compute the byte length for |aNumElements| of type E.  If that length
+  // would overflow an int, return false.  Otherwise, return true and place
+  // the byte length in |aTotalLength|.
+  //
+  // Pickle's ReadBytes/WriteBytes interface takes lengths in ints, hence this
+  // dance.
+  static bool ByteLengthIsValid(size_t aNumElements, int* aTotalLength) {
+    static_assert(sizeof(int) == sizeof(int32_t), "int is an unexpected size!");
+
+    // nsTArray only handles sizes up to INT32_MAX.
+    if (aNumElements > size_t(INT32_MAX)) {
+      return false;
+    }
+
+    int64_t numBytes = static_cast<int64_t>(aNumElements) * sizeof(E);
+    if (numBytes > int64_t(INT32_MAX)) {
+      return false;
+    }
+
+    *aTotalLength = static_cast<int>(numBytes);
+    return true;
+  }
+
   static void Write(Message* aMsg, const paramType& aParam)
   {
     uint32_t length = aParam.Length();
     WriteParam(aMsg, length);
-    for (uint32_t index = 0; index < length; index++) {
-      WriteParam(aMsg, aParam[index]);
+
+    if (sUseWriteBytes) {
+      int pickledLength = 0;
+      mozilla::DebugOnly<bool> valid = ByteLengthIsValid(length, &pickledLength);
+      MOZ_ASSERT(valid);
+      aMsg->WriteBytes(aParam.Elements(), pickledLength);
+    } else {
+      for (uint32_t index = 0; index < length; index++) {
+        WriteParam(aMsg, aParam[index]);
+      }
     }
   }
 
@@ -401,11 +472,34 @@ struct ParamTraits<FallibleTArray<E> >
       return false;
     }
 
-    aResult->SetCapacity(length);
-    for (uint32_t index = 0; index < length; index++) {
-      E* element = aResult->AppendElement();
-      if (!(element && ReadParam(aMsg, aIter, element))) {
+    if (sUseWriteBytes) {
+      int pickledLength = 0;
+      if (!ByteLengthIsValid(length, &pickledLength)) {
         return false;
+      }
+
+      const char* outdata;
+      if (!aMsg->ReadBytes(aIter, &outdata, pickledLength)) {
+        return false;
+      }
+
+      E* elements = aResult->AppendElements(length);
+      if (!elements) {
+        return false;
+      }
+
+      memcpy(elements, outdata, pickledLength);
+    } else {
+      if (!aResult->SetCapacity(length)) {
+        return false;
+      }
+
+      for (uint32_t index = 0; index < length; index++) {
+        E* element = aResult->AppendElement();
+        MOZ_ASSERT(element);
+        if (!ReadParam(aMsg, aIter, element)) {
+          return false;
+        }
       }
     }
 
@@ -477,9 +571,9 @@ struct ParamTraits<float>
 
 template <>
 struct ParamTraits<nsCSSProperty>
-  : public EnumSerializer<nsCSSProperty,
-                          eCSSProperty_UNKNOWN,
-                          eCSSProperty_COUNT>
+  : public ContiguousEnumSerializer<nsCSSProperty,
+                                    eCSSProperty_UNKNOWN,
+                                    eCSSProperty_COUNT>
 {};
 
 template<>

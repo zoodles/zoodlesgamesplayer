@@ -20,12 +20,15 @@
 class nsDeviceContext;
 struct SegmentedControlRenderSettings;
 
+namespace mozilla {
+class EventStates;
+} // namespace mozilla
+
 class nsNativeThemeCocoa : private nsNativeTheme,
                            public nsITheme
 {
 public:
   nsNativeThemeCocoa();
-  virtual ~nsNativeThemeCocoa();
 
   NS_DECL_ISUPPORTS_INHERITED
 
@@ -34,98 +37,113 @@ public:
                                   nsIFrame* aFrame,
                                   uint8_t aWidgetType,
                                   const nsRect& aRect,
-                                  const nsRect& aDirtyRect);
+                                  const nsRect& aDirtyRect) MOZ_OVERRIDE;
   NS_IMETHOD GetWidgetBorder(nsDeviceContext* aContext, 
                              nsIFrame* aFrame,
                              uint8_t aWidgetType,
-                             nsIntMargin* aResult);
+                             nsIntMargin* aResult) MOZ_OVERRIDE;
 
   virtual bool GetWidgetPadding(nsDeviceContext* aContext,
                                   nsIFrame* aFrame,
                                   uint8_t aWidgetType,
-                                  nsIntMargin* aResult);
+                                  nsIntMargin* aResult) MOZ_OVERRIDE;
 
   virtual bool GetWidgetOverflow(nsDeviceContext* aContext, nsIFrame* aFrame,
-                                   uint8_t aWidgetType, nsRect* aOverflowRect);
+                                   uint8_t aWidgetType, nsRect* aOverflowRect) MOZ_OVERRIDE;
 
-  NS_IMETHOD GetMinimumWidgetSize(nsRenderingContext* aContext, nsIFrame* aFrame,
+  NS_IMETHOD GetMinimumWidgetSize(nsPresContext* aPresContext, nsIFrame* aFrame,
                                   uint8_t aWidgetType,
-                                  nsIntSize* aResult, bool* aIsOverridable);
+                                  nsIntSize* aResult, bool* aIsOverridable) MOZ_OVERRIDE;
   NS_IMETHOD WidgetStateChanged(nsIFrame* aFrame, uint8_t aWidgetType, 
-                                nsIAtom* aAttribute, bool* aShouldRepaint);
-  NS_IMETHOD ThemeChanged();
-  bool ThemeSupportsWidget(nsPresContext* aPresContext, nsIFrame* aFrame, uint8_t aWidgetType);
-  bool WidgetIsContainer(uint8_t aWidgetType);
+                                nsIAtom* aAttribute, bool* aShouldRepaint) MOZ_OVERRIDE;
+  NS_IMETHOD ThemeChanged() MOZ_OVERRIDE;
+  bool ThemeSupportsWidget(nsPresContext* aPresContext, nsIFrame* aFrame, uint8_t aWidgetType) MOZ_OVERRIDE;
+  bool WidgetIsContainer(uint8_t aWidgetType) MOZ_OVERRIDE;
   bool ThemeDrawsFocusForWidget(uint8_t aWidgetType) MOZ_OVERRIDE;
-  bool ThemeNeedsComboboxDropmarker();
+  bool ThemeNeedsComboboxDropmarker() MOZ_OVERRIDE;
   virtual bool WidgetAppearanceDependsOnWindowFocus(uint8_t aWidgetType) MOZ_OVERRIDE;
-  virtual Transparency GetWidgetTransparency(nsIFrame* aFrame, uint8_t aWidgetType);
+  virtual bool NeedToClearBackgroundBehindWidget(uint8_t aWidgetType) MOZ_OVERRIDE;
+  virtual bool WidgetProvidesFontSmoothingBackgroundColor(nsIFrame* aFrame, uint8_t aWidgetType,
+                                                          nscolor* aColor) MOZ_OVERRIDE;
+  virtual Transparency GetWidgetTransparency(nsIFrame* aFrame, uint8_t aWidgetType) MOZ_OVERRIDE;
 
   void DrawProgress(CGContextRef context, const HIRect& inBoxRect,
                     bool inIsIndeterminate, bool inIsHorizontal,
                     double inValue, double inMaxValue, nsIFrame* aFrame);
 
-protected:  
+  static void DrawNativeTitlebar(CGContextRef aContext, CGRect aTitlebarRect,
+                                 CGFloat aUnifiedHeight, BOOL aIsMain, BOOL aIsFlipped);
+
+protected:
+  virtual ~nsNativeThemeCocoa();
 
   nsIntMargin RTLAwareMargin(const nsIntMargin& aMargin, nsIFrame* aFrame);
   nsIFrame* SeparatorResponsibility(nsIFrame* aBefore, nsIFrame* aAfter);
   CGRect SeparatorAdjustedRect(CGRect aRect, nsIFrame* aLeft,
                                nsIFrame* aCurrent, nsIFrame* aRight);
-  bool IsWindowSheet(nsIFrame* aFrame);
 
   // HITheme drawing routines
   void DrawFrame(CGContextRef context, HIThemeFrameKind inKind,
                  const HIRect& inBoxRect, bool inReadOnly,
-                 nsEventStates inState);
+                 mozilla::EventStates inState);
   void DrawMeter(CGContextRef context, const HIRect& inBoxRect,
                  nsIFrame* aFrame);
   void DrawSegment(CGContextRef cgContext, const HIRect& inBoxRect,
-                   nsEventStates inState, nsIFrame* aFrame,
+                   mozilla::EventStates inState, nsIFrame* aFrame,
                    const SegmentedControlRenderSettings& aSettings);
   void DrawTabPanel(CGContextRef context, const HIRect& inBoxRect, nsIFrame* aFrame);
   void DrawScale(CGContextRef context, const HIRect& inBoxRect,
-                 nsEventStates inState, bool inDirection,
+                 mozilla::EventStates inState, bool inDirection,
                  bool inIsReverse, int32_t inCurrentValue, int32_t inMinValue,
                  int32_t inMaxValue, nsIFrame* aFrame);
   void DrawCheckboxOrRadio(CGContextRef cgContext, bool inCheckbox,
                            const HIRect& inBoxRect, bool inSelected,
-                           nsEventStates inState, nsIFrame* aFrame);
+                           mozilla::EventStates inState, nsIFrame* aFrame);
   void DrawSearchField(CGContextRef cgContext, const HIRect& inBoxRect,
-                       nsIFrame* aFrame, nsEventStates inState);
+                       nsIFrame* aFrame, mozilla::EventStates inState);
   void DrawPushButton(CGContextRef cgContext, const HIRect& inBoxRect,
-                      nsEventStates inState, uint8_t aWidgetType,
+                      mozilla::EventStates inState, uint8_t aWidgetType,
                       nsIFrame* aFrame);
+  void DrawMenuIcon(CGContextRef cgContext, const CGRect& aRect,
+                    mozilla::EventStates inState, nsIFrame* aFrame,
+                    const NSSize& aIconSize, const NSString* aImageName,
+                    bool aCenterHorizontally);
   void DrawButton(CGContextRef context, ThemeButtonKind inKind,
                   const HIRect& inBoxRect, bool inIsDefault, 
                   ThemeButtonValue inValue, ThemeButtonAdornment inAdornment,
-                  nsEventStates inState, nsIFrame* aFrame);
+                  mozilla::EventStates inState, nsIFrame* aFrame);
+  void DrawFocusOutline(CGContextRef cgContext, const HIRect& inBoxRect,
+                        mozilla::EventStates inState, uint8_t aWidgetType,
+                        nsIFrame* aFrame);
   void DrawDropdown(CGContextRef context, const HIRect& inBoxRect,
-                    nsEventStates inState, uint8_t aWidgetType,
+                    mozilla::EventStates inState, uint8_t aWidgetType,
                     nsIFrame* aFrame);
   void DrawSpinButtons(CGContextRef context, ThemeButtonKind inKind,
                        const HIRect& inBoxRect, ThemeDrawState inDrawState,
-                       ThemeButtonAdornment inAdornment, nsEventStates inState,
-                       nsIFrame* aFrame);
+                       ThemeButtonAdornment inAdornment,
+                       mozilla::EventStates inState, nsIFrame* aFrame);
   void DrawSpinButton(CGContextRef context, ThemeButtonKind inKind,
                       const HIRect& inBoxRect, ThemeDrawState inDrawState,
-                      ThemeButtonAdornment inAdornment, nsEventStates inState,
+                      ThemeButtonAdornment inAdornment,
+                      mozilla::EventStates inState,
                       nsIFrame* aFrame, uint8_t aWidgetType);
   void DrawUnifiedToolbar(CGContextRef cgContext, const HIRect& inBoxRect,
                           NSWindow* aWindow);
   void DrawStatusBar(CGContextRef cgContext, const HIRect& inBoxRect,
                      nsIFrame *aFrame);
-  void DrawNativeTitlebar(CGContextRef aContext, CGRect aTitlebarRect,
-                          CGFloat aUnifiedHeight, BOOL aIsMain);
   void DrawResizer(CGContextRef cgContext, const HIRect& aRect, nsIFrame *aFrame);
 
   // Scrollbars
   void DrawScrollbar(CGContextRef aCGContext, const HIRect& aBoxRect, nsIFrame *aFrame);
-  void GetScrollbarPressStates (nsIFrame *aFrame, nsEventStates aButtonStates[]);
+  void GetScrollbarPressStates(nsIFrame *aFrame,
+                               mozilla::EventStates aButtonStates[]);
   void GetScrollbarDrawInfo (HIThemeTrackDrawInfo& aTdi, nsIFrame *aFrame, 
                              const CGSize& aSize, bool aShouldGetButtonStates);
   nsIFrame* GetParentScrollbarFrame(nsIFrame *aFrame);
+  bool IsParentScrollbarRolledOver(nsIFrame* aFrame);
 
 private:
+  NSButtonCell* mDisclosureButtonCell;
   NSButtonCell* mHelpButtonCell;
   NSButtonCell* mPushButtonCell;
   NSButtonCell* mRadioButtonCell;

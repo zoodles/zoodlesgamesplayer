@@ -68,7 +68,7 @@ const TEST_DATA = [
   ["down", "html"]
 ];
 
-let test = asyncTest(function*() {
+add_task(function*() {
   let {inspector} = yield addTab(TEST_URL).then(openInspector);
 
   info("Making sure the markup-view frame is focused");
@@ -113,16 +113,8 @@ function pressKey(key) {
   }
 }
 
-function waitForChildrenUpdated(inspector) {
-  let def = promise.defer();
-  inspector.markup._waitForChildren().then(() => {
-    executeSoon(def.resolve);
-  });
-  return def.promise;
-}
-
 function checkSelectedNode(key, className, inspector) {
-  let node = inspector.selection.node;
+  let node = inspector.selection.nodeFront;
 
   if (className == "*comment*") {
     is(node.nodeType, Node.COMMENT_NODE, "Found a comment after pressing " + key);

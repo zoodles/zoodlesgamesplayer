@@ -1,4 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set ts=2 et sw=2 tw=80 filetype=javascript: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -79,14 +79,6 @@ XPCOMUtils.defineLazyServiceGetter(this, "gApplicationReputationService",
            "@mozilla.org/downloads/application-reputation-service;1",
            Ci.nsIApplicationReputationService);
 
-/**
- * ArrayBufferView representing the bytes to be written to the "Zone.Identifier"
- * Alternate Data Stream to mark a file as coming from the Internet zone.
- */
-XPCOMUtils.defineLazyGetter(this, "gInternetZoneIdentifier", function() {
-  return new TextEncoder().encode("[ZoneTransfer]\r\nZoneId=3\r\n");
-});
-
 XPCOMUtils.defineLazyServiceGetter(this, "volumeService",
                                    "@mozilla.org/telephony/volume-service;1",
                                    "nsIVolumeService");
@@ -160,6 +152,7 @@ this.DownloadIntegration = {
   dontCheckApplicationReputation: true,
 #endif
   shouldBlockInTestForApplicationReputation: false,
+  shouldKeepBlockedDataInTest: false,
   dontOpenFileAndFolder: false,
   downloadDoneCalled: false,
   _deferTestOpenFile: null,
@@ -180,6 +173,30 @@ this.DownloadIntegration = {
   set testMode(mode) {
     this._downloadsDirectory = null;
     return (this._testMode = mode);
+  },
+
+  /**
+   * Returns whether data for blocked downloads should be kept on disk.
+   * Implementations which support unblocking downloads may return true to
+   * keep the blocked download on disk until its fate is decided.
+   *
+   * If a download is blocked and the partial data is kept the Download's
+   * 'hasBlockedData' property will be true. In this state Download.unblock()
+   * or Download.confirmBlock() may be used to either unblock the download or
+   * remove the downloaded data respectively.
+   *
+   * Even if shouldKeepBlockedData returns true, if the download did not use a
+   * partFile the blocked data will be removed - preventing the complete
+   * download from existing on disk with its final filename.
+   *
+   * @return boolean True if data should be kept.
+   */
+  shouldKeepBlockedData: function() {
+    if (this.shouldBlockInTestForApplicationReputation) {
+      return this.shouldKeepBlockedDataInTest;
+    }
+
+    return false;
   },
 
   /**
@@ -284,10 +301,7 @@ this.DownloadIntegration = {
       // Now get the path for this storage area.
       if (preferredStorageName) {
         let volume = volumeService.getVolumeByName(preferredStorageName);
-        if (volume &&
-            volume.isMediaPresent &&
-            !volume.isMountLocked &&
-            !volume.isSharing) {
+        if (volume && volume.state === Ci.nsIVolume.STATE_MOUNTED){
           directoryPath = OS.Path.join(volume.mountPoint, "downloads");
           yield OS.File.makeDir(directoryPath, { ignoreExisting: true });
         }
@@ -325,13 +339,15 @@ this.DownloadIntegration = {
     // progress, as well as stopped downloads for which we retained partially
     // downloaded data.  Stopped downloads for which we don't need to track the
     // presence of a ".part" file are only retained in the browser history.
-    // On b2g, we keep a few days of history.
+    // On b2g, we keep a few days of history. On Android we store all history.
 #ifdef MOZ_B2G
     let maxTime = Date.now() -
       Services.prefs.getIntPref("dom.downloads.max_retention_days") * 24 * 60 * 60 * 1000;
     return (aDownload.startTime > maxTime) ||
            aDownload.hasPartialData ||
            !aDownload.stopped;
+#elif defined(MOZ_WIDGET_ANDROID)
+    return true;
 #else
     return aDownload.hasPartialData || !aDownload.stopped;
 #endif
@@ -511,11 +527,13 @@ this.DownloadIntegration = {
     }
     let hash;
     let sigInfo;
+    let channelRedirects;
     try {
       hash = aDownload.saver.getSha256Hash();
       sigInfo = aDownload.saver.getSignatureInfo();
+      channelRedirects = aDownload.saver.getRedirects();
     } catch (ex) {
-      // Bail if DownloadSaver doesn't have a hash.
+      // Bail if DownloadSaver doesn't have a hash or signature info.
       return Promise.resolve(false);
     }
     if (!hash || !sigInfo) {
@@ -531,7 +549,9 @@ this.DownloadIntegration = {
       referrerURI: aReferrer,
       fileSize: aDownload.currentBytes,
       sha256Hash: hash,
-      signatureInfo: sigInfo },
+      suggestedFileName: OS.Path.basename(aDownload.target.path),
+      signatureInfo: sigInfo,
+      redirects: channelRedirects },
       function onComplete(aShouldBlock, aRv) {
         deferred.resolve(aShouldBlock);
       });
@@ -586,13 +606,25 @@ this.DownloadIntegration = {
       // The stream created in this way is forward-compatible with all the
       // current and future versions of Windows.
       if (this._shouldSaveZoneInformation()) {
+        let zone;
         try {
-          let streamPath = aDownload.target.path + ":Zone.Identifier";
-          let stream = yield OS.File.open(streamPath, { create: true });
-          try {
-            yield stream.write(gInternetZoneIdentifier);
-          } finally {
-            yield stream.close();
+          zone = gDownloadPlatform.mapUrlToZone(aDownload.source.url);
+        } catch (e) {
+          // Default to Internet Zone if mapUrlToZone failed for
+          // whatever reason.
+          zone = Ci.mozIDownloadPlatform.ZONE_INTERNET;
+        }
+        try {
+          // Don't write zone IDs for Local, Intranet, or Trusted sites
+          // to match Windows behavior.
+          if (zone >= Ci.mozIDownloadPlatform.ZONE_INTERNET) {
+            let streamPath = aDownload.target.path + ":Zone.Identifier";
+            let stream = yield OS.File.open(streamPath, { create: true });
+            try {
+              yield stream.write(new TextEncoder().encode("[ZoneTransfer]\r\nZoneId=" + zone + "\r\n"));
+            } finally {
+              yield stream.close();
+            }
           }
         } catch (ex) {
           // If writing to the stream fails, we ignore the error and continue.
@@ -606,6 +638,37 @@ this.DownloadIntegration = {
         }
       }
 #endif
+
+      // The file with the partially downloaded data has restrictive permissions
+      // that don't allow other users on the system to access it.  Now that the
+      // download is completed, we need to adjust permissions based on whether
+      // this is a permanently downloaded file or a temporary download to be
+      // opened read-only with an external application.
+      try {
+        // The following logic to determine whether this is a temporary download
+        // is due to the fact that "deleteTempFileOnExit" is false on Mac, where
+        // downloads to be opened with external applications are preserved in
+        // the "Downloads" folder like normal downloads.
+        let isTemporaryDownload =
+          aDownload.launchWhenSucceeded && (aDownload.source.isPrivate ||
+          Services.prefs.getBoolPref("browser.helperApps.deleteTempFileOnExit"));
+        // Permanently downloaded files are made accessible by other users on
+        // this system, while temporary downloads are marked as read-only.
+        let unixMode = isTemporaryDownload ? 0o400 : 0o666;
+        // On Unix, the umask of the process is respected.  This call has no
+        // effect on Windows.
+        yield OS.File.setPermissions(aDownload.target.path, { unixMode });
+      } catch (ex) {
+        // We should report errors with making the permissions less restrictive
+        // or marking the file as read-only on Unix and Mac, but this should not
+        // prevent the download from completing.
+        // The setPermissions API error EPERM is expected to occur when working
+        // on a file system that does not support file permissions, like FAT32,
+        // thus we don't report this error.
+        if (!(ex instanceof OS.File.Error) || ex.unixErrno != OS.Constants.libc.EPERM) {
+          Cu.reportError(ex);
+        }
+      }
 
       gDownloadPlatform.downloadDone(NetUtil.newURI(aDownload.source.url),
                                      new FileUtils.File(aDownload.target.path),
@@ -791,7 +854,13 @@ this.DownloadIntegration = {
 
     if (this.dontOpenFileAndFolder) {
       deferred.then((value) => { this._deferTestShowDir.resolve("success"); },
-                    (error) => { this._deferTestShowDir.reject(error); });
+                    (error) => {
+                      // Ensure that _deferTestShowDir has at least one consumer
+                      // for the error, otherwise the error will be reported as
+                      // uncaught.
+                      this._deferTestShowDir.promise.then(null, function() {});
+                      this._deferTestShowDir.reject(error);
+                    });
     }
 
     return deferred;

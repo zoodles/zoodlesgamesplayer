@@ -7,7 +7,6 @@
 #include "nsIXPConnect.h"
 #include "nsThreadUtils.h"
 #include "jsfriendapi.h"
-#include "js/OldDebugAPI.h"
 #include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/ModuleUtils.h"
 #include "mozilla/dom/ScriptSettings.h"
@@ -73,7 +72,7 @@ nsJSInspector::EnterNestedEventLoop(JS::Handle<JS::Value> requestor, uint32_t *o
   mRequestors.AppendElement(requestor);
   mozilla::HoldJSObjects(this);
 
-  mozilla::dom::AutoSystemCaller asc;
+  mozilla::dom::AutoNoJSAPI nojsapi;
 
   uint32_t nestLevel = ++mNestedLoopLevel;
   while (NS_SUCCEEDED(rv) && mNestedLoopLevel >= nestLevel) {

@@ -18,8 +18,8 @@ PointerEvent::PointerEvent(EventTarget* aOwner,
   : MouseEvent(aOwner, aPresContext,
                aEvent ? aEvent : new WidgetPointerEvent(false, 0, nullptr))
 {
-  NS_ASSERTION(mEvent->eventStructType == NS_POINTER_EVENT,
-               "event type mismatch NS_POINTER_EVENT");
+  NS_ASSERTION(mEvent->mClass == ePointerEventClass,
+               "event type mismatch ePointerEventClass");
 
   WidgetMouseEvent* mouseEvent = mEvent->AsMouseEvent();
   if (aEvent) {
@@ -48,26 +48,40 @@ ConvertStringToPointerType(const nsAString& aPointerTypeArg)
   return nsIDOMMouseEvent::MOZ_SOURCE_UNKNOWN;
 }
 
-//static
-already_AddRefed<PointerEvent>
-PointerEvent::Constructor(const GlobalObject& aGlobal,
-                          const nsAString& aType,
-                          const PointerEventInit& aParam,
-                          ErrorResult& aRv)
+void
+ConvertPointerTypeToString(uint16_t aPointerTypeSrc, nsAString& aPointerTypeDest)
 {
-  nsCOMPtr<EventTarget> t = do_QueryInterface(aGlobal.GetAsSupports());
-  nsRefPtr<PointerEvent> e = new PointerEvent(t, nullptr, nullptr);
-  bool trusted = e->Init(t);
-
-  aRv = e->InitMouseEvent(aType, aParam.mBubbles, aParam.mCancelable,
-                          aParam.mView, aParam.mDetail, aParam.mScreenX,
-                          aParam.mScreenY, aParam.mClientX, aParam.mClientY,
-                          aParam.mCtrlKey, aParam.mAltKey, aParam.mShiftKey,
-                          aParam.mMetaKey, aParam.mButton,
-                          aParam.mRelatedTarget);
-  if (aRv.Failed()) {
-    return nullptr;
+  switch (aPointerTypeSrc) {
+    case nsIDOMMouseEvent::MOZ_SOURCE_MOUSE:
+      aPointerTypeDest.AssignLiteral("mouse");
+      break;
+    case nsIDOMMouseEvent::MOZ_SOURCE_PEN:
+      aPointerTypeDest.AssignLiteral("pen");
+      break;
+    case nsIDOMMouseEvent::MOZ_SOURCE_TOUCH:
+      aPointerTypeDest.AssignLiteral("touch");
+      break;
+    default:
+      aPointerTypeDest.Truncate();
+      break;
   }
+}
+
+// static
+already_AddRefed<PointerEvent>
+PointerEvent::Constructor(EventTarget* aOwner,
+                          const nsAString& aType,
+                          const PointerEventInit& aParam)
+{
+  nsRefPtr<PointerEvent> e = new PointerEvent(aOwner, nullptr, nullptr);
+  bool trusted = e->Init(aOwner);
+
+  e->InitMouseEvent(aType, aParam.mBubbles, aParam.mCancelable,
+                    aParam.mView, aParam.mDetail, aParam.mScreenX,
+                    aParam.mScreenY, aParam.mClientX, aParam.mClientY,
+                    aParam.mCtrlKey, aParam.mAltKey, aParam.mShiftKey,
+                    aParam.mMetaKey, aParam.mButton,
+                    aParam.mRelatedTarget);
 
   WidgetPointerEvent* widgetEvent = e->mEvent->AsPointerEvent();
   widgetEvent->pointerId = aParam.mPointerId;
@@ -84,23 +98,21 @@ PointerEvent::Constructor(const GlobalObject& aGlobal,
   return e.forget();
 }
 
+// static
+already_AddRefed<PointerEvent>
+PointerEvent::Constructor(const GlobalObject& aGlobal,
+                          const nsAString& aType,
+                          const PointerEventInit& aParam,
+                          ErrorResult& aRv)
+{
+  nsCOMPtr<EventTarget> owner = do_QueryInterface(aGlobal.GetAsSupports());
+  return Constructor(owner, aType, aParam);
+}
+
 void
 PointerEvent::GetPointerType(nsAString& aPointerType)
 {
-  switch (mEvent->AsPointerEvent()->inputSource) {
-    case nsIDOMMouseEvent::MOZ_SOURCE_MOUSE:
-      aPointerType.AssignLiteral("mouse");
-      break;
-    case nsIDOMMouseEvent::MOZ_SOURCE_PEN:
-      aPointerType.AssignLiteral("pen");
-      break;
-    case nsIDOMMouseEvent::MOZ_SOURCE_TOUCH:
-      aPointerType.AssignLiteral("touch");
-      break;
-    case nsIDOMMouseEvent::MOZ_SOURCE_UNKNOWN:
-      aPointerType.AssignLiteral("");
-      break;
-  }
+  ConvertPointerTypeToString(mEvent->AsPointerEvent()->inputSource, aPointerType);
 }
 
 int32_t

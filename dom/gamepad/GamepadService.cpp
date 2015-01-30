@@ -12,7 +12,6 @@
 #include "nsAutoPtr.h"
 #include "nsIDOMEvent.h"
 #include "nsIDOMDocument.h"
-#include "GeneratedEvents.h"
 #include "nsIDOMWindow.h"
 #include "nsIObserver.h"
 #include "nsIObserverService.h"
@@ -46,7 +45,7 @@ StaticRefPtr<GamepadService> gGamepadServiceSingleton;
 
 bool GamepadService::sShutdown = false;
 
-NS_IMPL_ISUPPORTS1(GamepadService, nsIObserver)
+NS_IMPL_ISUPPORTS(GamepadService, nsIObserver)
 
 GamepadService::GamepadService()
   : mStarted(false),
@@ -98,6 +97,9 @@ GamepadService::BeginShutdown()
 void
 GamepadService::AddListener(nsGlobalWindow* aWindow)
 {
+  MOZ_ASSERT(aWindow);
+  MOZ_ASSERT(aWindow->IsInnerWindow());
+
   if (mShuttingDown) {
     return;
   }
@@ -117,6 +119,9 @@ GamepadService::AddListener(nsGlobalWindow* aWindow)
 void
 GamepadService::RemoveListener(nsGlobalWindow* aWindow)
 {
+  MOZ_ASSERT(aWindow);
+  MOZ_ASSERT(aWindow->IsInnerWindow());
+
   if (mShuttingDown) {
     // Doesn't matter at this point. It's possible we're being called
     // as a result of our own destructor here, so just bail out.
@@ -445,6 +450,9 @@ GamepadService::SetWindowHasSeenGamepad(nsGlobalWindow* aWindow,
                                         uint32_t aIndex,
                                         bool aHasSeen)
 {
+  MOZ_ASSERT(aWindow);
+  MOZ_ASSERT(aWindow->IsInnerWindow());
+
   if (mListeners.IndexOf(aWindow) == NoIndex) {
     // This window isn't even listening for gamepad events.
     return;
@@ -507,7 +515,7 @@ GamepadService::StartCleanupTimer()
  * of the GamepadService to JavaScript via XPCOM so that we can write Mochitests
  * that add and remove fake gamepads, avoiding the platform-specific backends.
  */
-NS_IMPL_ISUPPORTS1(GamepadServiceTest, nsIGamepadServiceTest)
+NS_IMPL_ISUPPORTS(GamepadServiceTest, nsIGamepadServiceTest)
 
 GamepadServiceTest* GamepadServiceTest::sSingleton = nullptr;
 

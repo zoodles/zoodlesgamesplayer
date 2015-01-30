@@ -20,8 +20,8 @@ nsIFrame* NS_NewScrollbarFrame(nsIPresShell* aPresShell, nsStyleContext* aContex
 class nsScrollbarFrame : public nsBoxFrame
 {
 public:
-    nsScrollbarFrame(nsIPresShell* aShell, nsStyleContext* aContext):
-      nsBoxFrame(aShell, aContext), mScrollbarMediator(nullptr) {}
+    explicit nsScrollbarFrame(nsStyleContext* aContext):
+      nsBoxFrame(aContext), mScrollbarMediator(nullptr) {}
 
   NS_DECL_QUERYFRAME_TARGET(nsScrollbarFrame)
 
@@ -56,14 +56,14 @@ public:
                            mozilla::WidgetGUIEvent* aEvent,
                            nsEventStatus* aEventStatus) MOZ_OVERRIDE;
 
-  virtual void Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
 
-  virtual nsresult Reflow(nsPresContext*          aPresContext,
-                          nsHTMLReflowMetrics&     aDesiredSize,
-                          const nsHTMLReflowState& aReflowState,
-                          nsReflowStatus&          aStatus) MOZ_OVERRIDE;
+  virtual void Reflow(nsPresContext*           aPresContext,
+                      nsHTMLReflowMetrics&     aDesiredSize,
+                      const nsHTMLReflowState& aReflowState,
+                      nsReflowStatus&          aStatus) MOZ_OVERRIDE;
 
   virtual nsIAtom* GetType() const MOZ_OVERRIDE;  
 
@@ -82,6 +82,26 @@ public:
   virtual bool DoesClipChildren() MOZ_OVERRIDE { return true; }
 
   virtual nsresult GetMargin(nsMargin& aMargin) MOZ_OVERRIDE;
+
+  /**
+   * The following three methods set the value of mIncrement when a
+   * scrollbar button is pressed.
+   */
+  void SetIncrementToLine(int32_t aDirection);
+  void SetIncrementToPage(int32_t aDirection);
+  void SetIncrementToWhole(int32_t aDirection);
+  /**
+   * MoveToNewPosition() adds mIncrement to the current position and
+   * updates the curpos attribute.
+   * @returns The new position after clamping, in CSS Pixels
+   * @note This method might destroy the frame, pres shell, and other objects.
+   */
+  int32_t MoveToNewPosition();
+  int32_t GetIncrement() { return mIncrement; }
+
+protected:
+  int32_t mIncrement; // Amount to scroll, in CSSPixels
+  bool mSmoothScroll;
 
 private:
   nsCOMPtr<nsIContent> mScrollbarMediator;

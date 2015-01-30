@@ -7,7 +7,7 @@
 #define mozilla_dom_MessagePort_h
 
 #include "mozilla/Attributes.h"
-#include "nsDOMEventTargetHelper.h"
+#include "mozilla/DOMEventTargetHelper.h"
 
 class nsPIDOMWindow;
 
@@ -17,10 +17,10 @@ namespace dom {
 class DispatchEventRunnable;
 class PostMessageRunnable;
 
-class MessagePortBase : public nsDOMEventTargetHelper
+class MessagePortBase : public DOMEventTargetHelper
 {
 protected:
-  MessagePortBase(nsPIDOMWindow* aWindow);
+  explicit MessagePortBase(nsPIDOMWindow* aWindow);
   MessagePortBase();
 
 public:
@@ -59,13 +59,12 @@ class MessagePort MOZ_FINAL : public MessagePortBase
 public:
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(MessagePort,
-                                           nsDOMEventTargetHelper)
+                                           DOMEventTargetHelper)
 
-  MessagePort(nsPIDOMWindow* aWindow);
-  ~MessagePort();
+  explicit MessagePort(nsPIDOMWindow* aWindow);
 
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   virtual void
   PostMessageMoz(JSContext* aCx, JS::Handle<JS::Value> aMessage,
@@ -96,6 +95,8 @@ public:
   Clone() MOZ_OVERRIDE;
 
 private:
+  ~MessagePort();
+
   // Dispatch events from the Message Queue using a nsRunnable.
   void Dispatch();
 

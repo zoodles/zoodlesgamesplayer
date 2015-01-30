@@ -27,14 +27,14 @@ public:
 
   nsObserverService();
 
-  NS_DECL_THREADSAFE_ISUPPORTS
+  NS_DECL_ISUPPORTS
   NS_DECL_NSIOBSERVERSERVICE
   NS_DECL_NSIMEMORYREPORTER
 
   void Shutdown();
 
-  static nsresult
-  Create(nsISupports* outer, const nsIID& aIID, void* *aInstancePtr);
+  static nsresult Create(nsISupports* aOuter, const nsIID& aIID,
+                         void** aInstancePtr);
 
   // Unmark any strongly held observers implemented in JS so the cycle
   // collector will not traverse them.

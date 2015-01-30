@@ -1,4 +1,4 @@
-/* -*- Mode: javascript; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set ts=2 et sw=2 tw=80: */
 
 /**
@@ -11,7 +11,7 @@
  *
  * editableField({
  *   element: spanToEdit,
- *   done: function(value, commit) {
+ *   done: function(value, commit, direction) {
  *     if (commit) {
  *       spanToEdit.textContent = value;
  *     }
@@ -62,9 +62,11 @@ Cu.import("resource://gre/modules/devtools/event-emitter.js");
  *       with the current value of the text input.
  *    {function} done:
  *       Called when input is committed or blurred.  Called with
- *       current value and a boolean telling the caller whether to
- *       commit the change.  This function is called before the editor
- *       has been torn down.
+ *       current value, a boolean telling the caller whether to
+ *       commit the change, and the direction of the next element to be
+ *       selected. Direction may be one of nsIFocusManager.MOVEFOCUS_FORWARD,
+ *       nsIFocusManager.MOVEFOCUS_BACKWARD, or null (no movement).
+ *       This function is called before the editor has been torn down.
  *    {function} destroy:
  *       Called when the editor is destroyed and has been torn down.
  *    {string} advanceChars:
@@ -72,6 +74,12 @@ Cu.import("resource://gre/modules/devtools/event-emitter.js");
  *       to the next element.
  *    {boolean} stopOnReturn:
  *       If true, the return key will not advance the editor to the next
+ *       focusable element.
+ *    {boolean} stopOnTab:
+ *       If true, the tab key will not advance the editor to the next
+ *       focusable element.
+ *    {boolean} stopOnShiftTab:
+ *       If true, shift tab will not advance the editor to the previous
  *       focusable element.
  *    {string} trigger: The DOM event that should trigger editing,
  *      defaults to "click"
@@ -97,6 +105,7 @@ exports.editableField = editableField;
  *      defaults to "click"
  * @param {function} aCallback
  *        Called when the editor is activated.
+ * @return {function} function which calls aCallback
  */
 function editableItem(aOptions, aCallback)
 {
@@ -142,6 +151,13 @@ function editableItem(aOptions, aCallback)
   // Mark the element editable field for tab
   // navigation while editing.
   element._editable = true;
+
+  // Save the trigger type so we can dispatch this later
+  element._trigger = trigger;
+
+  return function turnOnEditMode() {
+    aCallback(element);
+  }
 }
 
 exports.editableItem = this.editableItem;
@@ -171,6 +187,8 @@ function InplaceEditor(aOptions, aEvent)
   this.destroy = aOptions.destroy;
   this.initial = aOptions.initial ? aOptions.initial : this.elt.textContent;
   this.multiline = aOptions.multiline || false;
+  this.stopOnShiftTab = !!aOptions.stopOnShiftTab;
+  this.stopOnTab = !!aOptions.stopOnTab;
   this.stopOnReturn = !!aOptions.stopOnReturn;
   this.contentType = aOptions.contentType || CONTENT_TYPES.PLAIN_TEXT;
   this.property = aOptions.property;
@@ -376,6 +394,11 @@ InplaceEditor.prototype = {
     this.input.setSelectionRange(newValue.start, newValue.end);
     this._doValidation();
 
+    // Call the user's change handler if available.
+    if (this.change) {
+      this.change(this.input.value.trim());
+    }
+
     return true;
   },
 
@@ -465,7 +488,7 @@ InplaceEditor.prototype = {
    */
    _parseCSSValue: function InplaceEditor_parseCSSValue(value, offset)
   {
-    const reSplitCSS = /(url\("?[^"\)]+"?\)?)|(rgba?\([^)]*\)?)|(hsla?\([^)]*\)?)|(#[\dA-Fa-f]+)|(-?\d+(\.\d+)?(%|[a-z]{1,4})?)|"([^"]*)"?|'([^']*)'?|([^,\s\/!\(\)]+)|(!(.*)?)/;
+    const reSplitCSS = /(url\("?[^"\)]+"?\)?)|(rgba?\([^)]*\)?)|(hsla?\([^)]*\)?)|(#[\dA-Fa-f]+)|(-?\d*\.?\d+(%|[a-z]{1,4})?)|"([^"]*)"?|'([^']*)'?|([^,\s\/!\(\)]+)|(!(.*)?)/;
     let start = 0;
     let m;
 
@@ -756,7 +779,7 @@ InplaceEditor.prototype = {
   /**
    * Call the client's done handler and clear out.
    */
-  _apply: function InplaceEditor_apply(aEvent)
+  _apply: function InplaceEditor_apply(aEvent, direction)
   {
     if (this._applied) {
       return;
@@ -766,7 +789,7 @@ InplaceEditor.prototype = {
 
     if (this.done) {
       let val = this.input.value.trim();
-      return this.done(this.cancelled ? this.initial : val, !this.cancelled);
+      return this.done(this.cancelled ? this.initial : val, !this.cancelled, direction);
     }
 
     return null;
@@ -778,7 +801,7 @@ InplaceEditor.prototype = {
   _onBlur: function InplaceEditor_onBlur(aEvent, aDoNotClear)
   {
     if (aEvent && this.popup && this.popup.isOpen &&
-        this.contentType == CONTENT_TYPES.CSS_MIXED) {
+        this.popup.selectedIndex >= 0) {
       let label, preLabel;
       if (this._selectedIndex === undefined) {
         ({label, preLabel}) = this.popup.getItemAtIndex(this.popup.selectedIndex);
@@ -814,6 +837,11 @@ InplaceEditor.prototype = {
       };
       this.popup._panel.addEventListener("popuphidden", onPopupHidden);
       this.popup.hidePopup();
+      // Content type other than CSS_MIXED is used in rule-view where the values
+      // are live previewed. So we apply the value before returning.
+      if (this.contentType != CONTENT_TYPES.CSS_MIXED) {
+        this._apply();
+      }
       return;
     }
     this._apply();
@@ -889,9 +917,15 @@ InplaceEditor.prototype = {
       let direction = FOCUS_FORWARD;
       if (aEvent.keyCode === Ci.nsIDOMKeyEvent.DOM_VK_TAB &&
           aEvent.shiftKey) {
-        direction = FOCUS_BACKWARD;
+        if (this.stopOnShiftTab) {
+          direction = null;
+        } else {
+          direction = FOCUS_BACKWARD;
+        }
       }
-      if (this.stopOnReturn && aEvent.keyCode === Ci.nsIDOMKeyEvent.DOM_VK_RETURN) {
+      if ((this.stopOnReturn &&
+           aEvent.keyCode === Ci.nsIDOMKeyEvent.DOM_VK_RETURN) ||
+          (this.stopOnTab && aEvent.keyCode === Ci.nsIDOMKeyEvent.DOM_VK_TAB)) {
         direction = null;
       }
 
@@ -921,7 +955,7 @@ InplaceEditor.prototype = {
         }
       }
 
-      this._apply();
+      this._apply(aEvent, direction);
 
       // Close the popup if open
       if (this.popup && this.popup.isOpen) {
@@ -934,9 +968,11 @@ InplaceEditor.prototype = {
         let next = moveFocus(this.doc.defaultView, direction);
 
         // If the next node to be focused has been tagged as an editable
-        // node, send it a click event to trigger
+        // node, trigger editing using the configured event
         if (next && next.ownerDocument === this.doc && next._editable) {
-          next.click();
+          let e = this.doc.createEvent('Event');
+          e.initEvent(next._trigger, true, true);
+          next.dispatchEvent(e);
         }
       }
 

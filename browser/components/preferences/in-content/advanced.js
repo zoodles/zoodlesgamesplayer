@@ -5,6 +5,7 @@
 // Load DownloadUtils module for convertByteUnits
 Components.utils.import("resource://gre/modules/DownloadUtils.jsm");
 Components.utils.import("resource://gre/modules/LoadContextInfo.jsm");
+Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
 
 var gAdvancedPane = {
   _inited: false,
@@ -14,6 +15,12 @@ var gAdvancedPane = {
    */
   init: function ()
   {
+    function setEventListener(aId, aEventType, aCallback)
+    {
+      document.getElementById(aId)
+              .addEventListener(aEventType, aCallback.bind(gAdvancedPane));
+    }
+
     this._inited = true;
     var advancedPrefs = document.getElementById("advancedPrefs");
 
@@ -21,43 +28,13 @@ var gAdvancedPane = {
     if (preference.value !== null)
         advancedPrefs.selectedIndex = preference.value;
 
-#ifdef HAVE_SHELL_SERVICE
-    this.updateSetDefaultBrowser();
-#ifdef XP_WIN
-    // In Windows 8 we launch the control panel since it's the only
-    // way to get all file type association prefs. So we don't know
-    // when the user will select the default.  We refresh here periodically
-    // in case the default changes.  On other Windows OS's defaults can also
-    // be set while the prefs are open.
-    window.setInterval(this.updateSetDefaultBrowser, 1000);
-
-#ifdef MOZ_METRO
-    // Pre Windows 8, we should hide the update related settings
-    // for the Metro browser
-    let version = Components.classes["@mozilla.org/system-info;1"].
-                  getService(Components.interfaces.nsIPropertyBag2).
-                  getProperty("version");
-    let preWin8 = parseFloat(version) < 6.2;
-    this._showingWin8Prefs = !preWin8;
-    if (preWin8) {
-      ["autoMetro", "autoMetroIndent"].forEach(
-        function(id) document.getElementById(id).collapsed = true
-      );
-    } else {
-      let brandShortName =
-        document.getElementById("bundleBrand").getString("brandShortName");
-      let bundlePrefs = document.getElementById("bundlePreferences");
-      let autoDesktop = document.getElementById("autoDesktop");
-      autoDesktop.label =
-        bundlePrefs.getFormattedString("updateAutoDesktop.label",
-                                       [brandShortName]);
-      autoDesktop.accessKey =
-        bundlePrefs.getString("updateAutoDesktop.accessKey");
-    }
-#endif
-#endif
-#endif
 #ifdef MOZ_UPDATER
+    let onUnload = function () {
+      window.removeEventListener("unload", onUnload, false);
+      Services.prefs.removeObserver("app.update.", this);
+    }.bind(this);
+    window.addEventListener("unload", onUnload, false);
+    Services.prefs.addObserver("app.update.", this, false);
     this.updateReadPrefs();
 #endif
     this.updateOfflineApps();
@@ -70,6 +47,53 @@ var gAdvancedPane = {
 #endif
     this.updateActualCacheSize();
     this.updateActualAppCacheSize();
+
+    setEventListener("layers.acceleration.disabled", "change",
+                     gAdvancedPane.updateHardwareAcceleration);
+    setEventListener("advancedPrefs", "select",
+                     gAdvancedPane.tabSelectionChanged);
+#ifdef MOZ_SERVICES_HEALTHREPORT
+    setEventListener("submitHealthReportBox", "command",
+                     gAdvancedPane.updateSubmitHealthReport);
+#endif
+#ifdef MOZ_CRASHREPORTER
+    setEventListener("submitCrashesBox", "command",
+                     gAdvancedPane.updateSubmitCrashes);
+#endif
+    setEventListener("connectionSettings", "command",
+                     gAdvancedPane.showConnections);
+    setEventListener("clearCacheButton", "command",
+                     gAdvancedPane.clearCache);
+    setEventListener("clearOfflineAppCacheButton", "command",
+                     gAdvancedPane.clearOfflineAppCache);
+    setEventListener("offlineNotifyExceptions", "command",
+                     gAdvancedPane.showOfflineExceptions);
+    setEventListener("offlineAppsList", "select",
+                     gAdvancedPane.offlineAppSelected);
+    let bundlePrefs = document.getElementById("bundlePreferences");
+    document.getElementById("offlineAppsList")
+            .style.height = bundlePrefs.getString("offlineAppsList.height");
+    setEventListener("offlineAppsListRemove", "command",
+                     gAdvancedPane.removeOfflineApp);
+#ifdef MOZ_UPDATER
+    setEventListener("updateRadioGroup", "command",
+                     gAdvancedPane.updateWritePrefs);
+    setEventListener("showUpdateHistory", "command",
+                     gAdvancedPane.showUpdates);
+#endif
+    setEventListener("viewCertificatesButton", "command",
+                     gAdvancedPane.showCertificates);
+    setEventListener("viewSecurityDevicesButton", "command",
+                     gAdvancedPane.showSecurityDevices);
+
+#ifdef MOZ_WIDGET_GTK
+    // GTK tabbox' allow the scroll wheel to change the selected tab,
+    // but we don't want this behavior for the in-content preferences.
+    let tabsElement = document.getElementById("tabsElement");
+    tabsElement.addEventListener("DOMMouseScroll", event => {
+      event.stopPropagation();
+    }, true);
+#endif
   },
 
   /**
@@ -143,6 +167,28 @@ var gAdvancedPane = {
     return checkbox.checked ? (this._storedSpellCheck == 2 ? 2 : 1) : 0;
   },
 
+  /**
+   * security.OCSP.enabled is an integer value for legacy reasons.
+   * A value of 1 means OCSP is enabled. Any other value means it is disabled.
+   */
+  readEnableOCSP: function ()
+  {
+    var preference = document.getElementById("security.OCSP.enabled");
+    // This is the case if the preference is the default value.
+    if (preference.value === undefined) {
+      return true;
+    }
+    return preference.value == 1;
+  },
+
+  /**
+   * See documentation for readEnableOCSP.
+   */
+  writeEnableOCSP: function ()
+  {
+    var checkbox = document.getElementById("enableOCSP");
+    return checkbox.checked ? 1 : 0;
+  },
 
   /**
    * When the user toggles the layers.acceleration.disabled pref,
@@ -282,81 +328,53 @@ var gAdvancedPane = {
   // Retrieves the amount of space currently used by disk cache
   updateActualCacheSize: function ()
   {
-    var sum = 0;
-    function updateUI(consumption) {
-      var actualSizeLabel = document.getElementById("actualDiskCacheSize");
-      var sizeStrings = DownloadUtils.convertByteUnits(consumption);
-      var prefStrBundle = document.getElementById("bundlePreferences");
-      var sizeStr = prefStrBundle.getFormattedString("actualDiskCacheSize", sizeStrings);
-      actualSizeLabel.value = sizeStr;
-    }
+    var actualSizeLabel = document.getElementById("actualDiskCacheSize");
+    var prefStrBundle = document.getElementById("bundlePreferences");
 
-    Visitor.prototype = {
-      expected: 0,
-      sum: 0,
-      QueryInterface: function listener_qi(iid) {
-        if (iid.equals(Ci.nsISupports) ||
-            iid.equals(Ci.nsICacheStorageVisitor)) {
-          return this;
-        }
-        throw Components.results.NS_ERROR_NO_INTERFACE;
+    // Needs to root the observer since cache service keeps only a weak reference.
+    this.observer = {
+      onNetworkCacheDiskConsumption: function(consumption) {
+        var size = DownloadUtils.convertByteUnits(consumption);
+        actualSizeLabel.value = prefStrBundle.getFormattedString("actualDiskCacheSize", size);
       },
-      onCacheStorageInfo: function(num, consumption)
-      {
-        this.sum += consumption;
-        if (!--this.expected)
-          updateUI(this.sum);
-      },
-      onCacheEntryInfo: function(entry)
-      {
-      }
+
+      QueryInterface: XPCOMUtils.generateQI([
+        Components.interfaces.nsICacheStorageConsumptionObserver,
+        Components.interfaces.nsISupportsWeakReference
+      ])
     };
-    function Visitor(callbacksExpected) {
-      this.expected = callbacksExpected;
-    }
 
-    var cacheService =
-      Components.classes["@mozilla.org/netwerk/cache-storage-service;1"]
-                .getService(Components.interfaces.nsICacheStorageService);
-    // non-anonymous
-    var storage1 = cacheService.diskCacheStorage(LoadContextInfo.default, false);
-    // anonymous
-    var storage2 = cacheService.diskCacheStorage(LoadContextInfo.anonymous, false);
+    actualSizeLabel.textContent = prefStrBundle.getString("actualDiskCacheSizeCalculated");
 
-    // expect 2 callbacks
-    var visitor = new Visitor(2);
-    storage1.asyncVisitStorage(visitor, false /* Do not walk entries */);
-    storage2.asyncVisitStorage(visitor, false /* Do not walk entries */);
+    try {
+      var cacheService =
+        Components.classes["@mozilla.org/netwerk/cache-storage-service;1"]
+                  .getService(Components.interfaces.nsICacheStorageService);
+      cacheService.asyncGetDiskConsumption(this.observer);
+    } catch (e) {}
   },
 
   // Retrieves the amount of space currently used by offline cache
   updateActualAppCacheSize: function ()
   {
     var visitor = {
-      visitDevice: function (deviceID, deviceInfo)
+      onCacheStorageInfo: function (aEntryCount, aConsumption, aCapacity, aDiskDirectory)
       {
-        if (deviceID == "offline") {
-          var actualSizeLabel = document.getElementById("actualAppCacheSize");
-          var sizeStrings = DownloadUtils.convertByteUnits(deviceInfo.totalSize);
-          var prefStrBundle = document.getElementById("bundlePreferences");
-          var sizeStr = prefStrBundle.getFormattedString("actualAppCacheSize", sizeStrings);
-          actualSizeLabel.value = sizeStr;
-        }
-        // Do not enumerate entries
-        return false;
-      },
-
-      visitEntry: function (deviceID, entryInfo)
-      {
-        // Do not enumerate entries.
-        return false;
+        var actualSizeLabel = document.getElementById("actualAppCacheSize");
+        var sizeStrings = DownloadUtils.convertByteUnits(aConsumption);
+        var prefStrBundle = document.getElementById("bundlePreferences");
+        var sizeStr = prefStrBundle.getFormattedString("actualAppCacheSize", sizeStrings);
+        actualSizeLabel.value = sizeStr;
       }
     };
 
-    var cacheService =
-      Components.classes["@mozilla.org/network/cache-service;1"]
-                .getService(Components.interfaces.nsICacheService);
-    cacheService.visitEntries(visitor);
+    try {
+      var cacheService =
+        Components.classes["@mozilla.org/netwerk/cache-storage-service;1"]
+                  .getService(Components.interfaces.nsICacheStorageService);
+      var storage = cacheService.appCacheStorage(LoadContextInfo.default, null);
+      storage.asyncVisitStorage(visitor, false);
+    } catch (e) {}
   },
 
   updateCacheSizeUI: function (smartSizeEnabled)
@@ -400,9 +418,9 @@ var gAdvancedPane = {
    */
   clearCache: function ()
   {
-    var cache = Components.classes["@mozilla.org/netwerk/cache-storage-service;1"]
-                                 .getService(Components.interfaces.nsICacheStorageService);
     try {
+      var cache = Components.classes["@mozilla.org/netwerk/cache-storage-service;1"]
+                            .getService(Components.interfaces.nsICacheStorageService);
       cache.clear();
     } catch(ex) {}
     this.updateActualCacheSize();
@@ -450,9 +468,6 @@ var gAdvancedPane = {
   {
     var cacheService = Components.classes["@mozilla.org/network/application-cache-service;1"].
                        getService(Components.interfaces.nsIApplicationCacheService);
-    if (!groups)
-      groups = cacheService.getGroups();
-
     var ios = Components.classes["@mozilla.org/network/io-service;1"].
               getService(Components.interfaces.nsIIOService);
 
@@ -481,9 +496,14 @@ var gAdvancedPane = {
       list.removeChild(list.firstChild);
     }
 
-    var cacheService = Components.classes["@mozilla.org/network/application-cache-service;1"].
-                       getService(Components.interfaces.nsIApplicationCacheService);
-    var groups = cacheService.getGroups();
+    var groups;
+    try {
+      var cacheService = Components.classes["@mozilla.org/network/application-cache-service;1"].
+                         getService(Components.interfaces.nsIApplicationCacheService);
+      groups = cacheService.getGroups();
+    } catch (e) {
+      return;
+    }
 
     var bundle = document.getElementById("bundlePreferences");
 
@@ -539,18 +559,20 @@ var gAdvancedPane = {
       return;
 
     // clear offline cache entries
-    var cacheService = Components.classes["@mozilla.org/network/application-cache-service;1"].
-                       getService(Components.interfaces.nsIApplicationCacheService);
-    var ios = Components.classes["@mozilla.org/network/io-service;1"].
-              getService(Components.interfaces.nsIIOService);
-    var groups = cacheService.getGroups();
-    for (var i = 0; i < groups.length; i++) {
-        var uri = ios.newURI(groups[i], null, null);
-        if (uri.asciiHost == host) {
-            var cache = cacheService.getActiveCache(groups[i]);
-            cache.discard();
-        }
-    }
+    try {
+      var cacheService = Components.classes["@mozilla.org/network/application-cache-service;1"].
+                         getService(Components.interfaces.nsIApplicationCacheService);
+      var ios = Components.classes["@mozilla.org/network/io-service;1"].
+                getService(Components.interfaces.nsIIOService);
+      var groups = cacheService.getGroups();
+      for (var i = 0; i < groups.length; i++) {
+          var uri = ios.newURI(groups[i], null, null);
+          if (uri.asciiHost == host) {
+              var cache = cacheService.getActiveCache(groups[i]);
+              cache.discard();
+          }
+      }
+    } catch (e) {}
 
     // remove the permission
     var pm = Components.classes["@mozilla.org/permissionmanager;1"]
@@ -818,16 +840,6 @@ var gAdvancedPane = {
   },
 
   /**
-   * Displays a dialog in which OCSP preferences can be configured.
-   */
-  showOCSP: function ()
-  {
-    openDialog("chrome://mozapps/content/preferences/ocsp.xul",
-               "mozilla:crlmanager",
-               "modal=yes", null);
-  },
-
-  /**
    * Displays a dialog from which the user can manage his security devices.
    */
   showSecurityDevices: function ()
@@ -835,50 +847,15 @@ var gAdvancedPane = {
     openDialog("chrome://pippki/content/device_manager.xul",
                "mozilla:devicemanager",
                "modal=yes", null);
-  }
-#ifdef HAVE_SHELL_SERVICE
-  ,
-
-  // SYSTEM DEFAULTS
-
-  /*
-   * Preferences:
-   *
-   * browser.shell.checkDefault
-   * - true if a default-browser check (and prompt to make it so if necessary)
-   *   occurs at startup, false otherwise
-   */
-
-  /**
-   * Show button for setting browser as default browser or information that
-   * browser is already the default browser.
-   */
-  updateSetDefaultBrowser: function()
-  {
-    let shellSvc = getShellService();
-    let setDefaultPane = document.getElementById("setDefaultPane");
-    if (!shellSvc) {
-      setDefaultPane.hidden = true;
-      document.getElementById("alwaysCheckDefault").disabled = true;
-      return;
-    }
-    let selectedIndex =
-      shellSvc.isDefaultBrowser(false, true) ? 1 : 0;
-    setDefaultPane.selectedIndex = selectedIndex;
   },
 
-  /**
-   * Set browser as the operating system default browser.
-   */
-  setDefaultBrowser: function()
-  {
-    let shellSvc = getShellService();
-    if (!shellSvc)
-      return;
-    shellSvc.setDefaultBrowser(true, false);
-    let selectedIndex =
-      shellSvc.isDefaultBrowser(false, true) ? 1 : 0;
-    document.getElementById("setDefaultPane").selectedIndex = selectedIndex;
-  }
+#ifdef MOZ_UPDATER
+  observe: function (aSubject, aTopic, aData) {
+    switch(aTopic) {
+      case "nsPref:changed":
+        this.updateReadPrefs();
+        break;
+    }
+  },
 #endif
 };

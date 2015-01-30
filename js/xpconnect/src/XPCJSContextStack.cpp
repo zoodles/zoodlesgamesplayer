@@ -1,7 +1,6 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=8 sw=4 et tw=80:
- *
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* vim: set ts=8 sts=4 et sw=4 tw=99: */
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -23,11 +22,6 @@ using mozilla::dom::DestroyProtoAndIfaceCache;
 XPCJSContextStack::~XPCJSContextStack()
 {
     if (mSafeJSContext) {
-        {
-            JSAutoRequest ar(mSafeJSContext);
-            JS_RemoveObjectRoot(mSafeJSContext, &mSafeJSContextGlobal);
-        }
-        mSafeJSContextGlobal = nullptr;
         JS_DestroyContextNoGC(mSafeJSContext);
         mSafeJSContext = nullptr;
     }
@@ -75,8 +69,7 @@ XPCJSContextStack::Push(JSContext *cx)
         // The cx we're pushing is also stack-top. In general we still need to
         // call JS_SaveFrameChain here. But if that would put us in a
         // compartment that's same-origin with the current one, we can skip it.
-        nsIScriptSecurityManager* ssm = XPCWrapper::GetSecurityManager();
-        if ((e.cx == cx) && ssm) {
+        if (e.cx == cx) {
             // DOM JSContexts don't store their default compartment object on
             // the cx, so in those cases we need to fetch it via the scx
             // instead. And in some cases (i.e. the SafeJSContext), we have no
@@ -115,31 +108,6 @@ XPCJSContextStack::HasJSContext(JSContext *cx)
     return false;
 }
 
-static bool
-SafeGlobalResolve(JSContext *cx, HandleObject obj, HandleId id)
-{
-    bool resolved;
-    return JS_ResolveStandardClass(cx, obj, id, &resolved);
-}
-
-static void
-SafeFinalize(JSFreeOp *fop, JSObject* obj)
-{
-    SandboxPrivate* sop =
-        static_cast<SandboxPrivate*>(xpc_GetJSPrivate(obj));
-    sop->ForgetGlobalObject();
-    NS_IF_RELEASE(sop);
-    DestroyProtoAndIfaceCache(obj);
-}
-
-const JSClass xpc::SafeJSContextGlobalClass = {
-    "global_for_XPCJSContextStack_SafeJSContext",
-    XPCONNECT_GLOBAL_FLAGS,
-    JS_PropertyStub, JS_DeletePropertyStub, JS_PropertyStub, JS_StrictPropertyStub,
-    JS_EnumerateStub, SafeGlobalResolve, JS_ConvertStub, SafeFinalize,
-    nullptr, nullptr, nullptr, TraceXPCGlobal
-};
-
 JSContext*
 XPCJSContextStack::GetSafeJSContext()
 {
@@ -147,61 +115,12 @@ XPCJSContextStack::GetSafeJSContext()
     return mSafeJSContext;
 }
 
-JSObject*
-XPCJSContextStack::GetSafeJSContextGlobal()
-{
-    MOZ_ASSERT(mSafeJSContextGlobal);
-    return mSafeJSContextGlobal;
-}
-
 JSContext*
 XPCJSContextStack::InitSafeJSContext()
 {
     MOZ_ASSERT(!mSafeJSContext);
-
-    // Start by getting the principal holder and principal for this
-    // context.  If we can't manage that, don't bother with the rest.
-    nsRefPtr<nsNullPrincipal> principal = new nsNullPrincipal();
-    nsresult rv = principal->Init();
-    if (NS_FAILED(rv))
-        MOZ_CRASH();
-
-    nsXPConnect* xpc = nsXPConnect::XPConnect();
-    JSRuntime *rt = xpc->GetRuntime()->Runtime();
-    if (!rt)
-        MOZ_CRASH();
-
-    mSafeJSContext = JS_NewContext(rt, 8192);
+    mSafeJSContext = JS_NewContext(XPCJSRuntime::Get()->Runtime(), 8192);
     if (!mSafeJSContext)
         MOZ_CRASH();
-    JSAutoRequest req(mSafeJSContext);
-    ContextOptionsRef(mSafeJSContext).setNoDefaultCompartmentObject(true);
-
-    JS_SetErrorReporter(mSafeJSContext, xpc::SystemErrorReporter);
-
-    JS::CompartmentOptions options;
-    options.setZone(JS::SystemZone);
-    mSafeJSContextGlobal = CreateGlobalObject(mSafeJSContext,
-                                              &SafeJSContextGlobalClass,
-                                              principal, options);
-    if (!mSafeJSContextGlobal)
-        MOZ_CRASH();
-    JS_AddNamedObjectRoot(mSafeJSContext, &mSafeJSContextGlobal, "SafeJSContext global");
-
-    // Note: make sure to set the private before calling
-    // InitClasses
-    nsRefPtr<SandboxPrivate> sp = new SandboxPrivate(principal, mSafeJSContextGlobal);
-    JS_SetPrivate(mSafeJSContextGlobal, sp.forget().take());
-
-    // After this point either glob is null and the
-    // nsIScriptObjectPrincipal ownership is either handled by the
-    // nsCOMPtr or dealt with, or we'll release in the finalize
-    // hook.
-    if (NS_FAILED(xpc->InitClasses(mSafeJSContext, mSafeJSContextGlobal)))
-        MOZ_CRASH();
-
-    JS::RootedObject glob(mSafeJSContext, mSafeJSContextGlobal);
-    JS_FireOnNewGlobalObject(mSafeJSContext, glob);
-
     return mSafeJSContext;
 }

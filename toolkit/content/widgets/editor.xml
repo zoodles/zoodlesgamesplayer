@@ -87,6 +87,45 @@
         ]]>
         </body>
       </method>
+
+      <field name="_finder">null</field>
+      <property name="finder" readonly="true">
+        <getter><![CDATA[
+          if (!this._finder) {
+            if (!this.docShell)
+              return null;
+
+            let Finder = Components.utils.import("resource://gre/modules/Finder.jsm", {}).Finder;
+            this._finder = new Finder(this.docShell);
+          }
+          return this._finder;
+        ]]></getter>
+      </property>
+
+      <field name="_fastFind">null</field>
+      <property name="fastFind"
+                readonly="true">
+        <getter>
+        <![CDATA[
+          if (!this._fastFind) {
+            if (!("@mozilla.org/typeaheadfind;1" in Components.classes))
+              return null;
+
+            if (!this.docShell)
+              return null;
+
+            this._fastFind = Components.classes["@mozilla.org/typeaheadfind;1"]
+                                       .createInstance(Components.interfaces.nsITypeAheadFind);
+            this._fastFind.init(this.docShell);
+          }
+          return this._fastFind;
+        ]]>
+        </getter>
+      </property>
+
+      <field name="_lastSearchString">null</field>
+      <field name="_lastSearchHighlight">false</field>
+
       <property name="editortype"
                 onget="return this.getAttribute('editortype');"
                 onset="this.setAttribute('editortype', val); return val;"/>
@@ -96,7 +135,7 @@
       <property name="contentDocument" readonly="true"
                 onget="return this.webNavigation.document;"/>
       <property name="docShell"
-                onget="return this.boxObject.QueryInterface(Components.interfaces.nsIContainerBoxObject).docShell;"
+                onget="return this.boxObject.docShell;"
                 readonly="true"/>
       <property name="currentURI"
                 readonly="true"
@@ -109,15 +148,23 @@
                 onget="return this.docShell.QueryInterface(Components.interfaces.nsIInterfaceRequestor).getInterface(Components.interfaces.nsIWebBrowserFind);"/>
       <property name="markupDocumentViewer"
                 readonly="true"
-                onget="return this.docShell.contentViewer.QueryInterface(Components.interfaces.nsIMarkupDocumentViewer);"/>
+                onget="return this.docShell.contentViewer;"/>
       <property name="editingSession"
                 readonly="true"
                 onget="return this.webNavigation.QueryInterface(Components.interfaces.nsIInterfaceRequestor).getInterface(Components.interfaces.nsIEditingSession);"/>
       <property name="commandManager"
                 readonly="true"
                 onget="return this.webNavigation.QueryInterface(Components.interfaces.nsIInterfaceRequestor).getInterface(Components.interfaces.nsICommandManager);"/>
+      <property name="fullZoom"
+                onget="return this.markupDocumentViewer.fullZoom;"
+                onset="this.markupDocumentViewer.fullZoom = val;"/>
+      <property name="textZoom"
+                onget="return this.markupDocumentViewer.textZoom;"
+                onset="this.markupDocumentViewer.textZoom = val;"/>
+      <property name="isSyntheticDocument"
+                onget="return this.contentDocument.isSyntheticDocument;"
+                readonly="true"/>
     </implementation>
   </binding>
 
 </bindings>
-

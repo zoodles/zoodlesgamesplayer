@@ -5,9 +5,10 @@
 "use strict";
 
 /* General utilities used throughout devtools. */
-const { Ci, Cu } = require("chrome");
 
-let { Services } = Cu.import("resource://gre/modules/Services.jsm", {});
+var { Ci, Cu, Cc, components } = require("chrome");
+var Services = require("Services");
+var promise = require("promise");
 
 /**
  * Turn the error |aError| into a string, without fail.
@@ -27,6 +28,8 @@ exports.safeErrorString = function safeErrorString(aError) {
         }
       } catch (ee) { }
 
+      // Append additional line and column number information to the output,
+      // since it might not be part of the stringified error.
       if (typeof aError.lineNumber == "number" && typeof aError.columnNumber == "number") {
         errorString += "Line: " + aError.lineNumber + ", column: " + aError.columnNumber;
       }
@@ -82,11 +85,10 @@ exports.makeInfallible = function makeInfallible(aHandler, aName) {
       if (aName) {
         who += " " + aName;
       }
-      exports.reportException(who, ex);
+      return exports.reportException(who, ex);
     }
   }
 }
-
 /**
  * Interleaves two arrays element by element, returning the combined array, like
  * a zip. In the case of arrays with different sizes, undefined values will be
@@ -113,10 +115,43 @@ exports.zip = function zip(a, b) {
   return pairs;
 };
 
-const executeSoon = aFn => {
-  Services.tm.mainThread.dispatch({
-    run: exports.makeInfallible(aFn)
-  }, Ci.nsIThread.DISPATCH_NORMAL);
+/**
+ * Waits for the next tick in the event loop to execute a callback.
+ */
+exports.executeSoon = function executeSoon(aFn) {
+  if (isWorker) {
+    require("Timer").setTimeout(aFn, 0);
+  } else {
+    Services.tm.mainThread.dispatch({
+      run: exports.makeInfallible(aFn)
+    }, Ci.nsIThread.DISPATCH_NORMAL);
+  }
+};
+
+/**
+ * Waits for the next tick in the event loop.
+ *
+ * @return Promise
+ *         A promise that is resolved after the next tick in the event loop.
+ */
+exports.waitForTick = function waitForTick() {
+  let deferred = promise.defer();
+  exports.executeSoon(deferred.resolve);
+  return deferred.promise;
+};
+
+/**
+ * Waits for the specified amount of time to pass.
+ *
+ * @param number aDelay
+ *        The amount of time to wait, in milliseconds.
+ * @return Promise
+ *         A promise that is resolved after the specified amount of time passes.
+ */
+exports.waitForTime = function waitForTime(aDelay) {
+  let deferred = promise.defer();
+  require("Timer").setTimeout(deferred.resolve, aDelay);
+  return deferred.promise;
 };
 
 /**
@@ -127,16 +162,19 @@ const executeSoon = aFn => {
  * @param Array aArray
  *        The array being iterated over.
  * @param Function aFn
- *        The function called on each item in the array.
+ *        The function called on each item in the array. If a promise is
+ *        returned by this function, iterating over the array will be paused
+ *        until the respective promise is resolved.
  * @returns Promise
  *          A promise that is resolved once the whole array has been iterated
- *          over.
+ *          over, and all promises returned by the aFn callback are resolved.
  */
 exports.yieldingEach = function yieldingEach(aArray, aFn) {
   const deferred = promise.defer();
 
   let i = 0;
   let len = aArray.length;
+  let outstanding = [deferred.promise];
 
   (function loop() {
     const start = Date.now();
@@ -147,12 +185,12 @@ exports.yieldingEach = function yieldingEach(aArray, aFn) {
       // aren't including time spent in non-JS here, but this is Good
       // Enough(tm).
       if (Date.now() - start > 16) {
-        executeSoon(loop);
+        exports.executeSoon(loop);
         return;
       }
 
       try {
-        aFn(aArray[i++]);
+        outstanding.push(aFn(aArray[i], i++));
       } catch (e) {
         deferred.reject(e);
         return;
@@ -162,9 +200,8 @@ exports.yieldingEach = function yieldingEach(aArray, aFn) {
     deferred.resolve();
   }());
 
-  return deferred.promise;
+  return promise.all(outstanding);
 }
-
 
 /**
  * Like XPCOMUtils.defineLazyGetter, but with a |this| sensitive getter that
@@ -254,12 +291,18 @@ exports.hasSafeGetter = function hasSafeGetter(aDesc) {
  *         True if it is safe to read properties from aObj, or false otherwise.
  */
 exports.isSafeJSObject = function isSafeJSObject(aObj) {
+  // If we are running on a worker thread, Cu is not available. In this case,
+  // we always return false, just to be on the safe side.
+  if (isWorker) {
+    return false;
+  }
+
   if (Cu.getGlobalForObject(aObj) ==
       Cu.getGlobalForObject(exports.isSafeJSObject)) {
     return true; // aObj is not a cross-compartment wrapper.
   }
 
-  let principal = Services.scriptSecurityManager.getObjectPrincipal(aObj);
+  let principal = Cu.getObjectPrincipal(aObj);
   if (Services.scriptSecurityManager.isSystemPrincipal(principal)) {
     return true; // allow chrome objects
   }
@@ -267,3 +310,254 @@ exports.isSafeJSObject = function isSafeJSObject(aObj) {
   return Cu.isXrayWrapper(aObj);
 };
 
+exports.dumpn = function dumpn(str) {
+  if (exports.dumpn.wantLogging) {
+    dump("DBG-SERVER: " + str + "\n");
+  }
+}
+
+// We want wantLogging to be writable. The exports object is frozen by the
+// loader, so define it on dumpn instead.
+exports.dumpn.wantLogging = false;
+
+/**
+ * A verbose logger for low-level tracing.
+ */
+exports.dumpv = function(msg) {
+  if (exports.dumpv.wantVerbose) {
+    exports.dumpn(msg);
+  }
+};
+
+// We want wantLogging to be writable. The exports object is frozen by the
+// loader, so define it on dumpn instead.
+exports.dumpv.wantVerbose = false;
+
+exports.dbg_assert = function dbg_assert(cond, e) {
+  if (!cond) {
+    return e;
+  }
+};
+
+
+/**
+ * Utility function for updating an object with the properties of
+ * other objects.
+ *
+ * @param aTarget Object
+ *        The object being updated.
+ * @param aNewAttrs Object
+ *        The rest params are objects to update aTarget with. You
+ *        can pass as many as you like.
+ */
+exports.update = function update(aTarget, ...aArgs) {
+  for (let attrs of aArgs) {
+    for (let key in attrs) {
+      let desc = Object.getOwnPropertyDescriptor(attrs, key);
+
+      if (desc) {
+        Object.defineProperty(aTarget, key, desc);
+      }
+    }
+  }
+
+  return aTarget;
+}
+
+/**
+ * Utility function for getting the values from an object as an array
+ *
+ * @param aObject Object
+ *        The object to iterate over
+ */
+exports.values = function values(aObject) {
+  return Object.keys(aObject).map(k => aObject[k]);
+}
+
+/**
+ * Defines a getter on a specified object that will be created upon first use.
+ *
+ * @param aObject
+ *        The object to define the lazy getter on.
+ * @param aName
+ *        The name of the getter to define on aObject.
+ * @param aLambda
+ *        A function that returns what the getter should return.  This will
+ *        only ever be called once.
+ */
+exports.defineLazyGetter = function defineLazyGetter(aObject, aName, aLambda) {
+  Object.defineProperty(aObject, aName, {
+    get: function () {
+      delete aObject[aName];
+      return aObject[aName] = aLambda.apply(aObject);
+    },
+    configurable: true,
+    enumerable: true
+  });
+};
+
+/**
+ * Defines a getter on a specified object for a module.  The module will not
+ * be imported until first use.
+ *
+ * @param aObject
+ *        The object to define the lazy getter on.
+ * @param aName
+ *        The name of the getter to define on aObject for the module.
+ * @param aResource
+ *        The URL used to obtain the module.
+ * @param aSymbol
+ *        The name of the symbol exported by the module.
+ *        This parameter is optional and defaults to aName.
+ */
+exports.defineLazyModuleGetter = function defineLazyModuleGetter(aObject, aName,
+                                                                 aResource,
+                                                                 aSymbol)
+{
+  this.defineLazyGetter(aObject, aName, function XPCU_moduleLambda() {
+    var temp = {};
+    Cu.import(aResource, temp);
+    return temp[aSymbol || aName];
+  });
+};
+
+exports.defineLazyGetter(this, "NetUtil", () => {
+  return Cu.import("resource://gre/modules/NetUtil.jsm", {}).NetUtil;
+});
+
+/**
+ * Performs a request to load the desired URL and returns a promise.
+ *
+ * @param aURL String
+ *        The URL we will request.
+ * @param aOptions Object
+ *        An object with the following optional properties:
+ *        - loadFromCache: if false, will bypass the cache and
+ *          always load fresh from the network (default: true)
+ * @returns Promise
+ *        A promise of the document at that URL, as a string.
+ *
+ * XXX: It may be better to use nsITraceableChannel to get to the sources
+ * without relying on caching when we can (not for eval, etc.):
+ * http://www.softwareishard.com/blog/firebug/nsitraceablechannel-intercept-http-traffic/
+ */
+exports.fetch = function fetch(aURL, aOptions={ loadFromCache: true }) {
+  let deferred = promise.defer();
+  let scheme;
+  let url = aURL.split(" -> ").pop();
+  let charset;
+  let contentType;
+
+  try {
+    scheme = Services.io.extractScheme(url);
+  } catch (e) {
+    // In the xpcshell tests, the script url is the absolute path of the test
+    // file, which will make a malformed URI error be thrown. Add the file
+    // scheme prefix ourselves.
+    url = "file://" + url;
+    scheme = Services.io.extractScheme(url);
+  }
+
+  switch (scheme) {
+    case "file":
+    case "chrome":
+    case "resource":
+      try {
+        NetUtil.asyncFetch(url, function onFetch(aStream, aStatus, aRequest) {
+          if (!components.isSuccessCode(aStatus)) {
+            deferred.reject(new Error("Request failed with status code = "
+                                      + aStatus
+                                      + " after NetUtil.asyncFetch for url = "
+                                      + url));
+            return;
+          }
+
+          let source = NetUtil.readInputStreamToString(aStream, aStream.available());
+          contentType = aRequest.contentType;
+          deferred.resolve(source);
+          aStream.close();
+        });
+      } catch (ex) {
+        deferred.reject(ex);
+      }
+      break;
+
+    default:
+    let channel;
+      try {
+        channel = Services.io.newChannel(url, null, null);
+      } catch (e if e.name == "NS_ERROR_UNKNOWN_PROTOCOL") {
+        // On Windows xpcshell tests, c:/foo/bar can pass as a valid URL, but
+        // newChannel won't be able to handle it.
+        url = "file:///" + url;
+        channel = Services.io.newChannel(url, null, null);
+      }
+      let chunks = [];
+      let streamListener = {
+        onStartRequest: function(aRequest, aContext, aStatusCode) {
+          if (!components.isSuccessCode(aStatusCode)) {
+            deferred.reject(new Error("Request failed with status code = "
+                                      + aStatusCode
+                                      + " in onStartRequest handler for url = "
+                                      + url));
+          }
+        },
+        onDataAvailable: function(aRequest, aContext, aStream, aOffset, aCount) {
+          chunks.push(NetUtil.readInputStreamToString(aStream, aCount));
+        },
+        onStopRequest: function(aRequest, aContext, aStatusCode) {
+          if (!components.isSuccessCode(aStatusCode)) {
+            deferred.reject(new Error("Request failed with status code = "
+                                      + aStatusCode
+                                      + " in onStopRequest handler for url = "
+                                      + url));
+            return;
+          }
+
+          charset = channel.contentCharset;
+          contentType = channel.contentType;
+          deferred.resolve(chunks.join(""));
+        }
+      };
+
+      channel.loadFlags = aOptions.loadFromCache
+        ? channel.LOAD_FROM_CACHE
+        : channel.LOAD_BYPASS_CACHE;
+      try {
+        channel.asyncOpen(streamListener, null);
+      } catch(e) {
+        deferred.reject(new Error("Request failed for '"
+                                  + url
+                                  + "': "
+                                  + e.message));
+      }
+      break;
+  }
+
+  return deferred.promise.then(source => {
+    return {
+      content: convertToUnicode(source, charset),
+      contentType: contentType
+    };
+  });
+}
+
+/**
+ * Convert a given string, encoded in a given character set, to unicode.
+ *
+ * @param string aString
+ *        A string.
+ * @param string aCharset
+ *        A character set.
+ */
+function convertToUnicode(aString, aCharset=null) {
+  // Decoding primitives.
+  let converter = Cc["@mozilla.org/intl/scriptableunicodeconverter"]
+    .createInstance(Ci.nsIScriptableUnicodeConverter);
+  try {
+    converter.charset = aCharset || "UTF-8";
+    return converter.ConvertToUnicode(aString);
+  } catch(e) {
+    return aString;
+  }
+}

@@ -16,7 +16,7 @@ namespace gl {
 class GLContextWGL : public GLContext
 {
 public:
-    MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(GLContextWGL)
+    MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(GLContextWGL, MOZ_OVERRIDE)
     // From Window: (possibly for offscreen!)
     GLContextWGL(const SurfaceCaps& caps,
                  GLContext* sharedContext,
@@ -43,7 +43,7 @@ public:
         return static_cast<GLContextWGL*>(gl);
     }
 
-    bool Init();
+    bool Init() MOZ_OVERRIDE;
 
     virtual bool MakeCurrentImpl(bool aForce) MOZ_OVERRIDE;
 

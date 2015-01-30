@@ -14,7 +14,7 @@
 #include "nsBoxFrame.h"
 #include "nsStackLayout.h"
 #include "nsIAnonymousContentCreator.h"
-#include "nsINodeInfo.h"
+#include "mozilla/dom/NodeInfo.h"
 #include "nsIServiceManager.h"
 #include "nsNodeInfoManager.h"
 #include "nsContentCreatorFunctions.h"
@@ -35,15 +35,15 @@ public:
   friend nsIFrame* NS_NewBoxFrame(nsIPresShell* aPresShell,
                                   nsStyleContext* aContext);
 
-  nsDocElementBoxFrame(nsIPresShell* aShell, nsStyleContext* aContext)
-    :nsBoxFrame(aShell, aContext, true) {}
+  explicit nsDocElementBoxFrame(nsStyleContext* aContext)
+    :nsBoxFrame(aContext, true) {}
 
   NS_DECL_QUERYFRAME
   NS_DECL_FRAMEARENA_HELPERS
 
   // nsIAnonymousContentCreator
   virtual nsresult CreateAnonymousContent(nsTArray<ContentInfo>& aElements) MOZ_OVERRIDE;
-  virtual void AppendAnonymousContentTo(nsBaseContentList& aElements,
+  virtual void AppendAnonymousContentTo(nsTArray<nsIContent*>& aElements,
                                         uint32_t aFilter) MOZ_OVERRIDE;
 
   virtual bool IsFrameOfType(uint32_t aFlags) const MOZ_OVERRIDE
@@ -64,10 +64,10 @@ private:
 
 //----------------------------------------------------------------------
 
-nsIFrame*
+nsContainerFrame*
 NS_NewDocElementBoxFrame(nsIPresShell* aPresShell, nsStyleContext* aContext)
 {
-  return new (aPresShell) nsDocElementBoxFrame (aPresShell, aContext);
+  return new (aPresShell) nsDocElementBoxFrame(aContext);
 }
 
 NS_IMPL_FRAMEARENA_HELPERS(nsDocElementBoxFrame)
@@ -83,7 +83,7 @@ nsDocElementBoxFrame::DestroyFrom(nsIFrame* aDestructRoot)
 nsresult
 nsDocElementBoxFrame::CreateAnonymousContent(nsTArray<ContentInfo>& aElements)
 {
-  nsIDocument* doc = mContent->GetDocument();
+  nsIDocument* doc = mContent->GetComposedDoc();
   if (!doc) {
     // The page is currently being torn down.  Why bother.
     return NS_ERROR_FAILURE;
@@ -91,7 +91,7 @@ nsDocElementBoxFrame::CreateAnonymousContent(nsTArray<ContentInfo>& aElements)
   nsNodeInfoManager *nodeInfoManager = doc->NodeInfoManager();
 
   // create the top-secret popupgroup node. shhhhh!
-  nsCOMPtr<nsINodeInfo> nodeInfo;
+  nsRefPtr<NodeInfo> nodeInfo;
   nodeInfo = nodeInfoManager->GetNodeInfo(nsGkAtoms::popupgroup,
                                           nullptr, kNameSpaceID_XUL,
                                           nsIDOMNode::ELEMENT_NODE);
@@ -123,11 +123,16 @@ nsDocElementBoxFrame::CreateAnonymousContent(nsTArray<ContentInfo>& aElements)
 }
 
 void
-nsDocElementBoxFrame::AppendAnonymousContentTo(nsBaseContentList& aElements,
+nsDocElementBoxFrame::AppendAnonymousContentTo(nsTArray<nsIContent*>& aElements,
                                                uint32_t aFilter)
 {
-  aElements.MaybeAppendElement(mPopupgroupContent);
-  aElements.MaybeAppendElement(mTooltipContent);
+  if (mPopupgroupContent) {
+    aElements.AppendElement(mPopupgroupContent);
+  }
+
+  if (mTooltipContent) {
+    aElements.AppendElement(mTooltipContent);
+  }
 }
 
 NS_QUERYFRAME_HEAD(nsDocElementBoxFrame)

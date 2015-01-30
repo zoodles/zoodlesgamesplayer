@@ -24,14 +24,14 @@ public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(CallsList)
 
-  CallsList(Telephony* aTelephony, TelephonyCallGroup* aGroup = nullptr);
+  explicit CallsList(Telephony* aTelephony, TelephonyCallGroup* aGroup = nullptr);
 
   nsPIDOMWindow*
   GetParentObject() const;
 
   // WrapperCache
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   // CallsList WebIDL
   already_AddRefed<TelephonyCall>

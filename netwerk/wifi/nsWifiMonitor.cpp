@@ -24,10 +24,10 @@ using namespace mozilla;
 PRLogModuleInfo *gWifiMonitorLog;
 #endif
 
-NS_IMPL_ISUPPORTS3(nsWifiMonitor,
-                   nsIRunnable,
-                   nsIObserver,
-                   nsIWifiMonitor)
+NS_IMPL_ISUPPORTS(nsWifiMonitor,
+                  nsIRunnable,
+                  nsIObserver,
+                  nsIWifiMonitor)
 
 nsWifiMonitor::nsWifiMonitor()
 : mKeepGoing(true)
@@ -127,12 +127,13 @@ class nsPassErrorToWifiListeners MOZ_FINAL : public nsIRunnable
   {}
 
  private:
+  ~nsPassErrorToWifiListeners() {}
   nsAutoPtr<WifiListenerArray> mListeners;
   nsresult mResult;
 };
 
-NS_IMPL_ISUPPORTS1(nsPassErrorToWifiListeners,
-                   nsIRunnable)
+NS_IMPL_ISUPPORTS(nsPassErrorToWifiListeners,
+                  nsIRunnable)
 
 NS_IMETHODIMP nsPassErrorToWifiListeners::Run()
 {
@@ -187,12 +188,13 @@ class nsCallWifiListeners MOZ_FINAL : public nsIRunnable
   {}
 
  private:
+  ~nsCallWifiListeners() {}
   nsAutoPtr<WifiListenerArray> mListeners;
   nsAutoPtr<nsTArray<nsIWifiAccessPoint*> > mAccessPoints;
 };
 
-NS_IMPL_ISUPPORTS1(nsCallWifiListeners,
-                   nsIRunnable)
+NS_IMPL_ISUPPORTS(nsCallWifiListeners,
+                  nsIRunnable)
 
 NS_IMETHODIMP nsCallWifiListeners::Run()
 {

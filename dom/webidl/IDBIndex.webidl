@@ -12,6 +12,7 @@ dictionary IDBIndexParameters {
     boolean multiEntry = false;
 };
 
+[Exposed=(Window,Worker)]
 interface IDBIndex {
     readonly    attribute DOMString      name;
     readonly    attribute IDBObjectStore objectStore;
@@ -23,10 +24,10 @@ interface IDBIndex {
     readonly    attribute boolean        unique;
 
     [Throws]
-    IDBRequest openCursor (any range, optional IDBCursorDirection direction = "next");
+    IDBRequest openCursor (optional any range, optional IDBCursorDirection direction = "next");
 
     [Throws]
-    IDBRequest openKeyCursor (any range, optional IDBCursorDirection direction = "next");
+    IDBRequest openKeyCursor (optional any range, optional IDBCursorDirection direction = "next");
 
     [Throws]
     IDBRequest get (any key);
@@ -35,15 +36,21 @@ interface IDBIndex {
     IDBRequest getKey (any key);
 
     [Throws]
-    IDBRequest count (any key);
+    IDBRequest count (optional any key);
 };
 
 partial interface IDBIndex {
-    readonly attribute DOMString storeName;
+    [Throws]
+    IDBRequest mozGetAll (optional any key, optional unsigned long limit);
 
     [Throws]
-    IDBRequest mozGetAll (any key, optional unsigned long limit);
+    IDBRequest mozGetAllKeys (optional any key, optional unsigned long limit);
 
-    [Throws]
-    IDBRequest mozGetAllKeys (any key, optional unsigned long limit);
+    [Throws,
+     Func="mozilla::dom::indexedDB::IndexedDatabaseManager::ExperimentalFeaturesEnabled"]
+    IDBRequest getAll (optional any key, optional unsigned long limit);
+
+    [Throws,
+     Func="mozilla::dom::indexedDB::IndexedDatabaseManager::ExperimentalFeaturesEnabled"]
+    IDBRequest getAllKeys (optional any key, optional unsigned long limit);
 };

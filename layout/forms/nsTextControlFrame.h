@@ -9,6 +9,7 @@
 #include "mozilla/Attributes.h"
 #include "nsContainerFrame.h"
 #include "nsIAnonymousContentCreator.h"
+#include "nsIContent.h"
 #include "nsITextControlFrame.h"
 #include "nsITextControlElement.h"
 #include "nsIStatefulFrame.h"
@@ -23,17 +24,17 @@ class Element;
 }
 }
 
-class nsTextControlFrame : public nsContainerFrame,
-                           public nsIAnonymousContentCreator,
-                           public nsITextControlFrame,
-                           public nsIStatefulFrame
+class nsTextControlFrame MOZ_FINAL : public nsContainerFrame,
+                                     public nsIAnonymousContentCreator,
+                                     public nsITextControlFrame,
+                                     public nsIStatefulFrame
 {
 public:
   NS_DECL_FRAMEARENA_HELPERS
 
   NS_DECLARE_FRAME_PROPERTY(ContentScrollPos, DestroyPoint)
 
-  nsTextControlFrame(nsIPresShell* aShell, nsStyleContext* aContext);
+  explicit nsTextControlFrame(nsStyleContext* aContext);
   virtual ~nsTextControlFrame();
 
   virtual void DestroyFrom(nsIFrame* aDestructRoot) MOZ_OVERRIDE;
@@ -42,18 +43,23 @@ public:
     return do_QueryFrame(GetFirstPrincipalChild());
   }
 
-  virtual nscoord GetMinWidth(nsRenderingContext* aRenderingContext) MOZ_OVERRIDE;
-  virtual nscoord GetPrefWidth(nsRenderingContext* aRenderingContext) MOZ_OVERRIDE;
+  virtual nscoord GetMinISize(nsRenderingContext* aRenderingContext) MOZ_OVERRIDE;
+  virtual nscoord GetPrefISize(nsRenderingContext* aRenderingContext) MOZ_OVERRIDE;
 
-  virtual nsSize ComputeAutoSize(nsRenderingContext *aRenderingContext,
-                                 nsSize aCBSize, nscoord aAvailableWidth,
-                                 nsSize aMargin, nsSize aBorder,
-                                 nsSize aPadding, bool aShrinkWrap) MOZ_OVERRIDE;
+  virtual mozilla::LogicalSize
+  ComputeAutoSize(nsRenderingContext *aRenderingContext,
+                  mozilla::WritingMode aWritingMode,
+                  const mozilla::LogicalSize& aCBSize,
+                  nscoord aAvailableISize,
+                  const mozilla::LogicalSize& aMargin,
+                  const mozilla::LogicalSize& aBorder,
+                  const mozilla::LogicalSize& aPadding,
+                  bool aShrinkWrap) MOZ_OVERRIDE;
 
-  virtual nsresult Reflow(nsPresContext*           aPresContext,
-                          nsHTMLReflowMetrics&     aDesiredSize,
-                          const nsHTMLReflowState& aReflowState,
-                          nsReflowStatus&          aStatus) MOZ_OVERRIDE;
+  virtual void Reflow(nsPresContext*           aPresContext,
+                      nsHTMLReflowMetrics&     aDesiredSize,
+                      const nsHTMLReflowState& aReflowState,
+                      nsReflowStatus&          aStatus) MOZ_OVERRIDE;
 
   virtual nsSize GetMinSize(nsBoxLayoutState& aBoxLayoutState) MOZ_OVERRIDE;
   virtual bool IsCollapsed() MOZ_OVERRIDE;
@@ -82,13 +88,11 @@ public:
 
   // nsIAnonymousContentCreator
   virtual nsresult CreateAnonymousContent(nsTArray<ContentInfo>& aElements) MOZ_OVERRIDE;
-  virtual void AppendAnonymousContentTo(nsBaseContentList& aElements,
+  virtual void AppendAnonymousContentTo(nsTArray<nsIContent*>& aElements,
                                         uint32_t aFilter) MOZ_OVERRIDE;
 
-  // Utility methods to set current widget state
-
-  virtual nsresult SetInitialChildList(ChildListID     aListID,
-                                       nsFrameList&    aChildList) MOZ_OVERRIDE;
+  virtual void SetInitialChildList(ChildListID     aListID,
+                                   nsFrameList&    aChildList) MOZ_OVERRIDE;
 
   virtual void BuildDisplayList(nsDisplayListBuilder*   aBuilder,
                                 const nsRect&           aDirtyRect,
@@ -200,7 +204,7 @@ protected:
 
   class EditorInitializer : public nsRunnable {
   public:
-    EditorInitializer(nsTextControlFrame* aFrame) :
+    explicit EditorInitializer(nsTextControlFrame* aFrame) :
       mFrame(aFrame) {}
 
     NS_IMETHOD Run() MOZ_OVERRIDE;
@@ -219,7 +223,7 @@ protected:
 
   class ScrollOnFocusEvent : public nsRunnable {
   public:
-    ScrollOnFocusEvent(nsTextControlFrame* aFrame) :
+    explicit ScrollOnFocusEvent(nsTextControlFrame* aFrame) :
       mFrame(aFrame) {}
 
     NS_DECL_NSIRUNNABLE
@@ -268,8 +272,9 @@ protected:
   // etc.  Just the size of our actual area for the text (and the scrollbars,
   // for <textarea>).
   nsresult CalcIntrinsicSize(nsRenderingContext* aRenderingContext,
-                             nsSize&             aIntrinsicSize,
-                             float               aFontSizeInflation);
+                             mozilla::WritingMode aWM,
+                             mozilla::LogicalSize& aIntrinsicSize,
+                             float aFontSizeInflation);
 
   nsresult ScrollSelectionIntoView() MOZ_OVERRIDE;
 

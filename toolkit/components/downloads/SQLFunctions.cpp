@@ -12,6 +12,11 @@
 #include "plbase64.h"
 #include "prio.h"
 
+#ifdef XP_WIN
+#include <windows.h>
+#include <wincrypt.h>
+#endif
+
 // The length of guids that are used by the download manager
 #define GUID_LENGTH 12
 
@@ -40,7 +45,7 @@ GenerateGUIDFunction::create(mozIStorageConnection *aDBConn)
   return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS1(
+NS_IMPL_ISUPPORTS(
     GenerateGUIDFunction,
     mozIStorageFunction
 )
@@ -68,13 +73,6 @@ Base64urlEncode(const uint8_t* aBytes,
   _result.ReplaceChar('/', '_');
   return NS_OK;
 }
-
-#ifdef XP_WIN
-// Included here because windows.h conflicts with the use of mozIStorageError
-// above.
-#include <windows.h>
-#include <wincrypt.h>
-#endif
 
 static
 nsresult

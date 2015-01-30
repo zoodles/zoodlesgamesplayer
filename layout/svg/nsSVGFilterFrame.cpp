@@ -7,15 +7,12 @@
 #include "nsSVGFilterFrame.h"
 
 // Keep others in (case-insensitive) order:
-#include "gfxASurface.h"
 #include "gfxUtils.h"
 #include "nsGkAtoms.h"
-#include "nsRenderingContext.h"
 #include "nsSVGEffects.h"
 #include "nsSVGElement.h"
 #include "mozilla/dom/SVGFilterElement.h"
 #include "nsSVGFilterInstance.h"
-#include "nsSVGFilterPaintCallback.h"
 #include "nsSVGIntegrationUtils.h"
 #include "nsSVGUtils.h"
 #include "nsContentUtils.h"
@@ -33,7 +30,7 @@ NS_IMPL_FRAMEARENA_HELPERS(nsSVGFilterFrame)
 class MOZ_STACK_CLASS nsSVGFilterFrame::AutoFilterReferencer
 {
 public:
-  AutoFilterReferencer(nsSVGFilterFrame *aFrame MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
+  explicit AutoFilterReferencer(nsSVGFilterFrame *aFrame MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
     : mFrame(aFrame)
   {
     MOZ_GUARD_OBJECT_NOTIFIER_INIT;
@@ -188,9 +185,9 @@ nsSVGFilterFrame::AttributeChanged(int32_t  aNameSpaceID,
 
 #ifdef DEBUG
 void
-nsSVGFilterFrame::Init(nsIContent* aContent,
-                       nsIFrame* aParent,
-                       nsIFrame* aPrevInFlow)
+nsSVGFilterFrame::Init(nsIContent*       aContent,
+                       nsContainerFrame* aParent,
+                       nsIFrame*         aPrevInFlow)
 {
   NS_ASSERTION(aContent->IsSVG(nsGkAtoms::filter),
                "Content is not an SVG filter");

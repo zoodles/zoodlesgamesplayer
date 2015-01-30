@@ -10,9 +10,10 @@
 using namespace mozilla;
 using namespace mozilla::gl;
 
-NS_IMPL_ISUPPORTS1(GfxTexturesReporter, nsIMemoryReporter)
+NS_IMPL_ISUPPORTS(GfxTexturesReporter, nsIMemoryReporter)
 
-int64_t GfxTexturesReporter::sAmount = 0;
+Atomic<int32_t> GfxTexturesReporter::sAmount(0);
+Atomic<int32_t> GfxTexturesReporter::sTileWasteAmount(0);
 
 static uint32_t
 GetBitsPerTexel(GLenum format, GLenum type)
@@ -75,10 +76,11 @@ GetBitsPerTexel(GLenum format, GLenum type)
 
 /* static */ void
 GfxTexturesReporter::UpdateAmount(MemoryUse action, GLenum format,
-                                  GLenum type, uint16_t tileSize)
+                                  GLenum type, int32_t tileWidth,
+                                  int32_t tileHeight)
 {
     int64_t bitsPerTexel = GetBitsPerTexel(format, type);
-    int64_t bytes = int64_t(tileSize) * int64_t(tileSize) * bitsPerTexel/8;
+    int64_t bytes = int64_t(tileWidth) * int64_t(tileHeight) * bitsPerTexel/8;
     if (action == MemoryFreed) {
         sAmount -= bytes;
     } else {

@@ -13,6 +13,7 @@
 #include "mozilla/net/NeckoParent.h"
 #include "nsIParentChannel.h"
 #include "nsIInterfaceRequestor.h"
+#include "OfflineObserver.h"
 
 class nsFtpChannel;
 class nsILoadContext;
@@ -20,10 +21,12 @@ class nsILoadContext;
 namespace mozilla {
 namespace net {
 
-class FTPChannelParent : public PFTPChannelParent
-                       , public nsIParentChannel
-                       , public nsIInterfaceRequestor
-                       , public ADivertableParentChannel
+class FTPChannelParent MOZ_FINAL : public PFTPChannelParent
+                                 , public nsIParentChannel
+                                 , public nsIInterfaceRequestor
+                                 , public ADivertableParentChannel
+                                 , public nsIChannelEventSink
+                                 , public DisconnectableParent
 {
 public:
   NS_DECL_ISUPPORTS
@@ -31,9 +34,9 @@ public:
   NS_DECL_NSISTREAMLISTENER
   NS_DECL_NSIPARENTCHANNEL
   NS_DECL_NSIINTERFACEREQUESTOR
+  NS_DECL_NSICHANNELEVENTSINK
 
   FTPChannelParent(nsILoadContext* aLoadContext, PBOverrideStatus aOverrideStatus);
-  virtual ~FTPChannelParent();
 
   bool Init(const FTPChannelCreationArgs& aOpenArgs);
 
@@ -51,6 +54,8 @@ public:
   void NotifyDiversionFailed(nsresult aErrorCode, bool aSkipResume = true);
 
 protected:
+  virtual ~FTPChannelParent();
+
   // private, supporting function for ADivertableParentChannel.
   nsresult ResumeForDiversion();
 
@@ -59,7 +64,12 @@ protected:
 
   bool DoAsyncOpen(const URIParams& aURI, const uint64_t& aStartPos,
                    const nsCString& aEntityID,
-                   const OptionalInputStreamParams& aUploadStream);
+                   const OptionalInputStreamParams& aUploadStream,
+                   const ipc::PrincipalInfo& aRequestingPrincipalInfo,
+                   const ipc::PrincipalInfo& aTriggeringPrincipalInfo,
+                   const uint32_t& aSecurityFlags,
+                   const uint32_t& aContentPolicyType,
+                   const uint32_t& aInnerWindowID);
 
   // used to connect redirected-to channel in parent with just created
   // ChildChannel.  Used during HTTP->FTP redirects.
@@ -76,7 +86,11 @@ protected:
 
   virtual void ActorDestroy(ActorDestroyReason why) MOZ_OVERRIDE;
 
-  nsRefPtr<nsFtpChannel> mChannel;
+  void OfflineDisconnect() MOZ_OVERRIDE;
+  uint32_t GetAppId() MOZ_OVERRIDE;
+
+  // if configured to use HTTP proxy for FTP, this can an an HTTP channel.
+  nsCOMPtr<nsIChannel> mChannel;
 
   bool mIPCClosed;
 
@@ -99,6 +113,7 @@ protected:
   // Set if we successfully suspended the nsHttpChannel for diversion. Unset
   // when we call ResumeForDiversion.
   bool mSuspendedForDiversion;
+  nsRefPtr<OfflineObserver> mObserver;
 };
 
 } // namespace net

@@ -1,4 +1,4 @@
-/* -*- Mode: javascript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -9,6 +9,7 @@ const { Cc, Ci, Cu, Cr } = require("chrome");
 const promise = Cu.import("resource://gre/modules/Promise.jsm", {}).Promise;
 const EventEmitter = require("devtools/toolkit/event-emitter");
 const { WebGLFront } = require("devtools/server/actors/webgl");
+const { DevToolsUtils } = Cu.import("resource://gre/modules/devtools/DevToolsUtils.jsm", {});
 
 function ShaderEditorPanel(iframeWindow, toolbox) {
   this.panelWin = iframeWindow;
@@ -21,6 +22,12 @@ function ShaderEditorPanel(iframeWindow, toolbox) {
 exports.ShaderEditorPanel = ShaderEditorPanel;
 
 ShaderEditorPanel.prototype = {
+  /**
+   * Open is effectively an asynchronous constructor.
+   *
+   * @return object
+   *         A promise that is resolved when the Shader Editor completes opening.
+   */
   open: function() {
     let targetPromise;
 
@@ -44,8 +51,7 @@ ShaderEditorPanel.prototype = {
         return this;
       })
       .then(null, function onError(aReason) {
-        Cu.reportError("ShaderEditorPanel open failed. " +
-                       aReason.error + ": " + aReason.message);
+        DevToolsUtils.reportException("ShaderEditorPanel.prototype.open", aReason);
       });
   },
 
@@ -60,6 +66,8 @@ ShaderEditorPanel.prototype = {
     }
 
     return this._destroyer = this.panelWin.shutdownShaderEditor().then(() => {
+      // Destroy front to ensure packet handler is removed from client
+      this.panelWin.gFront.destroy();
       this.emit("destroyed");
     });
   }

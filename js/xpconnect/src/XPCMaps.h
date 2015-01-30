@@ -1,6 +1,6 @@
-/* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- *
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* vim: set ts=8 sts=4 et sw=4 tw=99: */
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -30,9 +30,9 @@ class JSObject2WrappedJSMap
                         js::SystemAllocPolicy> Map;
 
 public:
-    static JSObject2WrappedJSMap* newMap(int size) {
+    static JSObject2WrappedJSMap* newMap(int length) {
         JSObject2WrappedJSMap* map = new JSObject2WrappedJSMap();
-        if (map && map->mTable.init(size))
+        if (map && map->mTable.init(length))
             return map;
         delete map;
         return nullptr;
@@ -68,15 +68,15 @@ public:
             r.front().value()->DebugDump(depth);
     }
 
-    void FindDyingJSObjects(nsTArray<nsXPCWrappedJS*>* dying);
+    void UpdateWeakPointersAfterGC(XPCJSRuntime *runtime);
 
     void ShutdownMarker();
 
-    size_t SizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) {
-        size_t n = mallocSizeOf(this);
-        n += mTable.sizeOfExcludingThis(mallocSizeOf);
-        return n;
-    }
+    size_t SizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
+
+    // Report the sum of SizeOfIncludingThis() for all wrapped JS in the map.
+    // Each wrapped JS is only in one map.
+    size_t SizeOfWrappedJS(mozilla::MallocSizeOf mallocSizeOf) const;
 
 private:
     JSObject2WrappedJSMap() {}
@@ -88,7 +88,7 @@ private:
     static void KeyMarkCallback(JSTracer *trc, JSObject *key, void *data) {
         JSObject2WrappedJSMap* self = static_cast<JSObject2WrappedJSMap*>(data);
         JSObject *prior = key;
-        JS_CallObjectTracer(trc, &key, "XPCJSRuntime::mWrappedJSMap key");
+        JS_CallUnbarrieredObjectTracer(trc, &key, "XPCJSRuntime::mWrappedJSMap key");
         self->mTable.rekeyIfMoved(prior, key);
     }
 
@@ -106,16 +106,13 @@ public:
         XPCWrappedNative* value;
     };
 
-    static Native2WrappedNativeMap* newMap(int size);
+    static Native2WrappedNativeMap* newMap(int length);
 
     inline XPCWrappedNative* Find(nsISupports* Obj)
     {
         NS_PRECONDITION(Obj,"bad param");
-        Entry* entry = (Entry*)
-            PL_DHashTableOperate(mTable, Obj, PL_DHASH_LOOKUP);
-        if (PL_DHASH_ENTRY_IS_FREE(entry))
-            return nullptr;
-        return entry->value;
+        Entry* entry = (Entry*) PL_DHashTableSearch(mTable, Obj);
+        return entry ? entry->value : nullptr;
     }
 
     inline XPCWrappedNative* Add(XPCWrappedNative* wrapper)
@@ -123,8 +120,7 @@ public:
         NS_PRECONDITION(wrapper,"bad param");
         nsISupports* obj = wrapper->GetIdentityObject();
         MOZ_ASSERT(!Find(obj), "wrapper already in new scope!");
-        Entry* entry = (Entry*)
-            PL_DHashTableOperate(mTable, obj, PL_DHASH_ADD);
+        Entry* entry = (Entry*) PL_DHashTableAdd(mTable, obj);
         if (!entry)
             return nullptr;
         if (entry->key)
@@ -144,10 +140,10 @@ public:
                    "nsISupports identity! This will most likely cause serious "
                    "problems!");
 #endif
-        PL_DHashTableOperate(mTable, wrapper->GetIdentityObject(), PL_DHASH_REMOVE);
+        PL_DHashTableRemove(mTable, wrapper->GetIdentityObject());
     }
 
-    inline uint32_t Count() {return mTable->entryCount;}
+    inline uint32_t Count() { return mTable->EntryCount(); }
     inline uint32_t Enumerate(PLDHashEnumerator f, void *arg)
         {return PL_DHashTableEnumerate(mTable, f, arg);}
 
@@ -156,7 +152,7 @@ public:
     ~Native2WrappedNativeMap();
 private:
     Native2WrappedNativeMap();    // no implementation
-    Native2WrappedNativeMap(int size);
+    explicit Native2WrappedNativeMap(int size);
 
     static size_t SizeOfEntryExcludingThis(PLDHashEntryHdr *hdr, mozilla::MallocSizeOf mallocSizeOf, void *);
 
@@ -177,23 +173,19 @@ public:
         static const struct PLDHashTableOps sOps;
     };
 
-    static IID2WrappedJSClassMap* newMap(int size);
+    static IID2WrappedJSClassMap* newMap(int length);
 
     inline nsXPCWrappedJSClass* Find(REFNSIID iid)
     {
-        Entry* entry = (Entry*)
-            PL_DHashTableOperate(mTable, &iid, PL_DHASH_LOOKUP);
-        if (PL_DHASH_ENTRY_IS_FREE(entry))
-            return nullptr;
-        return entry->value;
+        Entry* entry = (Entry*) PL_DHashTableSearch(mTable, &iid);
+        return entry ? entry->value : nullptr;
     }
 
     inline nsXPCWrappedJSClass* Add(nsXPCWrappedJSClass* clazz)
     {
         NS_PRECONDITION(clazz,"bad param");
         const nsIID* iid = &clazz->GetIID();
-        Entry* entry = (Entry*)
-            PL_DHashTableOperate(mTable, iid, PL_DHASH_ADD);
+        Entry* entry = (Entry*) PL_DHashTableAdd(mTable, iid);
         if (!entry)
             return nullptr;
         if (entry->key)
@@ -206,17 +198,17 @@ public:
     inline void Remove(nsXPCWrappedJSClass* clazz)
     {
         NS_PRECONDITION(clazz,"bad param");
-        PL_DHashTableOperate(mTable, &clazz->GetIID(), PL_DHASH_REMOVE);
+        PL_DHashTableRemove(mTable, &clazz->GetIID());
     }
 
-    inline uint32_t Count() {return mTable->entryCount;}
+    inline uint32_t Count() { return mTable->EntryCount(); }
     inline uint32_t Enumerate(PLDHashEnumerator f, void *arg)
         {return PL_DHashTableEnumerate(mTable, f, arg);}
 
     ~IID2WrappedJSClassMap();
 private:
     IID2WrappedJSClassMap();    // no implementation
-    IID2WrappedJSClassMap(int size);
+    explicit IID2WrappedJSClassMap(int size);
 private:
     PLDHashTable *mTable;
 };
@@ -234,23 +226,19 @@ public:
         static const struct PLDHashTableOps sOps;
     };
 
-    static IID2NativeInterfaceMap* newMap(int size);
+    static IID2NativeInterfaceMap* newMap(int length);
 
     inline XPCNativeInterface* Find(REFNSIID iid)
     {
-        Entry* entry = (Entry*)
-            PL_DHashTableOperate(mTable, &iid, PL_DHASH_LOOKUP);
-        if (PL_DHASH_ENTRY_IS_FREE(entry))
-            return nullptr;
-        return entry->value;
+        Entry* entry = (Entry*) PL_DHashTableSearch(mTable, &iid);
+        return entry ? entry->value : nullptr;
     }
 
     inline XPCNativeInterface* Add(XPCNativeInterface* iface)
     {
         NS_PRECONDITION(iface,"bad param");
         const nsIID* iid = iface->GetIID();
-        Entry* entry = (Entry*)
-            PL_DHashTableOperate(mTable, iid, PL_DHASH_ADD);
+        Entry* entry = (Entry*) PL_DHashTableAdd(mTable, iid);
         if (!entry)
             return nullptr;
         if (entry->key)
@@ -263,10 +251,10 @@ public:
     inline void Remove(XPCNativeInterface* iface)
     {
         NS_PRECONDITION(iface,"bad param");
-        PL_DHashTableOperate(mTable, iface->GetIID(), PL_DHASH_REMOVE);
+        PL_DHashTableRemove(mTable, iface->GetIID());
     }
 
-    inline uint32_t Count() {return mTable->entryCount;}
+    inline uint32_t Count() { return mTable->EntryCount(); }
     inline uint32_t Enumerate(PLDHashEnumerator f, void *arg)
         {return PL_DHashTableEnumerate(mTable, f, arg);}
 
@@ -275,7 +263,7 @@ public:
     ~IID2NativeInterfaceMap();
 private:
     IID2NativeInterfaceMap();    // no implementation
-    IID2NativeInterfaceMap(int size);
+    explicit IID2NativeInterfaceMap(int size);
 
     static size_t SizeOfEntryExcludingThis(PLDHashEntryHdr *hdr, mozilla::MallocSizeOf mallocSizeOf, void *);
 
@@ -294,22 +282,18 @@ public:
         XPCNativeSet* value;
     };
 
-    static ClassInfo2NativeSetMap* newMap(int size);
+    static ClassInfo2NativeSetMap* newMap(int length);
 
     inline XPCNativeSet* Find(nsIClassInfo* info)
     {
-        Entry* entry = (Entry*)
-            PL_DHashTableOperate(mTable, info, PL_DHASH_LOOKUP);
-        if (PL_DHASH_ENTRY_IS_FREE(entry))
-            return nullptr;
-        return entry->value;
+        Entry* entry = (Entry*) PL_DHashTableSearch(mTable, info);
+        return entry ? entry->value : nullptr;
     }
 
     inline XPCNativeSet* Add(nsIClassInfo* info, XPCNativeSet* set)
     {
         NS_PRECONDITION(info,"bad param");
-        Entry* entry = (Entry*)
-            PL_DHashTableOperate(mTable, info, PL_DHASH_ADD);
+        Entry* entry = (Entry*) PL_DHashTableAdd(mTable, info);
         if (!entry)
             return nullptr;
         if (entry->key)
@@ -322,10 +306,10 @@ public:
     inline void Remove(nsIClassInfo* info)
     {
         NS_PRECONDITION(info,"bad param");
-        PL_DHashTableOperate(mTable, info, PL_DHASH_REMOVE);
+        PL_DHashTableRemove(mTable, info);
     }
 
-    inline uint32_t Count() {return mTable->entryCount;}
+    inline uint32_t Count() { return mTable->EntryCount(); }
     inline uint32_t Enumerate(PLDHashEnumerator f, void *arg)
         {return PL_DHashTableEnumerate(mTable, f, arg);}
 
@@ -338,7 +322,7 @@ public:
     ~ClassInfo2NativeSetMap();
 private:
     ClassInfo2NativeSetMap();    // no implementation
-    ClassInfo2NativeSetMap(int size);
+    explicit ClassInfo2NativeSetMap(int size);
 private:
     PLDHashTable *mTable;
 };
@@ -354,22 +338,18 @@ public:
         XPCWrappedNativeProto* value;
     };
 
-    static ClassInfo2WrappedNativeProtoMap* newMap(int size);
+    static ClassInfo2WrappedNativeProtoMap* newMap(int length);
 
     inline XPCWrappedNativeProto* Find(nsIClassInfo* info)
     {
-        Entry* entry = (Entry*)
-            PL_DHashTableOperate(mTable, info, PL_DHASH_LOOKUP);
-        if (PL_DHASH_ENTRY_IS_FREE(entry))
-            return nullptr;
-        return entry->value;
+        Entry* entry = (Entry*) PL_DHashTableSearch(mTable, info);
+        return entry ? entry->value : nullptr;
     }
 
     inline XPCWrappedNativeProto* Add(nsIClassInfo* info, XPCWrappedNativeProto* proto)
     {
         NS_PRECONDITION(info,"bad param");
-        Entry* entry = (Entry*)
-            PL_DHashTableOperate(mTable, info, PL_DHASH_ADD);
+        Entry* entry = (Entry*) PL_DHashTableAdd(mTable, info);
         if (!entry)
             return nullptr;
         if (entry->key)
@@ -382,10 +362,10 @@ public:
     inline void Remove(nsIClassInfo* info)
     {
         NS_PRECONDITION(info,"bad param");
-        PL_DHashTableOperate(mTable, info, PL_DHASH_REMOVE);
+        PL_DHashTableRemove(mTable, info);
     }
 
-    inline uint32_t Count() {return mTable->entryCount;}
+    inline uint32_t Count() { return mTable->EntryCount(); }
     inline uint32_t Enumerate(PLDHashEnumerator f, void *arg)
         {return PL_DHashTableEnumerate(mTable, f, arg);}
 
@@ -394,7 +374,7 @@ public:
     ~ClassInfo2WrappedNativeProtoMap();
 private:
     ClassInfo2WrappedNativeProtoMap();    // no implementation
-    ClassInfo2WrappedNativeProtoMap(int size);
+    explicit ClassInfo2WrappedNativeProtoMap(int size);
 
     static size_t SizeOfEntryExcludingThis(PLDHashEntryHdr *hdr, mozilla::MallocSizeOf mallocSizeOf, void *);
 
@@ -419,23 +399,19 @@ public:
         static const struct PLDHashTableOps sOps;
     };
 
-    static NativeSetMap* newMap(int size);
+    static NativeSetMap* newMap(int length);
 
     inline XPCNativeSet* Find(XPCNativeSetKey* key)
     {
-        Entry* entry = (Entry*)
-            PL_DHashTableOperate(mTable, key, PL_DHASH_LOOKUP);
-        if (PL_DHASH_ENTRY_IS_FREE(entry))
-            return nullptr;
-        return entry->key_value;
+        Entry* entry = (Entry*) PL_DHashTableSearch(mTable, key);
+        return entry ? entry->key_value : nullptr;
     }
 
     inline XPCNativeSet* Add(const XPCNativeSetKey* key, XPCNativeSet* set)
     {
         NS_PRECONDITION(key,"bad param");
         NS_PRECONDITION(set,"bad param");
-        Entry* entry = (Entry*)
-            PL_DHashTableOperate(mTable, key, PL_DHASH_ADD);
+        Entry* entry = (Entry*) PL_DHashTableAdd(mTable, key);
         if (!entry)
             return nullptr;
         if (entry->key_value)
@@ -455,10 +431,10 @@ public:
         NS_PRECONDITION(set,"bad param");
 
         XPCNativeSetKey key(set, nullptr, 0);
-        PL_DHashTableOperate(mTable, &key, PL_DHASH_REMOVE);
+        PL_DHashTableRemove(mTable, &key);
     }
 
-    inline uint32_t Count() {return mTable->entryCount;}
+    inline uint32_t Count() { return mTable->EntryCount(); }
     inline uint32_t Enumerate(PLDHashEnumerator f, void *arg)
         {return PL_DHashTableEnumerate(mTable, f, arg);}
 
@@ -467,7 +443,7 @@ public:
     ~NativeSetMap();
 private:
     NativeSetMap();    // no implementation
-    NativeSetMap(int size);
+    explicit NativeSetMap(int size);
 
     static size_t SizeOfEntryExcludingThis(PLDHashEntryHdr *hdr, mozilla::MallocSizeOf mallocSizeOf, void *);
 
@@ -496,23 +472,19 @@ public:
         static const struct PLDHashTableOps sOps;
     };
 
-    static IID2ThisTranslatorMap* newMap(int size);
+    static IID2ThisTranslatorMap* newMap(int length);
 
     inline nsIXPCFunctionThisTranslator* Find(REFNSIID iid)
     {
-        Entry* entry = (Entry*)
-            PL_DHashTableOperate(mTable, &iid, PL_DHASH_LOOKUP);
-        if (PL_DHASH_ENTRY_IS_FREE(entry))
-            return nullptr;
-        return entry->value;
+        Entry* entry = (Entry*) PL_DHashTableSearch(mTable, &iid);
+        return entry ? entry->value : nullptr;
     }
 
     inline nsIXPCFunctionThisTranslator* Add(REFNSIID iid,
                                              nsIXPCFunctionThisTranslator* obj)
     {
 
-        Entry* entry = (Entry*)
-            PL_DHashTableOperate(mTable, &iid, PL_DHASH_ADD);
+        Entry* entry = (Entry*) PL_DHashTableAdd(mTable, &iid);
         if (!entry)
             return nullptr;
         entry->value = obj;
@@ -522,17 +494,17 @@ public:
 
     inline void Remove(REFNSIID iid)
     {
-        PL_DHashTableOperate(mTable, &iid, PL_DHASH_REMOVE);
+        PL_DHashTableRemove(mTable, &iid);
     }
 
-    inline uint32_t Count() {return mTable->entryCount;}
+    inline uint32_t Count() { return mTable->EntryCount(); }
     inline uint32_t Enumerate(PLDHashEnumerator f, void *arg)
         {return PL_DHashTableEnumerate(mTable, f, arg);}
 
     ~IID2ThisTranslatorMap();
 private:
     IID2ThisTranslatorMap();    // no implementation
-    IID2ThisTranslatorMap(int size);
+    explicit IID2ThisTranslatorMap(int size);
 private:
     PLDHashTable *mTable;
 };
@@ -557,19 +529,18 @@ public:
         static const struct PLDHashTableOps sOps;
     };
 
-    static XPCNativeScriptableSharedMap* newMap(int size);
+    static XPCNativeScriptableSharedMap* newMap(int length);
 
-    bool GetNewOrUsed(uint32_t flags, char* name, uint32_t interfacesBitmap,
-                      XPCNativeScriptableInfo* si);
+    bool GetNewOrUsed(uint32_t flags, char* name, XPCNativeScriptableInfo* si);
 
-    inline uint32_t Count() {return mTable->entryCount;}
+    inline uint32_t Count() { return mTable->EntryCount(); }
     inline uint32_t Enumerate(PLDHashEnumerator f, void *arg)
         {return PL_DHashTableEnumerate(mTable, f, arg);}
 
     ~XPCNativeScriptableSharedMap();
 private:
     XPCNativeScriptableSharedMap();    // no implementation
-    XPCNativeScriptableSharedMap(int size);
+    explicit XPCNativeScriptableSharedMap(int size);
 private:
     PLDHashTable *mTable;
 };
@@ -579,13 +550,13 @@ private:
 class XPCWrappedNativeProtoMap
 {
 public:
-    static XPCWrappedNativeProtoMap* newMap(int size);
+    static XPCWrappedNativeProtoMap* newMap(int length);
 
     inline XPCWrappedNativeProto* Add(XPCWrappedNativeProto* proto)
     {
         NS_PRECONDITION(proto,"bad param");
         PLDHashEntryStub* entry = (PLDHashEntryStub*)
-            PL_DHashTableOperate(mTable, proto, PL_DHASH_ADD);
+            PL_DHashTableAdd(mTable, proto);
         if (!entry)
             return nullptr;
         if (entry->key)
@@ -597,17 +568,17 @@ public:
     inline void Remove(XPCWrappedNativeProto* proto)
     {
         NS_PRECONDITION(proto,"bad param");
-        PL_DHashTableOperate(mTable, proto, PL_DHASH_REMOVE);
+        PL_DHashTableRemove(mTable, proto);
     }
 
-    inline uint32_t Count() {return mTable->entryCount;}
+    inline uint32_t Count() { return mTable->EntryCount(); }
     inline uint32_t Enumerate(PLDHashEnumerator f, void *arg)
         {return PL_DHashTableEnumerate(mTable, f, arg);}
 
     ~XPCWrappedNativeProtoMap();
 private:
     XPCWrappedNativeProtoMap();    // no implementation
-    XPCWrappedNativeProtoMap(int size);
+    explicit XPCWrappedNativeProtoMap(int size);
 private:
     PLDHashTable *mTable;
 };
@@ -620,9 +591,9 @@ class JSObject2JSObjectMap
                         js::SystemAllocPolicy> Map;
 
 public:
-    static JSObject2JSObjectMap* newMap(int size) {
+    static JSObject2JSObjectMap* newMap(int length) {
         JSObject2JSObjectMap* map = new JSObject2JSObjectMap();
-        if (map && map->mTable.init(size))
+        if (map && map->mTable.init(length))
             return map;
         delete map;
         return nullptr;
@@ -643,7 +614,7 @@ public:
             return p->value();
         if (!mTable.add(p, key, value))
             return nullptr;
-        MOZ_ASSERT(xpc::GetCompartmentPrivate(key)->scope->mWaiverWrapperMap == this);
+        MOZ_ASSERT(xpc::CompartmentPrivate::Get(key)->scope->mWaiverWrapperMap == this);
         JS_StoreObjectPostBarrierCallback(cx, KeyMarkCallback, key, this);
         return value;
     }
@@ -657,11 +628,14 @@ public:
 
     void Sweep() {
         for (Map::Enum e(mTable); !e.empty(); e.popFront()) {
-            JSObject *updated = e.front().key();
-            if (JS_IsAboutToBeFinalizedUnbarriered(&updated) || JS_IsAboutToBeFinalized(&e.front().value()))
+            JSObject *key = e.front().key();
+            JS::Heap<JSObject *> *valuep = &e.front().value();
+            JS_UpdateWeakPointerAfterGCUnbarriered(&key);
+            JS_UpdateWeakPointerAfterGC(valuep);
+            if (!key || !*valuep)
                 e.removeFront();
-            else if (updated != e.front().key())
-                e.rekeyFront(updated);
+            else if (key != e.front().key())
+                e.rekeyFront(key);
         }
     }
 
@@ -672,12 +646,13 @@ public:
              * We reparent wrappers that have as their parent an inner window
              * whose outer has the new inner window as its current inner.
              */
-            JS::RootedObject parent(aCx, JS_GetParent(e.front().value()));
+            JS::RootedObject wrapper(aCx, e.front().value());
+            JS::RootedObject parent(aCx, JS_GetParent(wrapper));
             JS::RootedObject outer(aCx, JS_ObjectToOuterObject(aCx, parent));
             if (outer) {
                 JSObject *inner = JS_ObjectToInnerObject(aCx, outer);
                 if (inner == aNewInner && inner != parent)
-                    JS_SetParent(aCx, e.front().value(), aNewInner);
+                    JS_SetParent(aCx, wrapper, aNewInner);
             } else {
                 JS_ClearPendingException(aCx);
             }
@@ -703,7 +678,7 @@ private:
         UnbarrieredMap &table = reinterpret_cast<UnbarrieredMap &>(self->mTable);
 
         JSObject *prior = key;
-        JS_CallObjectTracer(trc, &key, "XPCWrappedNativeScope::mWaiverWrapperMap key");
+        JS_CallUnbarrieredObjectTracer(trc, &key, "XPCWrappedNativeScope::mWaiverWrapperMap key");
         table.rekeyIfMoved(prior, key);
     }
 

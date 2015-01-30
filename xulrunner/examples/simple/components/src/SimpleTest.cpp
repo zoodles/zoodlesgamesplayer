@@ -9,12 +9,13 @@
 
 class SimpleTest : public nsISimpleTest
 {
+  ~SimpleTest() {}
 public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSISIMPLETEST
 };
 
-NS_IMPL_ISUPPORTS1(SimpleTest, nsISimpleTest)
+NS_IMPL_ISUPPORTS(SimpleTest, nsISimpleTest)
 
 NS_IMETHODIMP
 SimpleTest::Add(int32_t a, int32_t b, int32_t *r)

@@ -1,10 +1,17 @@
-// -*- Mode: javascript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
+// -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 "use strict";
 
 let gFetchCount = 0;
+let gGoodOCSPResponse = null;
+
+function generateGoodOCSPResponse() {
+  let args = [ ["good", "localhostAndExampleCom", "unused" ] ];
+  let responses = generateOCSPResponses(args, "tlsserver");
+  return responses[0];
+}
 
 function run_test() {
   do_get_profile();
@@ -27,33 +34,19 @@ function run_test() {
     }
 
     do_print("returning 200 OK");
-
-    let nickname = "localhostAndExampleCom";
-    do_print("Generating ocsp response for '" + nickname + "'");
-    let args = [ ["good", nickname, "unused" ] ];
-    let ocspResponses = generateOCSPResponses(args, "tlsserver");
-    let goodResponse = ocspResponses[0];
-
     response.setStatusLine(request.httpVersion, 200, "OK");
     response.setHeader("Content-Type", "application/ocsp-response");
-    response.bodyOutputStream.write(goodResponse, goodResponse.length);
+    response.write(gGoodOCSPResponse);
   });
-  ocspResponder.start(8080);
+  ocspResponder.start(8888);
 
-  add_tests_in_mode(true);
-  add_tests_in_mode(false);
+  add_tests();
 
   add_test(function() { ocspResponder.stop(run_next_test); });
   run_next_test();
 }
 
-function add_tests_in_mode(useMozillaPKIX) {
-  add_test(function () {
-    Services.prefs.setBoolPref("security.use_mozillapkix_verification",
-                               useMozillaPKIX);
-    run_next_test();
-  });
-
+function add_tests() {
   // This test assumes that OCSPStaplingServer uses the same cert for
   // ocsp-stapling-unknown.example.com and ocsp-stapling-none.example.com.
 
@@ -84,6 +77,10 @@ function add_tests_in_mode(useMozillaPKIX) {
     let timer = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);
     timer.initWithCallback(run_next_test, duration, Ci.nsITimer.TYPE_ONE_SHOT);
   });
+  add_test(function() {
+    gGoodOCSPResponse = generateGoodOCSPResponse();
+    run_next_test();
+  });
   add_connection_test("ocsp-stapling-none.example.com", Cr.NS_OK,
                       clearSessionCache);
   add_test(function() { do_check_eq(gFetchCount, 2); run_next_test(); });
@@ -107,13 +104,10 @@ function add_tests_in_mode(useMozillaPKIX) {
                       clearSessionCache);
   add_test(function() { do_check_eq(gFetchCount, 1); run_next_test(); });
 
-  // TODO(bug 977865): implement this for mozilla::pkix
-  if (!useMozillaPKIX) {
-    // The error entry will prevent a fetch from happening for a while.
-    add_connection_test("ocsp-stapling-none.example.com", Cr.NS_OK,
-                        clearSessionCache);
-    add_test(function() { do_check_eq(gFetchCount, 1); run_next_test(); });
-  }
+  // The error entry will prevent a fetch from happening for a while.
+  add_connection_test("ocsp-stapling-none.example.com", Cr.NS_OK,
+                      clearSessionCache);
+  add_test(function() { do_check_eq(gFetchCount, 1); run_next_test(); });
 
   // The error entry must not prevent a stapled OCSP response from being
   // honored.

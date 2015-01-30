@@ -47,7 +47,6 @@ class nsSecureBrowserUIImpl : public nsISecureBrowserUI,
 public:
   
   nsSecureBrowserUIImpl();
-  virtual ~nsSecureBrowserUIImpl();
   
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIWEBPROGRESSLISTENER
@@ -56,11 +55,13 @@ public:
   NS_DECL_NSISSLSTATUSPROVIDER
 
   NS_IMETHOD Notify(nsIDOMHTMLFormElement* formNode, nsIDOMWindow* window,
-                    nsIURI *actionURL, bool* cancelSubmit);
+                    nsIURI *actionURL, bool* cancelSubmit) MOZ_OVERRIDE;
   NS_IMETHOD NotifyInvalidSubmit(nsIDOMHTMLFormElement* formNode,
-                                 nsIArray* invalidElements) { return NS_OK; }
+                                 nsIArray* invalidElements) MOZ_OVERRIDE { return NS_OK; }
   
 protected:
+  virtual ~nsSecureBrowserUIImpl();
+
   mozilla::ReentrantMonitor mReentrantMonitor;
   
   nsWeakPtr mWindow;
@@ -97,15 +98,13 @@ protected:
 
   static already_AddRefed<nsISupports> ExtractSecurityInfo(nsIRequest* aRequest);
   nsresult MapInternalToExternalState(uint32_t* aState, lockIconState lock, bool ev);
-  nsresult UpdateSecurityState(nsIRequest* aRequest, bool withNewLocation,
-                               bool withUpdateStatus);
-  bool UpdateMyFlags(lockIconState &warnSecurityState);
-  nsresult TellTheWorld(lockIconState warnSecurityState, 
-                        nsIRequest* aRequest);
+  void UpdateSecurityState(nsIRequest* aRequest, bool withNewLocation,
+                           bool withUpdateStatus);
+  void TellTheWorld(nsIRequest* aRequest);
 
-  nsresult EvaluateAndUpdateSecurityState(nsIRequest* aRequest, nsISupports *info,
-                                          bool withNewLocation);
-  void UpdateSubrequestMembers(nsISupports *securityInfo);
+  void EvaluateAndUpdateSecurityState(nsIRequest* aRequest, nsISupports *info,
+                                      bool withNewLocation, bool withNewSink);
+  void UpdateSubrequestMembers(nsISupports* securityInfo, nsIRequest* request);
 
   void ObtainEventSink(nsIChannel *channel, 
                        nsCOMPtr<nsISecurityEventSink> &sink);

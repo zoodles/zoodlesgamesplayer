@@ -10,6 +10,7 @@ import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -57,11 +58,9 @@ import org.mozilla.gecko.sync.stage.SyncClientsEngineStage;
 import org.mozilla.gecko.sync.stage.UploadMetaGlobalStage;
 
 import android.content.Context;
-import android.content.SharedPreferences;
-import android.os.Bundle;
 import ch.boye.httpclientandroidlib.HttpResponse;
 
-public class GlobalSession implements PrefsSource, HttpResponseObserver {
+public class GlobalSession implements HttpResponseObserver {
   private static final String LOG_TAG = "GlobalSession";
 
   public static final long STORAGE_VERSION = 5;
@@ -103,15 +102,12 @@ public class GlobalSession implements PrefsSource, HttpResponseObserver {
   public GlobalSession(SyncConfiguration config,
                        BaseGlobalSessionCallback callback,
                        Context context,
-                       Bundle extras,
                        ClientsDataDelegate clientsDelegate, NodeAssignmentCallback nodeAssignmentCallback)
     throws SyncConfigurationException, IllegalArgumentException, IOException, ParseException, NonObjectJSONException {
 
     if (callback == null) {
       throw new IllegalArgumentException("Must provide a callback to GlobalSession constructor.");
     }
-
-    Logger.debug(LOG_TAG, "GlobalSession initialized with bundle " + extras);
 
     this.callback        = callback;
     this.context         = context;
@@ -122,8 +118,10 @@ public class GlobalSession implements PrefsSource, HttpResponseObserver {
     registerCommands();
     prepareStages();
 
-    Collection<String> knownStageNames = SyncConfiguration.validEngineNames();
-    config.stagesToSync = Utils.getStagesToSyncFromBundle(knownStageNames, extras);
+    if (config.stagesToSync == null) {
+      Logger.info(LOG_TAG, "No stages to sync specified; defaulting to all valid engine names.");
+      config.stagesToSync = Collections.unmodifiableCollection(SyncConfiguration.validEngineNames());
+    }
 
     // TODO: data-driven plan for the sync, referring to prepareStages.
   }
@@ -177,13 +175,15 @@ public class GlobalSession implements PrefsSource, HttpResponseObserver {
   }
 
   protected void prepareStages() {
-    HashMap<Stage, GlobalSyncStage> stages = new HashMap<Stage, GlobalSyncStage>();
+    Map<Stage, GlobalSyncStage> stages = new EnumMap<Stage, GlobalSyncStage>(Stage.class);
 
     stages.put(Stage.checkPreconditions,      new CheckPreconditionsStage());
     stages.put(Stage.ensureClusterURL,        new EnsureClusterURLStage(nodeAssignmentCallback));
     stages.put(Stage.fetchInfoCollections,    new FetchInfoCollectionsStage());
     stages.put(Stage.fetchMetaGlobal,         new FetchMetaGlobalStage());
     stages.put(Stage.ensureKeysStage,         new EnsureCrypto5KeysStage());
+    stages.put(Stage.attemptMigrationStage,   new MigrationSentinelSyncStage());
+
     stages.put(Stage.syncClientsEngine,       new SyncClientsEngineStage());
 
     stages.put(Stage.syncTabs,                new FennecTabsServerSyncStage());
@@ -277,14 +277,6 @@ public class GlobalSession implements PrefsSource, HttpResponseObserver {
       this.abort(ex, "Uncaught exception in stage.");
       return;
     }
-  }
-
-  /*
-   * PrefsSource methods.
-   */
-  @Override
-  public SharedPreferences getPrefs(String name, int mode) {
-    return this.getContext().getSharedPreferences(name, mode);
   }
 
   public Context getContext() {
@@ -1024,7 +1016,7 @@ public class GlobalSession implements PrefsSource, HttpResponseObserver {
         if (version == null) {
           continue; // Don't want this stage to be included in meta/global.
         }
-        engineSettings = new EngineSettings(Utils.generateGuid(), version.intValue());
+        engineSettings = new EngineSettings(Utils.generateGuid(), version);
       } catch (NoSuchStageException e) {
         // No trouble; Android Sync might not recognize this engine yet.
         // By default, version 0.  Other clients will see the 0 version and reset/wipe accordingly.
@@ -1059,6 +1051,9 @@ public class GlobalSession implements PrefsSource, HttpResponseObserver {
    * If meta/global is missing or malformed, throws a MetaGlobalException.
    * Otherwise, returns true if there is an entry for this engine in the
    * meta/global "engines" object.
+   * <p>
+   * This is a global/permanent setting, not a local/temporary setting. For the
+   * latter, see {@link GlobalSession#isEngineLocallyEnabled(String)}.
    *
    * @param engineName the name to check (e.g., "bookmarks").
    * @param engineSettings
@@ -1070,7 +1065,7 @@ public class GlobalSession implements PrefsSource, HttpResponseObserver {
    *
    * @throws MetaGlobalException
    */
-  public boolean engineIsEnabled(String engineName, EngineSettings engineSettings) throws MetaGlobalException {
+  public boolean isEngineRemotelyEnabled(String engineName, EngineSettings engineSettings) throws MetaGlobalException {
     if (this.config.metaGlobal == null) {
       throw new MetaGlobalNotSetException();
     }
@@ -1094,6 +1089,25 @@ public class GlobalSession implements PrefsSource, HttpResponseObserver {
     }
 
     return true;
+  }
+
+
+  /**
+   * Return true if the named stage should be synced this session.
+   * <p>
+   * This is a local/temporary setting, in contrast to the meta/global record,
+   * which is a global/permanent setting. For the latter, see
+   * {@link GlobalSession#isEngineRemotelyEnabled(String, EngineSettings)}.
+   *
+   * @param stageName
+   *          to query.
+   * @return true if named stage is enabled for this sync.
+   */
+  public boolean isEngineLocallyEnabled(String stageName) {
+    if (config.stagesToSync == null) {
+      return true;
+    }
+    return config.stagesToSync.contains(stageName);
   }
 
   public ClientsDataDelegate getClientsDelegate() {

@@ -52,37 +52,17 @@
     -moz-margin-start: 0;
     -moz-margin-end: -3px;
   }
-}
-
-@media (-moz-windows-default-theme) and (-moz-os-version: windows-vista),
-       (-moz-windows-default-theme) and (-moz-os-version: windows-win7) {
-  #navigator-toolbox > toolbar:not(:-moz-lwtheme),
-  #browser-bottombox:not(:-moz-lwtheme),
-  .browserContainer > findbar {
-    background-color: @customToolbarColor@;
-  }
-
-  .tab-background-middle[selected=true]:not(:-moz-lwtheme) {
-    background-color: @customToolbarColor@;
-  }
-
-  #navigator-toolbox:not(:-moz-lwtheme)::after {
-    background-color: #aabccf;
-  }
 
   #urlbar:not(:-moz-lwtheme),
   .searchbar-textbox:not(:-moz-lwtheme) {
     border-color: hsla(210,54%,20%,.25) hsla(210,54%,20%,.27) hsla(210,54%,20%,.3);
-  }
-
-  #urlbar:not(:-moz-lwtheme):not([focused]):hover,
-  .searchbar-textbox:not(:-moz-lwtheme):not([focused]):hover {
-    border-color: hsla(210,54%,20%,.35) hsla(210,54%,20%,.37) hsla(210,54%,20%,.4);
+    box-shadow: 0 1px 0 hsla(0,0%,0%,.01) inset,
+                0 1px 0 hsla(0,0%,100%,.1);
   }
 
   #urlbar:not(:-moz-lwtheme)[focused],
   .searchbar-textbox:not(:-moz-lwtheme)[focused] {
-    border-color: hsla(206,100%,60%,.65) hsla(206,100%,55%,.65) hsla(206,100%,50%,.65);
+    border-color: Highlight;
   }
 
   .menu-accel,
@@ -94,7 +74,33 @@
   chatbar > chatbox {
     border-color: #A9B7C9;
   }
-  
+
+  @media (-moz-os-version: windows-vista),
+         (-moz-os-version: windows-win7) {
+    #navigator-toolbox > toolbar:not(#toolbar-menubar):not(#TabsToolbar):not(:-moz-lwtheme),
+    #browser-bottombox:not(:-moz-lwtheme),
+    .browserContainer > findbar {
+      background-color: @customToolbarColor@;
+    }
+
+    .tab-background-middle[selected=true]:not(:-moz-lwtheme) {
+      background-color: @customToolbarColor@;
+    }
+
+    #navigator-toolbox:not(:-moz-lwtheme)::after {
+      background-color: #aabccf;
+    }
+
+    #urlbar:not(:-moz-lwtheme):not([focused]):hover,
+    .searchbar-textbox:not(:-moz-lwtheme):not([focused]):hover {
+      border-color: hsla(210,54%,20%,.35) hsla(210,54%,20%,.37) hsla(210,54%,20%,.4);
+    }
+
+    #urlbar:not(:-moz-lwtheme)[focused],
+    .searchbar-textbox:not(:-moz-lwtheme)[focused] {
+      border-color: hsla(206,100%,60%,.65) hsla(206,100%,55%,.65) hsla(206,100%,50%,.65);
+    }
+  }
 }
 
 @media (-moz-windows-compositor) {
@@ -117,25 +123,36 @@
   }
 
   /* Artificially draw window borders that are covered by lwtheme, see bug 591930. */
-  #main-window[sizemode="normal"] > #titlebar > #titlebar-content:-moz-lwtheme {
+  #main-window[sizemode="normal"] > #tab-view-deck > #browser-panel:-moz-lwtheme {
     border-top: 2px solid;
     -moz-border-top-colors: @glassActiveBorderColor@ rgba(255,255,255,.6);
   }
 
-  #main-window[sizemode="normal"] > #titlebar > #titlebar-content:-moz-lwtheme:-moz-window-inactive {
+  #main-window[sizemode="normal"] > #tab-view-deck > #browser-panel:-moz-lwtheme:-moz-window-inactive {
     -moz-border-top-colors: @glassInactiveBorderColor@ rgba(255,255,255,.6);
   }
 
-  #main-window[sizemode="normal"] #titlebar-buttonbox:-moz-lwtheme {
-    margin-top: -2px;
-  }
+  @media (-moz-windows-default-theme) {
+    #toolbar-menubar:not(:-moz-lwtheme),
+    #TabsToolbar:not(:-moz-lwtheme) {
+      color: black;
+    }
 
-  #toolbar-menubar:not(:-moz-lwtheme),
-  #TabsToolbar:not(:-moz-lwtheme) {
-    background-color: transparent !important;
-    color: black;
-    border-left-style: none !important;
-    border-right-style: none !important;
+    #main-menubar > menu:not(:-moz-lwtheme) {
+      color: inherit;
+    }
+
+    /* Use a different color only on Windows 8 and higher for inactive windows.
+     * On aero, the menubar fog disappears for inactive windows, and renders gray
+     * illegible.
+     */
+    @media not all and (-moz-os-version: windows-vista) {
+      @media not all and (-moz-os-version: windows-win7) {
+        #toolbar-menubar:not(:-moz-lwtheme):-moz-window-inactive {
+          color: ThreeDShadow;
+        }
+      }
+    }
   }
 
   #main-window[darkwindowframe="true"] #toolbar-menubar:not(:-moz-lwtheme):not(:-moz-window-inactive),
@@ -143,34 +160,16 @@
     color: white;
   }
 
-  #main-window[darkwindowframe="true"] :-moz-any(#toolbar-menubar, #TabsToolbar) :-moz-any(@primaryToolbarButtons@):not(:-moz-lwtheme):not(:-moz-window-inactive),
-  #main-window[darkwindowframe="true"] :-moz-any(#toolbar-menubar, #TabsToolbar) #bookmarks-menu-button:not(:-moz-lwtheme) > .toolbarbutton-menubutton-dropmarker > .dropmarker-icon:not(:-moz-window-inactive) {
-    list-style-image: url(chrome://browser/skin/Toolbar-inverted.png);
-  }
-
-  #main-window[darkwindowframe="true"] .tabs-newtab-button:not(:-moz-lwtheme):not(:-moz-window-inactive),
-  #main-window[darkwindowframe="true"] :-moz-any(#toolbar-menubar, #TabsToolbar) > #new-tab-button:not(:-moz-lwtheme):not(:-moz-window-inactive),
-  #main-window[darkwindowframe="true"] :-moz-any(#toolbar-menubar, #TabsToolbar) > toolbarpaletteitem > #new-tab-button:not(:-moz-lwtheme):not(:-moz-window-inactive) {
-    list-style-image: url(chrome://browser/skin/tabbrowser/newtab-inverted.png);
-  }
-
-  #main-window[darkwindowframe="true"] .tab-close-button:not(:-moz-any(:hover, [selected="true"], :-moz-lwtheme, :-moz-window-inactive)) {
-    -moz-image-region: rect(0, 64px, 16px, 48px);
-  }
-
-  #main-window[darkwindowframe="true"] :-moz-any(#toolbar-menubar, #TabsToolbar) > #sync-button[status="active"]:not(:-moz-lwtheme),
-  #main-window[darkwindowframe="true"] :-moz-any(#toolbar-menubar, #TabsToolbar) > toolbarpaletteitem > #sync-button[status="active"]:not(:-moz-lwtheme) {
-    list-style-image: url("chrome://browser/skin/syncProgress-toolbar-inverted.png");
-  }
-
-
   #toolbar-menubar:not(:-moz-lwtheme) {
     text-shadow: 0 0 .5em white, 0 0 .5em white, 0 1px 0 rgba(255,255,255,.4);
   }
 
   /* Vertical toolbar border */
-  #main-window[sizemode=normal] #navigator-toolbox::after,
-  #main-window[sizemode=normal] #navigator-toolbox > toolbar:not(#toolbar-menubar):not(#TabsToolbar) {
+  #main-window:not([customizing])[sizemode=normal] #navigator-toolbox:not(:-moz-lwtheme)::after,
+  #main-window:not([customizing])[sizemode=normal] #navigator-toolbox > toolbar:not(#toolbar-menubar):not(#TabsToolbar):not(:-moz-lwtheme),
+  #main-window:not([customizing])[sizemode=normal] #navigator-toolbox:-moz-lwtheme,
+  #main-window[customizing] #navigator-toolbox::after,
+  #main-window[customizing] #navigator-toolbox > toolbar:not(#toolbar-menubar):not(#TabsToolbar) {
     border-left: 1px solid @toolbarShadowColor@;
     border-right: 1px solid @toolbarShadowColor@;
     background-clip: padding-box;
@@ -185,24 +184,6 @@
     border: 1px solid @toolbarShadowColor@;
     border-top-style: none;
     background-clip: padding-box;
-  }
-
-  /* Toolbar shadow behind tabs */
-  #nav-bar {
-    border-top: 1px solid @toolbarShadowColor@ !important;
-    background-clip: padding-box;
-  }
-
-  /* This code is only needed for restored windows (i.e. sizemode=normal)
-     because of the border radius on the toolbar below the tab bar. */
-  #main-window[sizemode=normal] #nav-bar {
-    border-top: 1px solid @toolbarShadowColor@;
-    background-clip: padding-box;
-  }
-
-  /* Cover the top border of the adjacent toolbar */
-  #TabsToolbar {
-    margin-bottom: -1px;
   }
 
   #main-window[sizemode=normal] #TabsToolbar {
@@ -228,11 +209,6 @@
 
   @media (-moz-os-version: windows-vista),
          (-moz-os-version: windows-win7) {
-    #main-window[sizemode=normal] #nav-bar {
-      border-top-left-radius: 2.5px;
-      border-top-right-radius: 2.5px;
-    }
-
     #main-menubar:not(:-moz-lwtheme):not(:-moz-window-inactive) {
       border-radius: 4px;
     }
@@ -256,30 +232,19 @@
 }
 
 @media (-moz-windows-glass) {
+  #main-window[sizemode=normal] #nav-bar {
+    border-top-left-radius: 2.5px;
+    border-top-right-radius: 2.5px;
+  }
+
   #main-window[sizemode=fullscreen]:not(:-moz-lwtheme) {
     -moz-appearance: none;
     background-color: #556;
   }
 
-  /* Use inverted icons for non-fogged glassed toolbars */
-  #toolbar-menubar > toolbarpaletteitem > #bookmarks-menu-button > .toolbarbutton-menubutton-dropmarker > .dropmarker-icon:not(:-moz-lwtheme),
-  #toolbar-menubar > #bookmarks-menu-button > .toolbarbutton-menubutton-dropmarker > .dropmarker-icon:not(:-moz-lwtheme),
-  #toolbar-menubar > toolbarpaletteitem > toolbaritem > :-moz-any(@nestedButtons@):not(:-moz-lwtheme),
-  #toolbar-menubar > toolbaritem > :-moz-any(@nestedButtons@):not(:-moz-lwtheme),
-  #toolbar-menubar > toolbarpaletteitem > :-moz-any(@primaryToolbarButtons@):not(:-moz-lwtheme),
-  #toolbar-menubar > :-moz-any(@primaryToolbarButtons@):not(:-moz-lwtheme) {
-    list-style-image: url("chrome://browser/skin/Toolbar-inverted.png");
-  }
-
-  #toolbar-menubar > #sync-button[status="active"]:not(:-moz-lwtheme),
-  #toolbar-menubar > toolbarpaletteitem > #sync-button[status="active"]:not(:-moz-lwtheme) {
-    list-style-image: url("chrome://browser/skin/syncProgress-toolbar-inverted.png");
-  }
-
   /* Glass Fog */
 
   #TabsToolbar:not(:-moz-lwtheme) {
-    background-image: none;
     position: relative;
   }
 
@@ -314,7 +279,7 @@
   /* End Glass Fog */
 }
 
-
+/* Aero Basic */
 @media not all and (-moz-windows-compositor) {
   @media (-moz-windows-default-theme) {
     #main-window {
@@ -327,20 +292,16 @@
     #toolbar-menubar:not([autohide=true]):not(:-moz-lwtheme),
     #TabsToolbar:not(:-moz-lwtheme) {
       -moz-binding: url("chrome://browser/content/customizableui/toolbar.xml#toolbar-drag");
-      background-color: transparent;
-    }
-    #toolbar-menubar[autohide=true] {
-      background-color: transparent !important;
     }
 
     /* Render a window top border for lwthemes: */
-    #main-window[tabsintitlebar][sizemode="normal"] #titlebar-content:-moz-lwtheme {
+    #main-window[tabsintitlebar][sizemode="normal"] > #tab-view-deck > #browser-panel:-moz-lwtheme {
       background-image: linear-gradient(to bottom,
             @glassActiveBorderColor@ 0, @glassActiveBorderColor@ 1px,
             rgba(255,255,255,.6) 1px, rgba(255,255,255,.6) 2px, transparent 2px);
     }
 
-    #main-window[tabsintitlebar][sizemode="normal"] #titlebar-content:-moz-lwtheme:-moz-window-inactive {
+    #main-window[tabsintitlebar][sizemode="normal"] > #tab-view-deck > #browser-panel:-moz-lwtheme:-moz-window-inactive {
       background-image: linear-gradient(to bottom,
             @glassInactiveBorderColor@ 0, @glassInactiveBorderColor@ 1px,
             rgba(255,255,255,.6) 1px, rgba(255,255,255,.6) 2px, transparent 2px);
@@ -355,23 +316,6 @@
 /* Win8 and beyond. */
 @media not all and (-moz-os-version: windows-vista) {
   @media not all and (-moz-os-version: windows-win7) {
-    #urlbar:not(:-moz-lwtheme),
-    .searchbar-textbox:not(:-moz-lwtheme) {
-      background-color: hsla(0,0%,100%,.9);
-      border: 1px solid transparent;
-      border-color: hsla(210,54%,20%,.25) hsla(210,54%,20%,.27) hsla(210,54%,20%,.3);
-      box-shadow: 0 1px 0 hsla(0,0%,0%,.01) inset,
-                  0 1px 0 hsla(0,0%,100%,.1);
-      transition-property: border-color, background-color;
-      transition-duration: 200ms;
-    }
-
-    #urlbar:not(:-moz-lwtheme)[focused],
-    .searchbar-textbox:not(:-moz-lwtheme)[focused] {
-      background-color: hsla(0,0%,100%,1);
-      border-color: #4595e5;
-    }
-
     /* Introducing an additional hover state for the Bookmark button */
     #nav-bar .toolbarbutton-1[buttonover] > .toolbarbutton-menubutton-button:hover > .toolbarbutton-icon {
       background-color: hsla(210,4%,10%,.08);
@@ -417,7 +361,11 @@
     background-image: url("chrome://browser/skin/privatebrowsing-mask-tabstrip-XPVista7.png");
   }
 
-  #private-browsing-indicator-titlebar > .private-browsing-indicator {
+  /* We're intentionally using the titlebar asset here for fullscreen mode.
+   * See bug 1008183.
+   */
+  #private-browsing-indicator-titlebar > .private-browsing-indicator,
+  #main-window[inFullscreen] #TabsToolbar > .private-browsing-indicator {
     background-image: url("chrome://browser/skin/privatebrowsing-mask-titlebar-XPVista7.png");
   }
 }

@@ -24,9 +24,9 @@ public:
                                        nsStyleContext *aContext);
   
   // nsIFrame
-  virtual void Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
 
   virtual void DestroyFrom(nsIFrame* aDestructRoot) MOZ_OVERRIDE;
 
@@ -46,7 +46,7 @@ public:
 #endif
 
 protected:
-  nsXULLabelFrame(nsStyleContext *aContext) : nsBlockFrame(aContext) {}
+  explicit nsXULLabelFrame(nsStyleContext *aContext) : nsBlockFrame(aContext) {}
 
   nsresult RegUnregAccessKey(bool aDoReg);
 };

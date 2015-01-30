@@ -10,8 +10,8 @@
 
 //-----------------------------------------------------------------------------
 
-NS_IMPL_ISUPPORTS1(nsDeviceProtocolHandler,
-                   nsIProtocolHandler)
+NS_IMPL_ISUPPORTS(nsDeviceProtocolHandler,
+                  nsIProtocolHandler)
 
 nsresult
 nsDeviceProtocolHandler::Init(){
@@ -54,13 +54,25 @@ nsDeviceProtocolHandler::NewURI(const nsACString &spec,
 }
 
 NS_IMETHODIMP
-nsDeviceProtocolHandler::NewChannel(nsIURI* aURI, nsIChannel **aResult)
+nsDeviceProtocolHandler::NewChannel2(nsIURI* aURI,
+                                     nsILoadInfo* aLoadInfo,
+                                     nsIChannel** aResult)
 {
   nsRefPtr<nsDeviceChannel> channel = new nsDeviceChannel();
   nsresult rv = channel->Init(aURI);
   NS_ENSURE_SUCCESS(rv, rv);
 
+  // set the loadInfo on the new channel
+  rv = channel->SetLoadInfo(aLoadInfo);
+  NS_ENSURE_SUCCESS(rv, rv);
+
   return CallQueryInterface(channel, aResult);
+}
+
+NS_IMETHODIMP
+nsDeviceProtocolHandler::NewChannel(nsIURI* aURI, nsIChannel **aResult)
+{
+  return NewChannel2(aURI, nullptr, aResult);
 }
 
 NS_IMETHODIMP 

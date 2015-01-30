@@ -4,7 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ScrollbarActivity.h"
-#include "nsIScrollbarOwner.h"
+#include "nsIScrollbarMediator.h"
 #include "nsIContent.h"
 #include "nsIDOMEvent.h"
 #include "nsIDOMElementCSSInlineStyle.h"
@@ -20,7 +20,7 @@
 namespace mozilla {
 namespace layout {
 
-NS_IMPL_ISUPPORTS1(ScrollbarActivity, nsIDOMEventListener)
+NS_IMPL_ISUPPORTS(ScrollbarActivity, nsIDOMEventListener)
 
 static bool
 GetForceAlwaysVisiblePref()

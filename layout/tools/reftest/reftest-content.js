@@ -1,4 +1,4 @@
-/* -*- Mode: Java; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- /
+/* -*- indent-tabs-mode: nil; js-indent-level: 4 -*- /
 /* vim: set shiftwidth=4 tabstop=8 autoindent cindent expandtab: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -50,16 +50,20 @@ const TYPE_LOAD = 'load';  // test without a reference (just test that it does
 const TYPE_SCRIPT = 'script'; // test contains individual test results
 
 function markupDocumentViewer() {
-    return docShell.contentViewer.QueryInterface(CI.nsIMarkupDocumentViewer);
+    return docShell.contentViewer;
 }
 
 function webNavigation() {
     return docShell.QueryInterface(CI.nsIWebNavigation);
 }
 
+function windowUtilsForWindow(w) {
+    return w.QueryInterface(CI.nsIInterfaceRequestor)
+            .getInterface(CI.nsIDOMWindowUtils);
+}
+
 function windowUtils() {
-    return content.QueryInterface(CI.nsIInterfaceRequestor)
-                  .getInterface(CI.nsIDOMWindowUtils);
+    return windowUtilsForWindow(content);
 }
 
 function IDForEventTarget(event)
@@ -208,29 +212,33 @@ function setupDisplayport(contentRootElement) {
         return;
     }
 
-    function setupDisplayportForElement(element) {
+    function setupDisplayportForElement(element, winUtils) {
         var dpw = attrOrDefault(element, "reftest-displayport-w", 0);
         var dph = attrOrDefault(element, "reftest-displayport-h", 0);
         var dpx = attrOrDefault(element, "reftest-displayport-x", 0);
         var dpy = attrOrDefault(element, "reftest-displayport-y", 0);
         if (dpw !== 0 || dph !== 0 || dpx != 0 || dpy != 0) {
             LogInfo("Setting displayport to <x="+ dpx +", y="+ dpy +", w="+ dpw +", h="+ dph +">");
-            windowUtils().setDisplayPortForElement(dpx, dpy, dpw, dph, element, 1);
+            winUtils.setDisplayPortForElement(dpx, dpy, dpw, dph, element, 1);
         }
     }
 
-    function setupDisplayportForElementSubtree(element) {
-        setupDisplayportForElement(element);
+    function setupDisplayportForElementSubtree(element, winUtils) {
+        setupDisplayportForElement(element, winUtils);
         for (var c = element.firstElementChild; c; c = c.nextElementSibling) {
-            setupDisplayportForElementSubtree(c);
+            setupDisplayportForElementSubtree(c, winUtils);
+        }
+        if (element.contentDocument) {
+            LogInfo("Descending into subdocument");
+            setupDisplayportForElementSubtree(element.contentDocument.documentElement,
+                                              windowUtilsForWindow(element.contentWindow));
         }
     }
 
     if (contentRootElement.hasAttribute("reftest-async-scroll")) {
-        SendEnableAsyncScroll();
-        setupDisplayportForElementSubtree(contentRootElement);
+        setupDisplayportForElementSubtree(contentRootElement, windowUtils());
     } else {
-        setupDisplayportForElement(contentRootElement);
+        setupDisplayportForElement(contentRootElement, windowUtils());
     }
 }
 
@@ -242,14 +250,14 @@ function setupAsyncScrollOffsets(options) {
         return;
     }
 
-    function setupAsyncScrollOffsetsForElement(element) {
+    function setupAsyncScrollOffsetsForElement(element, winUtils) {
         var sx = attrOrDefault(element, "reftest-async-scroll-x", 0);
         var sy = attrOrDefault(element, "reftest-async-scroll-y", 0);
         if (sx != 0 || sy != 0) {
             try {
                 // This might fail when called from RecordResult since layers
                 // may not have been constructed yet
-                windowUtils().setAsyncScrollOffset(element, sx, sy);
+                winUtils.setAsyncScrollOffset(element, sx, sy);
             } catch (e) {
                 if (!options.allowFailure) {
                     throw e;
@@ -258,16 +266,21 @@ function setupAsyncScrollOffsets(options) {
         }
     }
 
-    function setupAsyncScrollOffsetsForElementSubtree(element) {
-        setupAsyncScrollOffsetsForElement(element);
+    function setupAsyncScrollOffsetsForElementSubtree(element, winUtils) {
+        setupAsyncScrollOffsetsForElement(element, winUtils);
         for (var c = element.firstElementChild; c; c = c.nextElementSibling) {
-            setupAsyncScrollOffsetsForElementSubtree(c);
+            setupAsyncScrollOffsetsForElementSubtree(c, winUtils);
+        }
+        if (element.contentDocument) {
+            LogInfo("Descending into subdocument (async offsets)");
+            setupAsyncScrollOffsetsForElementSubtree(element.contentDocument.documentElement,
+                                                     windowUtilsForWindow(element.contentWindow));
         }
     }
 
     var asyncScroll = contentRootElement.hasAttribute("reftest-async-scroll");
     if (asyncScroll) {
-        setupAsyncScrollOffsetsForElementSubtree(contentRootElement);
+        setupAsyncScrollOffsetsForElementSubtree(contentRootElement, windowUtils());
     }
 }
 
@@ -321,43 +334,45 @@ const STATE_WAITING_FOR_SPELL_CHECKS = 2;
 const STATE_WAITING_TO_FINISH = 3;
 const STATE_COMPLETED = 4;
 
-function WaitForTestEnd(contentRootElement, inPrintMode, spellCheckedElements) {
-    var stopAfterPaintReceived = false;
-    var currentDoc = content.document;
-    var state = STATE_WAITING_TO_FIRE_INVALIDATE_EVENT;
+function FlushRendering() {
+    var anyPendingPaintsGeneratedInDescendants = false;
 
-    function FlushRendering() {
-        var anyPendingPaintsGeneratedInDescendants = false;
+    function flushWindow(win) {
+        var utils = win.QueryInterface(CI.nsIInterfaceRequestor)
+                    .getInterface(CI.nsIDOMWindowUtils);
+        var afterPaintWasPending = utils.isMozAfterPaintPending;
 
-        function flushWindow(win) {
-            var utils = win.QueryInterface(CI.nsIInterfaceRequestor)
-                        .getInterface(CI.nsIDOMWindowUtils);
-            var afterPaintWasPending = utils.isMozAfterPaintPending;
-
+        if (win.document.documentElement) {
             try {
                 // Flush pending restyles and reflows for this window
                 win.document.documentElement.getBoundingClientRect();
             } catch (e) {
                 LogWarning("flushWindow failed: " + e + "\n");
             }
-
-            if (!afterPaintWasPending && utils.isMozAfterPaintPending) {
-                LogInfo("FlushRendering generated paint for window " + win.location.href);
-                anyPendingPaintsGeneratedInDescendants = true;
-            }
-
-            for (var i = 0; i < win.frames.length; ++i) {
-                flushWindow(win.frames[i]);
-            }
         }
 
-        flushWindow(content);
+        if (!afterPaintWasPending && utils.isMozAfterPaintPending) {
+            LogInfo("FlushRendering generated paint for window " + win.location.href);
+            anyPendingPaintsGeneratedInDescendants = true;
+        }
 
-        if (anyPendingPaintsGeneratedInDescendants &&
-            !windowUtils().isMozAfterPaintPending) {
-            LogWarning("Internal error: descendant frame generated a MozAfterPaint event, but the root document doesn't have one!");
+        for (var i = 0; i < win.frames.length; ++i) {
+            flushWindow(win.frames[i]);
         }
     }
+
+    flushWindow(content);
+
+    if (anyPendingPaintsGeneratedInDescendants &&
+        !windowUtils().isMozAfterPaintPending) {
+        LogWarning("Internal error: descendant frame generated a MozAfterPaint event, but the root document doesn't have one!");
+    }
+}
+
+function WaitForTestEnd(contentRootElement, inPrintMode, spellCheckedElements) {
+    var stopAfterPaintReceived = false;
+    var currentDoc = content.document;
+    var state = STATE_WAITING_TO_FIRE_INVALIDATE_EVENT;
 
     function AfterPaintListener(event) {
         LogInfo("AfterPaintListener in " + event.target.document.location.href);
@@ -443,6 +458,12 @@ function WaitForTestEnd(contentRootElement, inPrintMode, spellCheckedElements) {
                 notification.initEvent("MozReftestInvalidate", true, false);
                 contentRootElement.dispatchEvent(notification);
             }
+
+            if (!inPrintMode && doPrintMode(contentRootElement)) {
+                LogInfo("MakeProgress: setting up print mode");
+                setupPrintMode();
+            }
+
             if (hasReftestWait && !shouldWaitForReftestWaitRemoval(contentRootElement)) {
                 // MozReftestInvalidate handler removed reftest-wait.
                 // We expect something to have been invalidated...
@@ -478,10 +499,6 @@ function WaitForTestEnd(contentRootElement, inPrintMode, spellCheckedElements) {
             }
 
             state = STATE_WAITING_TO_FINISH;
-            if (!inPrintMode && doPrintMode(contentRootElement)) {
-                LogInfo("MakeProgress: setting up print mode");
-                setupPrintMode();
-            }
             // Try next state
             MakeProgress();
             return;
@@ -594,6 +611,9 @@ function OnDocumentLoad(event)
         // Regrab the root element, because the document may have changed.
         var contentRootElement =
           content.document ? content.document.documentElement : null;
+
+        // Flush the document in case it got modified in a load event handler.
+        FlushRendering();
 
         // Take a snapshot now. We need to do this before we check whether
         // we should wait, since this might trigger dispatching of
@@ -778,13 +798,7 @@ function SynchronizeForSnapshot(flags)
         }
     }
 
-    var dummyCanvas = content.document.createElementNS(XHTML_NS, "canvas");
-    dummyCanvas.setAttribute("width", 1);
-    dummyCanvas.setAttribute("height", 1);
-
-    var ctx = dummyCanvas.getContext("2d");
-    var flags = ctx.DRAWWINDOW_DRAW_CARET | ctx.DRAWWINDOW_DRAW_VIEW | ctx.DRAWWINDOW_USE_WIDGET_LAYERS;
-    ctx.drawWindow(content, 0, 0, 1, 1, "rgb(255,255,255)", flags);
+    windowUtils().updateLayerTree();
 
     // Setup async scroll offsets now, because any scrollable layers should
     // have had their AsyncPanZoomControllers created.
@@ -858,11 +872,6 @@ function SendFailedNoPaint()
     sendAsyncMessage("reftest:FailedNoPaint");
 }
 
-function SendEnableAsyncScroll()
-{
-    sendAsyncMessage("reftest:EnableAsyncScroll");
-}
-
 // Return true if a snapshot was taken.
 function SendInitCanvasWithSnapshot()
 {
@@ -915,7 +924,7 @@ function SendUpdateCanvasForEvent(event, contentRootElement)
     var scale = markupDocumentViewer().fullZoom;
 
     var rects = [ ];
-    if (shouldSnapshotWholePage) {
+    if (shouldSnapshotWholePage(contentRootElement)) {
       // See comments in SendInitCanvasWithSnapshot() re: the split
       // logic here.
       if (!gBrowserIsRemote) {

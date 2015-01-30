@@ -1,9 +1,8 @@
 package org.mozilla.gecko.tests;
 
-import com.jayway.android.robotium.solo.Condition;
-import org.mozilla.gecko.*;
+import org.mozilla.gecko.Actions;
 
-import android.content.Intent;
+import com.jayway.android.robotium.solo.Condition;
 
 /**
  * Tests session OOM save behavior.
@@ -18,7 +17,7 @@ public class testSessionOOMSave extends SessionTest {
         pageShowExpecter.blockForEvent();
         pageShowExpecter.unregisterListener();
 
-        PageInfo home = new PageInfo("about:home");
+        PageInfo home = new PageInfo(StringHelper.ABOUT_HOME_URL);
         PageInfo page1 = new PageInfo("page1");
         PageInfo page2 = new PageInfo("page2");
         PageInfo page3 = new PageInfo("page3");

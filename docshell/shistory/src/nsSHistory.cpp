@@ -19,7 +19,6 @@
 #include "nsIDocShellTreeItem.h"
 #include "nsIURI.h"
 #include "nsIContentViewer.h"
-#include "nsICacheService.h"
 #include "nsIObserverService.h"
 #include "prclist.h"
 #include "mozilla/Services.h"
@@ -181,7 +180,7 @@ protected:
 
 static nsSHistoryObserver* gObserver = nullptr;
 
-NS_IMPL_ISUPPORTS1(nsSHistoryObserver, nsIObserver)
+NS_IMPL_ISUPPORTS(nsSHistoryObserver, nsIObserver)
 
 NS_IMETHODIMP
 nsSHistoryObserver::Observe(nsISupports *aSubject, const char *aTopic,
@@ -190,7 +189,7 @@ nsSHistoryObserver::Observe(nsISupports *aSubject, const char *aTopic,
   if (!strcmp(aTopic, NS_PREFBRANCH_PREFCHANGE_TOPIC_ID)) {
     nsSHistory::UpdatePrefs();
     nsSHistory::GloballyEvictContentViewers();
-  } else if (!strcmp(aTopic, NS_CACHESERVICE_EMPTYCACHE_TOPIC_ID) ||
+  } else if (!strcmp(aTopic, "cacheservice:empty-cache") ||
              !strcmp(aTopic, "memory-pressure")) {
     nsSHistory::GloballyEvictAllContentViewers();
   }
@@ -370,7 +369,7 @@ nsSHistory::Startup()
       // Observe empty-cache notifications so tahat clearing the disk/memory
       // cache will also evict all content viewers.
       obsSvc->AddObserver(gObserver,
-                          NS_CACHESERVICE_EMPTYCACHE_TOPIC_ID, false);
+                          "cacheservice:empty-cache", false);
 
       // Same for memory-pressure notifications
       obsSvc->AddObserver(gObserver, "memory-pressure", false);
@@ -391,7 +390,7 @@ nsSHistory::Shutdown()
     nsCOMPtr<nsIObserverService> obsSvc =
       mozilla::services::GetObserverService();
     if (obsSvc) {
-      obsSvc->RemoveObserver(gObserver, NS_CACHESERVICE_EMPTYCACHE_TOPIC_ID);
+      obsSvc->RemoveObserver(gObserver, "cacheservice:empty-cache");
       obsSvc->RemoveObserver(gObserver, "memory-pressure");
     }
     NS_RELEASE(gObserver);
@@ -415,8 +414,11 @@ nsSHistory::AddEntry(nsISHEntry * aSHEntry, bool aPersist)
   if(currentTxn)
     currentTxn->GetPersist(&currentPersist);
 
+  int32_t currentIndex = mIndex;
+
   if(!currentPersist)
   {
+    NOTIFY_LISTENERS(OnHistoryReplaceEntry, (currentIndex));
     NS_ENSURE_SUCCESS(currentTxn->SetSHEntry(aSHEntry),NS_ERROR_FAILURE);
     currentTxn->SetPersist(aPersist);
     return NS_OK;
@@ -426,7 +428,6 @@ nsSHistory::AddEntry(nsISHEntry * aSHEntry, bool aPersist)
   NS_ENSURE_TRUE(txn, NS_ERROR_FAILURE);
 
   nsCOMPtr<nsIURI> uri;
-  int32_t currentIndex = mIndex;
   aSHEntry->GetURI(getter_AddRefs(uri));
   NOTIFY_LISTENERS(OnHistoryNewEntry, (uri));
 
@@ -554,6 +555,50 @@ nsSHistory::GetTransactionAtIndex(int32_t aIndex, nsISHTransaction ** aResult)
   
   return NS_OK;
 }
+
+
+/* Get the index of a given entry */
+NS_IMETHODIMP
+nsSHistory::GetIndexOfEntry(nsISHEntry* aSHEntry, int32_t* aResult) {
+  NS_ENSURE_ARG(aSHEntry);
+  NS_ENSURE_ARG_POINTER(aResult);
+  *aResult = -1;
+
+  if (mLength <= 0) {
+    return NS_ERROR_FAILURE;
+  }
+
+  nsCOMPtr<nsISHTransaction> currentTxn;
+  int32_t cnt = 0;
+
+  nsresult rv = GetRootTransaction(getter_AddRefs(currentTxn));
+  if (NS_FAILED(rv) || !currentTxn) {
+    return NS_ERROR_FAILURE;
+  }
+
+  while (true) {
+    nsCOMPtr<nsISHEntry> entry;
+    rv = currentTxn->GetSHEntry(getter_AddRefs(entry));
+    if (NS_FAILED(rv) || !entry) {
+      return NS_ERROR_FAILURE;
+    }
+
+    if (aSHEntry == entry) {
+      *aResult = cnt;
+      break;
+    }
+
+    rv = currentTxn->GetNext(getter_AddRefs(currentTxn));
+    if (NS_FAILED(rv) || !currentTxn) {
+      return NS_ERROR_FAILURE;
+    }
+
+    cnt++;
+  }
+
+  return NS_OK;
+}
+
 
 #ifdef DEBUG
 nsresult
@@ -734,6 +779,8 @@ nsSHistory::ReplaceEntry(int32_t aIndex, nsISHEntry * aReplaceEntry)
 
   if(currentTxn)
   {
+    NOTIFY_LISTENERS(OnHistoryReplaceEntry, (aIndex));
+
     // Set the replacement entry in the transaction
     rv = currentTxn->SetSHEntry(aReplaceEntry);
     rv = currentTxn->SetPersist(true);
@@ -1035,8 +1082,9 @@ nsSHistory::GloballyEvictContentViewers()
 
   nsTArray<TransactionAndDistance> transactions;
 
-  nsSHistory *shist = static_cast<nsSHistory*>(PR_LIST_HEAD(&gSHistoryList));
-  while (shist != &gSHistoryList) {
+  PRCList* listEntry = PR_LIST_HEAD(&gSHistoryList);
+  while (listEntry != &gSHistoryList) {
+    nsSHistory* shist = static_cast<nsSHistory*>(listEntry);
 
     // Maintain a list of the transactions which have viewers and belong to
     // this particular shist object.  We'll add this list to the global list,
@@ -1095,7 +1143,7 @@ nsSHistory::GloballyEvictContentViewers()
     // We've found all the transactions belonging to shist which have viewers.
     // Add those transactions to our global list and move on.
     transactions.AppendElements(shTransactions);
-    shist = static_cast<nsSHistory*>(PR_NEXT_LINK(shist));
+    listEntry = PR_NEXT_LINK(shist);
   }
 
   // We now have collected all cached content viewers.  First check that we
@@ -1790,7 +1838,7 @@ nsSHEnumerator::~nsSHEnumerator()
   mSHistory = nullptr;
 }
 
-NS_IMPL_ISUPPORTS1(nsSHEnumerator, nsISimpleEnumerator)
+NS_IMPL_ISUPPORTS(nsSHEnumerator, nsISimpleEnumerator)
 
 NS_IMETHODIMP
 nsSHEnumerator::HasMoreElements(bool * aReturn)

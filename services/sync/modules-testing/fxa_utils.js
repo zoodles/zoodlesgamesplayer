@@ -1,7 +1,6 @@
 "use strict";
 
 this.EXPORTED_SYMBOLS = [
-  "Assert_rejects",
   "initializeIdentityWithTokenServerResponse",
 ];
 
@@ -11,19 +10,8 @@ Cu.import("resource://gre/modules/Log.jsm");
 Cu.import("resource://services-sync/main.js");
 Cu.import("resource://services-sync/browserid_identity.js");
 Cu.import("resource://services-common/tokenserverclient.js");
-Cu.import("resource://testing-common/services-common/logging.js");
+Cu.import("resource://testing-common/services/common/logging.js");
 Cu.import("resource://testing-common/services/sync/utils.js");
-
-// This shouldn't be here - it should be part of the xpcshell harness.
-// Maybe as Assert.rejects - so we name it like that.
-function Assert_rejects(promise, message) {
-  let deferred = Promise.defer();
-  promise.then(
-    () => deferred.reject(message || "Expected the promise to be rejected"),
-    deferred.resolve
-  );
-  return deferred.promise;
-}
 
 // Create a new browserid_identity object and initialize it with a
 // mocked TokenServerClient which always receives the specified response.
@@ -53,6 +41,9 @@ this.initializeIdentityWithTokenServerResponse = function(response) {
   MockTSC.prototype.newRESTRequest = function(url) {
     return new MockRESTRequest(url);
   }
+  // Arrange for the same observerPrefix as browserid_identity uses.
+  MockTSC.prototype.observerPrefix = "weave:service";
+
   // tie it all together.
   Weave.Status.__authManager = Weave.Service.identity = new BrowserIDManager();
   Weave.Service._clusterManager = Weave.Service.identity.createClusterManager(Weave.Service);

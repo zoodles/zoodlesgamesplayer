@@ -19,7 +19,8 @@ const { sandbox, evaluate, load } = require('../loader/sandbox');
 const { merge } = require('../util/object');
 const { getTabForContentWindow } = require('../tabs/utils');
 const { getInnerId } = require('../window/utils');
-
+const { PlainTextConsole } = require('../console/plain-text');
+const { data } = require('../self');
 // WeakMap of sandboxes so we can access private values
 const sandboxes = new WeakMap();
 
@@ -37,6 +38,12 @@ const metadata = require('@loader/options').metadata;
 // `permissions` attribute of their package.json addon file.
 const permissions = (metadata && metadata['permissions']) || {};
 const EXPANDED_PRINCIPALS = permissions['cross-domain-content'] || [];
+
+const waiveSecurityMembrane = !!permissions['unsafe-content-script'];
+
+const nsIScriptSecurityManager = Ci.nsIScriptSecurityManager;
+const secMan = Cc["@mozilla.org/scriptsecuritymanager;1"].
+  getService(Ci.nsIScriptSecurityManager);
 
 const JS_VERSION = '1.8';
 
@@ -67,16 +74,10 @@ const WorkerSandbox = Class({
    *     Mainly used by context-menu in order to avoid breaking it.
    */
   emitSync: function emitSync(...args) {
-    return emitToContent(this, args);
-  },
-
-  /**
-   * Tells if content script has at least one listener registered for one event,
-   * through `self.on('xxx', ...)`.
-   * /!\ Shouldn't be used. Implemented to avoid breaking context-menu API.
-   */
-  hasListenerFor: function hasListenerFor(name) {
-    return modelFor(this).hasListenerFor(name);
+    // because the arguments could be also non JSONable values,
+    // we need to ensure the array instance is created from
+    // the content's sandbox
+    return emitToContent(this, new modelFor(this).sandbox.Array(...args));
   },
 
   /**
@@ -96,8 +97,10 @@ const WorkerSandbox = Class({
     this.emit = this.emit.bind(this);
     this.emitSync = this.emitSync.bind(this);
 
-    // Eventually use expanded principal sandbox feature, if some are given.
-    //
+    // Use expanded principal for content-script if the content is a
+    // regular web content for better isolation.
+    // (This behavior can be turned off for now with the unsafe-content-script
+    // flag to give addon developers time for making the necessary changes)
     // But prevent it when the Worker isn't used for a content script but for
     // injecting `addon` object into a Panel, Widget, ... scope.
     // That's because:
@@ -110,25 +113,26 @@ const WorkerSandbox = Class({
     // domain principal.
     let principals = window;
     let wantGlobalProperties = [];
-    if (EXPANDED_PRINCIPALS.length > 0 && !requiresAddonGlobal(worker)) {
-      principals = EXPANDED_PRINCIPALS.concat(window);
-      // We have to replace XHR constructor of the content document
-      // with a custom cross origin one, automagically added by platform code:
-      delete proto.XMLHttpRequest;
-      wantGlobalProperties.push('XMLHttpRequest');
+    let isSystemPrincipal = secMan.isSystemPrincipal(
+      window.document.nodePrincipal);
+    if (!isSystemPrincipal && !requiresAddonGlobal(worker)) {
+      if (EXPANDED_PRINCIPALS.length > 0) {
+        // We have to replace XHR constructor of the content document
+        // with a custom cross origin one, automagically added by platform code:
+        delete proto.XMLHttpRequest;
+        wantGlobalProperties.push('XMLHttpRequest');
+      }
+      if (!waiveSecurityMembrane)
+        principals = EXPANDED_PRINCIPALS.concat(window);
     }
-
-    // Instantiate trusted code in another Sandbox in order to prevent content
-    // script from messing with standard classes used by proxy and API code.
-    let apiSandbox = sandbox(principals, { wantXrays: true, sameZoneAs: window });
-    apiSandbox.console = console;
 
     // Create the sandbox and bind it to window in order for content scripts to
     // have access to all standard globals (window, document, ...)
     let content = sandbox(principals, {
       sandboxPrototype: proto,
-      wantXrays: true,
+      wantXrays: !requiresAddonGlobal(worker),
       wantGlobalProperties: wantGlobalProperties,
+      wantExportHelpers: true,
       sameZoneAs: window,
       metadata: {
         SDKContentScript: true,
@@ -146,19 +150,22 @@ const WorkerSandbox = Class({
       // We need 'this === window === top' to be true in toplevel scope:
       get window() content,
       get top() top,
-      get parent() parent,
-      // Use the Greasemonkey naming convention to provide access to the
-      // unwrapped window object so the content script can access document
-      // JavaScript values.
-      // NOTE: this functionality is experimental and may change or go away
-      // at any time!
-      get unsafeWindow() window.wrappedJSObject
+      get parent() parent
     });
+    // Use the Greasemonkey naming convention to provide access to the
+    // unwrapped window object so the content script can access document
+    // JavaScript values.
+    // NOTE: this functionality is experimental and may change or go away
+    // at any time!
+    //
+    // Note that because waivers aren't propagated between origins, we
+    // need the unsafeWindow getter to live in the sandbox.
+    var unsafeWindowGetter =
+      new content.Function('return window.wrappedJSObject || window;');
+    Object.defineProperty(content, 'unsafeWindow', {get: unsafeWindowGetter});
 
     // Load trusted code that will inject content script API.
-    // We need to expose JS objects defined in same principal in order to
-    // avoid having any kind of wrapper.
-    load(apiSandbox, CONTENT_WORKER_URL);
+    let ContentWorker = load(content, CONTENT_WORKER_URL);
 
     // prepare a clean `self.options`
     let options = 'contentScriptOptions' in worker ?
@@ -169,28 +176,25 @@ const WorkerSandbox = Class({
     // by trading two methods that allow to send events to the other side:
     //   - `onEvent` called by content script
     //   - `result.emitToContent` called by addon script
-    // Bug 758203: We have to explicitely define `__exposedProps__` in order
-    // to allow access to these chrome object attributes from this sandbox with
-    // content priviledges
-    // https://developer.mozilla.org/en/XPConnect_wrappers#Other_security_wrappers
-    let onEvent = onContentEvent.bind(null, this);
-    // `ContentWorker` is defined in CONTENT_WORKER_URL file
-    let chromeAPI = createChromeAPI();
-    let result = apiSandbox.ContentWorker.inject(content, chromeAPI, onEvent, options);
+    let onEvent = Cu.exportFunction(onContentEvent.bind(null, this), ContentWorker);
+    let chromeAPI = createChromeAPI(ContentWorker);
+    let result = Cu.waiveXrays(ContentWorker).inject(content, chromeAPI, onEvent, options);
 
-    // Merge `emitToContent` and `hasListenerFor` into our private
-    // model of the WorkerSandbox so we can communicate with content
-    // script
-    merge(model, result);
+    // Merge `emitToContent` into our private model of the
+    // WorkerSandbox so we can communicate with content script
+    model.emitToContent = result;
+
+    let console = new PlainTextConsole(null, getInnerId(window));
 
     // Handle messages send by this script:
-    setListeners(this);
+    setListeners(this, console);
 
     // Inject `addon` global into target document if document is trusted,
     // `addon` in document is equivalent to `self` in content script.
     if (requiresAddonGlobal(worker)) {
       Object.defineProperty(getUnsafeWindow(window), 'addon', {
-          value: content.self
+          value: content.self,
+          configurable: true
         }
       );
     }
@@ -238,9 +242,12 @@ const WorkerSandbox = Class({
     // The order of `contentScriptFile` and `contentScript` evaluation is
     // intentional, so programs can load libraries like jQuery from script URLs
     // and use them in scripts.
-    let contentScriptFile = ('contentScriptFile' in worker) ? worker.contentScriptFile
+    let contentScriptFile = ('contentScriptFile' in worker)
+          ? worker.contentScriptFile
           : null,
-        contentScript = ('contentScript' in worker) ? worker.contentScript : null;
+        contentScript = ('contentScript' in worker)
+          ? worker.contentScript
+          : null;
 
     if (contentScriptFile)
       importScripts.apply(null, [this].concat(contentScriptFile));
@@ -276,7 +283,8 @@ exports.WorkerSandbox = WorkerSandbox;
 function importScripts (workerSandbox, ...urls) {
   let { worker, sandbox } = modelFor(workerSandbox);
   for (let i in urls) {
-    let contentScriptFile = urls[i];
+    let contentScriptFile = data.url(urls[i]);
+
     try {
       let uri = URL(contentScriptFile);
       if (uri.scheme === 'resource')
@@ -290,7 +298,7 @@ function importScripts (workerSandbox, ...urls) {
   }
 }
 
-function setListeners (workerSandbox) {
+function setListeners (workerSandbox, console) {
   let { worker } = modelFor(workerSandbox);
   // console.xxx calls
   workerSandbox.on('console', function consoleListener (kind, ...args) {
@@ -368,29 +376,16 @@ function emitToContent (workerSandbox, args) {
   return modelFor(workerSandbox).emitToContent(args);
 }
 
-function createChromeAPI () {
-  return {
+function createChromeAPI (scope) {
+  return Cu.cloneInto({
     timers: {
-      setTimeout: timer.setTimeout,
-      setInterval: timer.setInterval,
-      clearTimeout: timer.clearTimeout,
-      clearInterval: timer.clearInterval,
-      __exposedProps__: {
-        setTimeout: 'r',
-        setInterval: 'r',
-        clearTimeout: 'r',
-        clearInterval: 'r'
-      },
+      setTimeout: timer.setTimeout.bind(timer),
+      setInterval: timer.setInterval.bind(timer),
+      clearTimeout: timer.clearTimeout.bind(timer),
+      clearInterval: timer.clearInterval.bind(timer),
     },
     sandbox: {
       evaluate: evaluate,
-      __exposedProps__: {
-        evaluate: 'r'
-      }
     },
-    __exposedProps__: {
-      timers: 'r',
-      sandbox: 'r'
-    }
-  };
+  }, scope, {cloneFunctions: true});
 }

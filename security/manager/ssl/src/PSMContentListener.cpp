@@ -4,10 +4,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifdef MOZ_LOGGING
-#define FORCE_PR_LOG 1
-#endif
-
 #include "PSMContentListener.h"
 
 #include "nsIStreamListener.h"
@@ -35,8 +31,7 @@ class PSMContentDownloader : public nsIStreamListener
 {
 public:
   PSMContentDownloader() {NS_ASSERTION(false, "don't use this constructor."); }
-  PSMContentDownloader(uint32_t type);
-  virtual ~PSMContentDownloader();
+  explicit PSMContentDownloader(uint32_t type);
   void setSilentDownload(bool flag);
 
   NS_DECL_ISUPPORTS
@@ -50,6 +45,8 @@ public:
   enum {X509_SERVER_CERT  = 4};
 
 protected:
+  virtual ~PSMContentDownloader();
+
   char* mByteData;
   int32_t mBufferOffset;
   int32_t mBufferSize;
@@ -69,7 +66,7 @@ PSMContentDownloader::~PSMContentDownloader()
     nsMemory::Free(mByteData);
 }
 
-NS_IMPL_ISUPPORTS2(PSMContentDownloader, nsIStreamListener, nsIRequestObserver)
+NS_IMPL_ISUPPORTS(PSMContentDownloader, nsIStreamListener, nsIRequestObserver)
 
 const int32_t kDefaultCertAllocLength = 2048;
 
@@ -93,7 +90,7 @@ PSMContentDownloader::OnStartRequest(nsIRequest* request, nsISupports* context)
   
   mBufferOffset = 0;
   mBufferSize = 0;
-  mByteData = (char*) nsMemory::Alloc(SafeCast<size_t>(contentLength));
+  mByteData = (char*)nsMemory::Alloc(AssertedCast<size_t>(contentLength));
   if (!mByteData)
     return NS_ERROR_OUT_OF_MEMORY;
   
@@ -213,9 +210,9 @@ getPSMContentType(const char * aContentType)
 
 } // unnamed namespace
 
-NS_IMPL_ISUPPORTS2(PSMContentListener,
-                   nsIURIContentListener,
-                   nsISupportsWeakReference) 
+NS_IMPL_ISUPPORTS(PSMContentListener,
+                  nsIURIContentListener,
+                  nsISupportsWeakReference) 
 
 PSMContentListener::PSMContentListener()
 {

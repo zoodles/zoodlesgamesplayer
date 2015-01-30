@@ -31,9 +31,9 @@ public:
   NS_DECL_NSIDOMDATACONTAINEREVENT
 
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE
+  WrapObjectInternal(JSContext* aCx) MOZ_OVERRIDE
   {
-    return DataContainerEventBinding::Wrap(aCx, aScope, this);
+    return DataContainerEventBinding::Wrap(aCx, this);
   }
 
   already_AddRefed<nsIVariant> GetData(const nsAString& aKey)
@@ -45,6 +45,9 @@ public:
 
   void SetData(JSContext* aCx, const nsAString& aKey,
                JS::Handle<JS::Value> aVal, ErrorResult& aRv);
+
+protected:
+  ~DataContainerEvent() {}
 
 private:
   static PLDHashOperator

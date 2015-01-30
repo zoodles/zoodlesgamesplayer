@@ -27,15 +27,12 @@
 #include "AutoMounter.h"
 #include "TimeZoneSettingObserver.h"
 #include "AudioManager.h"
+#include "mozilla/dom/ScriptSettings.h"
 #ifdef MOZ_B2G_RIL
 #include "mozilla/ipc/Ril.h"
 #endif
-#ifdef MOZ_NFC
-#include "mozilla/ipc/Nfc.h"
-#endif
 #include "mozilla/ipc/KeyStore.h"
 #include "nsIObserverService.h"
-#include "nsCxPusher.h"
 #include "nsServiceManagerUtils.h"
 #include "nsThreadUtils.h"
 #include "nsRadioInterfaceLayer.h"
@@ -94,8 +91,6 @@ SystemWorkerManager::Init()
 
   InitAutoMounter();
   InitializeTimeZoneSettingObserver();
-  rv = InitNetd(cx);
-  NS_ENSURE_SUCCESS(rv, rv);
   nsCOMPtr<nsIAudioManager> audioManager =
     do_GetService(NS_AUDIOMANAGER_CONTRACTID);
 
@@ -127,18 +122,17 @@ SystemWorkerManager::Shutdown()
   RilConsumer::Shutdown();
 #endif
 
-#ifdef MOZ_NFC
-  NfcConsumer::Shutdown();
-#endif
-
-  mNetdWorker = nullptr;
-
   nsCOMPtr<nsIWifi> wifi(do_QueryInterface(mWifiWorker));
   if (wifi) {
     wifi->Shutdown();
     wifi = nullptr;
   }
   mWifiWorker = nullptr;
+
+  if (mKeyStore) {
+    mKeyStore->Shutdown();
+    mKeyStore = nullptr;
+  }
 
   nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
   if (obs) {
@@ -184,11 +178,6 @@ SystemWorkerManager::GetInterface(const nsIID &aIID, void **aResult)
                               reinterpret_cast<nsIWifi**>(aResult));
   }
 
-  if (aIID.Equals(NS_GET_IID(nsINetworkService))) {
-    return CallQueryInterface(mNetdWorker,
-                              reinterpret_cast<nsINetworkService**>(aResult));
-  }
-
   NS_WARNING("Got nothing for the requested IID!");
   return NS_ERROR_NO_INTERFACE;
 }
@@ -217,37 +206,6 @@ SystemWorkerManager::RegisterRilWorker(unsigned int aClientId,
 }
 
 nsresult
-SystemWorkerManager::RegisterNfcWorker(JS::Handle<JS::Value> aWorker,
-                                       JSContext* aCx)
-{
-#ifndef MOZ_NFC
-  return NS_ERROR_NOT_IMPLEMENTED;
-#else
-  NS_ENSURE_TRUE(aWorker.isObject(), NS_ERROR_UNEXPECTED);
-
-  JSAutoCompartment ac(aCx, &aWorker.toObject());
-
-  WorkerCrossThreadDispatcher* wctd =
-    GetWorkerCrossThreadDispatcher(aCx, aWorker);
-  if (!wctd) {
-    NS_WARNING("Failed to GetWorkerCrossThreadDispatcher for nfc");
-    return NS_ERROR_FAILURE;
-  }
-
-  return NfcConsumer::Register(wctd);
-#endif // MOZ_NFC
-}
-
-nsresult
-SystemWorkerManager::InitNetd(JSContext *cx)
-{
-  nsCOMPtr<nsIWorkerHolder> worker = do_GetService("@mozilla.org/network/service;1");
-  NS_ENSURE_TRUE(worker, NS_ERROR_FAILURE);
-  mNetdWorker = worker;
-  return NS_OK;
-}
-
-nsresult
 SystemWorkerManager::InitWifi(JSContext *cx)
 {
   nsCOMPtr<nsIWorkerHolder> worker = do_CreateInstance(kWifiWorkerCID);
@@ -264,10 +222,10 @@ SystemWorkerManager::InitKeyStore(JSContext *cx)
   return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS3(SystemWorkerManager,
-                   nsIObserver,
-                   nsIInterfaceRequestor,
-                   nsISystemWorkerManager)
+NS_IMPL_ISUPPORTS(SystemWorkerManager,
+                  nsIObserver,
+                  nsIInterfaceRequestor,
+                  nsISystemWorkerManager)
 
 NS_IMETHODIMP
 SystemWorkerManager::Observe(nsISupports *aSubject, const char *aTopic,

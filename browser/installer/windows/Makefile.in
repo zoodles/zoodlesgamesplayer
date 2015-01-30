@@ -28,7 +28,6 @@ BRANDING_FILES = \
 	branding.nsi \
 	appname.bmp \
 	bgintro.bmp \
-	bgplain.bmp \
 	clock.bmp \
 	particles.bmp \
 	pencil.bmp \
@@ -39,7 +38,6 @@ BRANDING_FILES = \
 	$(NULL)
 
 DEFINES += \
-	-DAB_CD=$(AB_CD) \
 	-DMOZ_APP_NAME=$(MOZ_APP_NAME) \
 	-DMOZ_APP_DISPLAYNAME='${MOZ_APP_DISPLAYNAME}' \
 	-DMOZILLA_VERSION=${MOZILLA_VERSION} \

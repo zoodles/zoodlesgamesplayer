@@ -37,13 +37,16 @@ public:
                                 const nsRect&           aDirtyRect,
                                 const nsDisplayListSet& aLists) MOZ_OVERRIDE;
 
+  virtual void RemoveFrame(ChildListID aListID,
+                           nsIFrame* aOldFrame) MOZ_OVERRIDE;
+
   virtual void BuildDisplayListForChildren(nsDisplayListBuilder*   aBuilder,
                                            const nsRect&           aDirtyRect,
                                            const nsDisplayListSet& aLists) MOZ_OVERRIDE;
                                          
-  virtual void Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
 
   virtual nsIAtom* GetType() const MOZ_OVERRIDE;
 
@@ -54,7 +57,7 @@ public:
   }
 #endif
 
-  nsDeckFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
+  explicit nsDeckFrame(nsStyleContext* aContext);
 
   nsIFrame* GetSelectedBox();
 

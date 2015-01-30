@@ -11,6 +11,7 @@
 #include "nsCOMPtr.h"
 #include "nsAutoPtr.h"
 
+struct sqlite3;
 struct sqlite3_stmt;
 class mozIStorageError;
 class mozIStorageBindingParamsArray;
@@ -97,6 +98,7 @@ protected: // mix-in bits are protected
   StorageBaseStatementInternal();
 
   nsRefPtr<Connection> mDBConnection;
+  sqlite3 *mNativeConnection;
 
   /**
    * Our asynchronous statement.
@@ -139,7 +141,7 @@ protected: // mix-in bits are protected
   NS_IMETHOD ExecuteAsync(mozIStorageStatementCallback *aCallback,
                           mozIStoragePendingStatement **_stmt);
   NS_IMETHOD EscapeStringForLIKE(const nsAString &aValue,
-                                 const char16_t aEscapeChar,
+                                 char16_t aEscapeChar,
                                  nsAString &_escapedString);
 
   // Needs access to internalAsyncFinalize
@@ -151,10 +153,10 @@ NS_DEFINE_STATIC_IID_ACCESSOR(StorageBaseStatementInternal,
 
 #define NS_DECL_STORAGEBASESTATEMENTINTERNAL \
   virtual Connection *getOwner(); \
-  virtual int getAsyncStatement(sqlite3_stmt **_stmt); \
-  virtual nsresult getAsynchronousStatementData(StatementData &_data); \
+  virtual int getAsyncStatement(sqlite3_stmt **_stmt) MOZ_OVERRIDE; \
+  virtual nsresult getAsynchronousStatementData(StatementData &_data) MOZ_OVERRIDE; \
   virtual already_AddRefed<mozIStorageBindingParams> newBindingParams( \
-    mozIStorageBindingParamsArray *aOwner);
+    mozIStorageBindingParamsArray *aOwner) MOZ_OVERRIDE;
 
 /**
  * Helper macro to implement the proxying implementations.  Because we are
@@ -187,7 +189,7 @@ NS_DEFINE_STATIC_IID_ACCESSOR(StorageBaseStatementInternal,
            (aCallback, _stmt))                                          \
   MIX_IMPL(_class, _optionalGuard,                                      \
            EscapeStringForLIKE,                                         \
-           (const nsAString &aValue, const char16_t aEscapeChar,       \
+           (const nsAString &aValue, char16_t aEscapeChar,              \
             nsAString &_escapedString),                                 \
            (aValue, aEscapeChar, _escapedString))
 

@@ -25,8 +25,8 @@ class nsScrollbarButtonFrame : public nsButtonBoxFrame
 public:
   NS_DECL_FRAMEARENA_HELPERS
 
-  nsScrollbarButtonFrame(nsIPresShell* aPresShell, nsStyleContext* aContext):
-    nsButtonBoxFrame(aPresShell, aContext), mCursorOnThis(false) {}
+  explicit nsScrollbarButtonFrame(nsStyleContext* aContext):
+    nsButtonBoxFrame(aContext), mCursorOnThis(false) {}
 
   // Overrides
   virtual void DestroyFrom(nsIFrame* aDestructRoot) MOZ_OVERRIDE;
@@ -67,7 +67,6 @@ public:
 protected:
   virtual void MouseClicked(nsPresContext* aPresContext,
                             mozilla::WidgetGUIEvent* aEvent) MOZ_OVERRIDE;
-  void DoButtonAction(bool aSmoothScroll);
 
   void StartRepeat() {
     nsRepeatService::GetInstance()->Start(Notify, this);
@@ -80,7 +79,6 @@ protected:
     static_cast<nsScrollbarButtonFrame*>(aData)->Notify();
   }
   
-  int32_t mIncrement;  
   bool mCursorOnThis;
 };
 

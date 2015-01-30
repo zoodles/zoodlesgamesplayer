@@ -2,6 +2,13 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
+///////////////////
+//
+// Whitelisting this test.
+// As part of bug 1077403, the leaking uncaught rejection should be fixed. 
+//
+thisTestLeaksUncaughtRejectionsAndShouldBeFixed("Error: Unknown sheet source");
+
 const TESTCASE_URI = TEST_BASE + "four.html";
 
 let gUI;
@@ -10,20 +17,14 @@ function test()
 {
   waitForExplicitFinish();
 
-  addTabAndOpenStyleEditor(function(panel) {
-    gUI = panel.UI;
-    gUI.on("editor-added", function(event, editor) {
-      if (editor == gUI.editors[3]) {
-        runTests();
-      }
-    });
-  });
+  addTabAndOpenStyleEditors(4, runTests);
 
   content.location = TESTCASE_URI;
 }
 
-function runTests()
+function runTests(panel)
 {
+  gUI = panel.UI;
   gUI.editors[0].getSourceEditor().then(onEditor0Attach);
   gUI.editors[2].getSourceEditor().then(onEditor2Attach);
 }
@@ -70,9 +71,12 @@ function onEditor0Attach(aEditor)
 
 function onEditor2Attach(aEditor)
 {
-  ok(aEditor.sourceEditor.hasFocus(),
-     "editor 2 has focus");
+  // Wait for the focus to be set.
+  executeSoon(function () {
+    ok(aEditor.sourceEditor.hasFocus(),
+       "editor 2 has focus");
 
-  gUI = null;
-  finish();
+    gUI = null;
+    finish();
+  });
 }

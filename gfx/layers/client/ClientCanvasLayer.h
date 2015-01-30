@@ -20,6 +20,11 @@
 #include "nsRegion.h"                   // for nsIntRegion
 
 namespace mozilla {
+namespace gl {
+class SharedSurface;
+class SurfaceFactory;
+}
+
 namespace layers {
 
 class CompositableClient;
@@ -30,43 +35,43 @@ class ClientCanvasLayer : public CopyableCanvasLayer,
 {
   typedef CanvasClient::CanvasClientType CanvasClientType;
 public:
-  ClientCanvasLayer(ClientLayerManager* aLayerManager) :
-    CopyableCanvasLayer(aLayerManager,
-                        static_cast<ClientLayer*>(MOZ_THIS_IN_INITIALIZER_LIST()))
-    , mTextureSurface(nullptr)
-    , mFactory(nullptr)
+  explicit ClientCanvasLayer(ClientLayerManager* aLayerManager) :
+    CopyableCanvasLayer(aLayerManager, static_cast<ClientLayer*>(this))
   {
     MOZ_COUNT_CTOR(ClientCanvasLayer);
   }
+
+protected:
   virtual ~ClientCanvasLayer();
 
-  virtual void SetVisibleRegion(const nsIntRegion& aRegion)
+public:
+  virtual void SetVisibleRegion(const nsIntRegion& aRegion) MOZ_OVERRIDE
   {
     NS_ASSERTION(ClientManager()->InConstruction(),
                  "Can only set properties in construction phase");
     CanvasLayer::SetVisibleRegion(aRegion);
   }
 
-  virtual void Initialize(const Data& aData);
+  virtual void Initialize(const Data& aData) MOZ_OVERRIDE;
 
-  virtual void RenderLayer();
+  virtual void RenderLayer() MOZ_OVERRIDE;
 
-  virtual void ClearCachedResources()
+  virtual void ClearCachedResources() MOZ_OVERRIDE
   {
     if (mCanvasClient) {
       mCanvasClient->Clear();
     }
   }
 
-  virtual void FillSpecificAttributes(SpecificLayerAttributes& aAttrs)
+  virtual void FillSpecificAttributes(SpecificLayerAttributes& aAttrs) MOZ_OVERRIDE
   {
     aAttrs = CanvasLayerAttributes(mFilter, mBounds);
   }
 
-  virtual Layer* AsLayer() { return this; }
-  virtual ShadowableLayer* AsShadowableLayer() { return this; }
+  virtual Layer* AsLayer()  MOZ_OVERRIDE { return this; }
+  virtual ShadowableLayer* AsShadowableLayer()  MOZ_OVERRIDE { return this; }
 
-  virtual void Disconnect()
+  virtual void Disconnect() MOZ_OVERRIDE
   {
     mCanvasClient = nullptr;
     ClientLayer::Disconnect();
@@ -82,23 +87,15 @@ protected:
     return static_cast<ClientLayerManager*>(mManager);
   }
 
-  CanvasClientType GetCanvasClientType()
-  {
-    if (mGLContext) {
-      return CanvasClient::CanvasClientGLContext;
-    }
-    return CanvasClient::CanvasClientSurface;
-  }
+  CanvasClientType GetCanvasClientType();
 
   RefPtr<CanvasClient> mCanvasClient;
 
-  gfx::SharedSurface* mTextureSurface;
-  gfx::SurfaceFactory* mFactory;
+  UniquePtr<gl::SurfaceFactory> mFactory;
 
   friend class DeprecatedCanvasClient2D;
   friend class CanvasClient2D;
-  friend class DeprecatedCanvasClientSurfaceStream;
-  friend class CanvasClientSurfaceStream;
+  friend class CanvasClientSharedSurface;
 };
 }
 }

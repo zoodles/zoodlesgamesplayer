@@ -7,8 +7,6 @@
 #ifndef jit_CompileWrappers_h
 #define jit_CompileWrappers_h
 
-#ifdef JS_ION
-
 #include "jscntxt.h"
 
 namespace js {
@@ -31,46 +29,51 @@ class CompileRuntime
 
     bool onMainThread();
 
-    // &mainThread.ionTop
-    const void *addressOfIonTop();
+    js::PerThreadData *mainThread();
 
-    // rt->mainThread.jitStackLimit;
+    // &runtime()->jitTop
+    const void *addressOfJitTop();
+
+    // &runtime()->jitActivation
+    const void *addressOfJitActivation();
+
+    // &runtime()->profilingActivation
+    const void *addressOfProfilingActivation();
+
+    // rt->runtime()->jitStackLimit;
     const void *addressOfJitStackLimit();
 
-    // &mainThread.ionJSContext
+    // &runtime()->jitJSContext
     const void *addressOfJSContext();
 
-    // &mainThread.activation_
+    // &runtime()->activation_
     const void *addressOfActivation();
 
-    // &GetIonContext()->runtime->nativeIterCache.last
+    // &GetJitContext()->runtime->nativeIterCache.last
     const void *addressOfLastCachedNativeIterator();
 
 #ifdef JS_GC_ZEAL
     const void *addressOfGCZeal();
 #endif
 
-    const void *addressOfInterrupt();
-
-#ifdef JS_THREADSAFE
-    const void *addressOfInterruptPar();
-#endif
-
-    const void *addressOfThreadPool();
+    const void *addressOfInterruptUint32();
 
     const JitRuntime *jitRuntime();
 
     // Compilation does not occur off thread when the SPS profiler is enabled.
     SPSProfiler &spsProfiler();
 
-    bool signalHandlersInstalled();
+    bool canUseSignalHandlers();
     bool jitSupportsFloatingPoint();
     bool hadOutOfMemory();
+    bool profilingScripts();
 
     const JSAtomState &names();
+    const PropertyName *emptyString();
     const StaticStrings &staticStrings();
     const Value &NaNValue();
     const Value &positiveInfinityValue();
+    const WellKnownSymbols &wellKnownSymbols();
 
 #ifdef DEBUG
     bool isInsideNursery(gc::Cell *cell);
@@ -81,9 +84,7 @@ class CompileRuntime
 
     const MathCache *maybeGetMathCache();
 
-#ifdef JSGC_GENERATIONAL
     const Nursery &gcNursery();
-#endif
 };
 
 class CompileZone
@@ -93,9 +94,9 @@ class CompileZone
   public:
     static CompileZone *get(Zone *zone);
 
-    const void *addressOfNeedsBarrier();
+    const void *addressOfNeedsIncrementalBarrier();
 
-    // allocator.arenas.getFreeList(allocKind)
+    // arenas.getFreeList(allocKind)
     const void *addressOfFreeListFirst(gc::AllocKind allocKind);
     const void *addressOfFreeListLast(gc::AllocKind allocKind);
 };
@@ -126,7 +127,7 @@ class JitCompileOptions
 {
   public:
     JitCompileOptions();
-    JitCompileOptions(JSContext *cx);
+    explicit JitCompileOptions(JSContext *cx);
 
     bool cloneSingletons() const {
         return cloneSingletons_;
@@ -141,10 +142,7 @@ class JitCompileOptions
     bool spsSlowAssertionsEnabled_;
 };
 
-
 } // namespace jit
 } // namespace js
-
-#endif // JS_ION
 
 #endif // jit_CompileWrappers_h

@@ -10,44 +10,42 @@
 #include "BluetoothService.h"
 #include "BluetoothUtils.h"
 
-#include "nsDOMClassInfo.h"
 #include "nsTArrayHelpers.h"
 
 #include "mozilla/dom/bluetooth/BluetoothTypes.h"
 #include "mozilla/dom/BluetoothDeviceBinding.h"
+#include "mozilla/dom/ScriptSettings.h"
 
 USING_BLUETOOTH_NAMESPACE
-
-DOMCI_DATA(BluetoothDevice, BluetoothDevice)
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(BluetoothDevice)
 
 NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN_INHERITED(BluetoothDevice,
-                                               nsDOMEventTargetHelper)
+                                               DOMEventTargetHelper)
   NS_IMPL_CYCLE_COLLECTION_TRACE_JS_MEMBER_CALLBACK(mJsUuids)
   NS_IMPL_CYCLE_COLLECTION_TRACE_JS_MEMBER_CALLBACK(mJsServices)
 NS_IMPL_CYCLE_COLLECTION_TRACE_END
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(BluetoothDevice,
-                                                  nsDOMEventTargetHelper)
+                                                  DOMEventTargetHelper)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE_SCRIPT_OBJECTS
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(BluetoothDevice,
-                                                nsDOMEventTargetHelper)
+                                                DOMEventTargetHelper)
   tmp->Unroot();
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(BluetoothDevice)
-NS_INTERFACE_MAP_END_INHERITING(nsDOMEventTargetHelper)
+NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 
-NS_IMPL_ADDREF_INHERITED(BluetoothDevice, nsDOMEventTargetHelper)
-NS_IMPL_RELEASE_INHERITED(BluetoothDevice, nsDOMEventTargetHelper)
+NS_IMPL_ADDREF_INHERITED(BluetoothDevice, DOMEventTargetHelper)
+NS_IMPL_RELEASE_INHERITED(BluetoothDevice, DOMEventTargetHelper)
 
 BluetoothDevice::BluetoothDevice(nsPIDOMWindow* aWindow,
                                  const nsAString& aAdapterPath,
                                  const BluetoothValue& aValue)
-  : nsDOMEventTargetHelper(aWindow)
+  : DOMEventTargetHelper(aWindow)
   , BluetoothPropertyContainer(BluetoothObjectType::TYPE_DEVICE)
   , mJsUuids(nullptr)
   , mJsServices(nullptr)
@@ -55,9 +53,7 @@ BluetoothDevice::BluetoothDevice(nsPIDOMWindow* aWindow,
   , mIsRooted(false)
 {
   MOZ_ASSERT(aWindow);
-  MOZ_ASSERT(IsDOMBinding());
 
-  BindToOwner(aWindow);
   const InfallibleTArray<BluetoothNamedValue>& values =
     aValue.get_ArrayOfBluetoothNamedValue();
   for (uint32_t i = 0; i < values.Length(); ++i) {
@@ -76,6 +72,16 @@ BluetoothDevice::~BluetoothDevice()
   NS_ENSURE_TRUE_VOID(bs);
   bs->UnregisterBluetoothSignalHandler(mAddress, this);
   Unroot();
+}
+
+void
+BluetoothDevice::DisconnectFromOwner()
+{
+  DOMEventTargetHelper::DisconnectFromOwner();
+
+  BluetoothService* bs = BluetoothService::Get();
+  NS_ENSURE_TRUE_VOID(bs);
+  bs->UnregisterBluetoothSignalHandler(mAddress, this);
 }
 
 void
@@ -120,15 +126,15 @@ BluetoothDevice::SetPropertyByValue(const BluetoothNamedValue& aValue)
     mPaired = value.get_bool();
   } else if (name.EqualsLiteral("UUIDs")) {
     mUuids = value.get_ArrayOfnsString();
-    nsresult rv;
-    nsIScriptContext* sc = GetContextForEventHandlers(&rv);
-    NS_ENSURE_SUCCESS_VOID(rv);
-    NS_ENSURE_TRUE_VOID(sc);
 
-    AutoPushJSContext cx(sc->GetNativeContext());
-
+    AutoJSAPI jsapi;
+    if (!jsapi.Init(GetOwner())) {
+      BT_WARNING("Failed to initialise AutoJSAPI!");
+      return;
+    }
+    JSContext* cx = jsapi.cx();
     JS::Rooted<JSObject*> uuids(cx);
-    if (NS_FAILED(nsTArrayToJSArray(cx, mUuids, uuids.address()))) {
+    if (NS_FAILED(nsTArrayToJSArray(cx, mUuids, &uuids))) {
       BT_WARNING("Cannot set JS UUIDs object!");
       return;
     }
@@ -136,15 +142,15 @@ BluetoothDevice::SetPropertyByValue(const BluetoothNamedValue& aValue)
     Root();
   } else if (name.EqualsLiteral("Services")) {
     mServices = value.get_ArrayOfnsString();
-    nsresult rv;
-    nsIScriptContext* sc = GetContextForEventHandlers(&rv);
-    NS_ENSURE_SUCCESS_VOID(rv);
-    NS_ENSURE_TRUE_VOID(sc);
 
-    AutoPushJSContext cx(sc->GetNativeContext());
-
+    AutoJSAPI jsapi;
+    if (!jsapi.Init(GetOwner())) {
+      BT_WARNING("Failed to initialise AutoJSAPI!");
+      return;
+    }
+    JSContext* cx = jsapi.cx();
     JS::Rooted<JSObject*> services(cx);
-    if (NS_FAILED(nsTArrayToJSArray(cx, mServices, services.address()))) {
+    if (NS_FAILED(nsTArrayToJSArray(cx, mServices, &services))) {
       BT_WARNING("Cannot set JS Services object!");
       return;
     }
@@ -197,34 +203,38 @@ BluetoothDevice::Notify(const BluetoothSignal& aData)
   }
 }
 
-JS::Value
-BluetoothDevice::GetUuids(JSContext* aCx, ErrorResult& aRv)
+void
+BluetoothDevice::GetUuids(JSContext* aContext,
+                           JS::MutableHandle<JS::Value> aUuids,
+                           ErrorResult& aRv)
 {
   if (!mJsUuids) {
     BT_WARNING("UUIDs not yet set!");
     aRv.Throw(NS_ERROR_FAILURE);
-    return JS::NullValue();
+    return;
   }
 
   JS::ExposeObjectToActiveJS(mJsUuids);
-  return JS::ObjectValue(*mJsUuids);
+  aUuids.setObject(*mJsUuids);
 }
 
-JS::Value
-BluetoothDevice::GetServices(JSContext* aCx, ErrorResult& aRv)
+void
+BluetoothDevice::GetServices(JSContext* aCx,
+                             JS::MutableHandle<JS::Value> aServices,
+                             ErrorResult& aRv)
 {
   if (!mJsServices) {
     BT_WARNING("Services not yet set!");
     aRv.Throw(NS_ERROR_FAILURE);
-    return JS::Value(JSVAL_NULL);
+    return;
   }
 
   JS::ExposeObjectToActiveJS(mJsServices);
-  return JS::ObjectValue(*mJsServices);
+  aServices.setObject(*mJsServices);
 }
 
 JSObject*
-BluetoothDevice::WrapObject(JSContext* aContext, JS::Handle<JSObject*> aScope)
+BluetoothDevice::WrapObject(JSContext* aContext)
 {
-  return BluetoothDeviceBinding::Wrap(aContext, aScope, this);
+  return BluetoothDeviceBinding::Wrap(aContext, this);
 }

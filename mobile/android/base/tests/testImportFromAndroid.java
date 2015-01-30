@@ -1,14 +1,20 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 package org.mozilla.gecko.tests;
 
-import org.mozilla.gecko.*;
-import android.app.Activity;
-import android.provider.Browser;
-import android.content.ContentValues;
+import java.util.ArrayList;
+
+import org.mozilla.gecko.Actions;
+import org.mozilla.gecko.AppConstants;
+import org.mozilla.gecko.GeckoProfile;
+
 import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.database.Cursor;
 import android.net.Uri;
-import java.util.ArrayList;
-import java.util.Arrays;
+import android.provider.Browser;
 
 /**
   * This test covers the Import from Android feature
@@ -22,11 +28,6 @@ public class testImportFromAndroid extends AboutHomeTest {
     private static final int MAX_WAIT_TIMEOUT = 15000;
     ArrayList<String> androidData = new ArrayList<String>();
     ArrayList<String> firefoxHistory = new ArrayList<String>();
-
-    @Override
-    protected int getTestType() {
-        return TEST_MOCHITEST;
-    }
 
     public void testImportFromAndroid() {
         ArrayList<String> firefoxBookmarks = new ArrayList<String>();
@@ -116,7 +117,7 @@ public class testImportFromAndroid extends AboutHomeTest {
 
         // Add a few history items in Firefox Mobile
         ContentResolver resolver = getActivity().getContentResolver();
-        Uri uri = Uri.parse("content://" + TestConstants.ANDROID_PACKAGE_NAME + ".db.browser/history");
+        Uri uri = Uri.parse("content://" + AppConstants.ANDROID_PACKAGE_NAME + ".db.browser/history");
         uri = uri.buildUpon().appendQueryParameter("profile", GeckoProfile.DEFAULT_PROFILE)
                              .appendQueryParameter("sync", "true").build();
         for (String url:androidData) {
@@ -133,7 +134,7 @@ public class testImportFromAndroid extends AboutHomeTest {
     }
 
     private void importDataFromAndroid() {
-        waitForText("Enter Search or Address");
+        waitForText(StringHelper.TITLE_PLACE_HOLDER);
         selectSettingsItem(StringHelper.CUSTOMIZE_SECTION_LABEL, StringHelper.IMPORT_FROM_ANDROID_LABEL);
 
         // Wait for the Import form Android pop-up to be opened. It has the same title as the option so waiting for the "Cancel" button
@@ -142,6 +143,7 @@ public class testImportFromAndroid extends AboutHomeTest {
 
         // Wait until the import pop-up is dismissed. This depending on the number of items in the android history can take up to a few seconds
         boolean importComplete = waitForTest(new BooleanTest() {
+            @Override
             public boolean test() {
                 return !mSolo.searchText("Please wait...");
             }
@@ -155,10 +157,10 @@ public class testImportFromAndroid extends AboutHomeTest {
             waitForText(StringHelper.IMPORT_FROM_ANDROID_LABEL);
             mActions.sendSpecialKey(Actions.SpecialKey.BACK);
         }
-        waitForText("Privacy"); // Settings is a header for the settings menu page. Waiting for Privacy ensures we are back in the top Settings view
+        waitForText(StringHelper.PRIVACY_SECTION_LABEL); // Settings is a header for the settings menu page. Waiting for Privacy ensures we are back in the top Settings view
         mActions.sendSpecialKey(Actions.SpecialKey.BACK); // Exit Settings
         // Make sure the settings menu has been closed.
-        mAsserter.ok(mSolo.waitForText("Enter Search or Address"), "Waiting for search bar", "Search bar found");
+        mAsserter.ok(mSolo.waitForText(StringHelper.TITLE_PLACE_HOLDER), "Waiting for search bar", "Search bar found");
 
     }
 
@@ -166,13 +168,12 @@ public class testImportFromAndroid extends AboutHomeTest {
         // Return bookmarks or history depending on what the user asks for
         ArrayList<String> urls = new ArrayList<String>();
         ContentResolver resolver = getActivity().getContentResolver();
-        Browser mBrowser = new Browser();
         Cursor cursor = null;
         try {
             if (data.equals("history")) {
-                cursor = mBrowser.getAllVisitedUrls(resolver);
+                cursor = Browser.getAllVisitedUrls(resolver);
             } else if (data.equals("bookmarks")) {
-                cursor = mBrowser.getAllBookmarks(resolver);
+                cursor = Browser.getAllBookmarks(resolver);
             }
             if (cursor != null) {
                 cursor.moveToFirst();
@@ -203,6 +204,7 @@ public class testImportFromAndroid extends AboutHomeTest {
         }
     }
 
+    @Override
     public void tearDown() throws Exception {
         deleteImportedData();
         super.tearDown();

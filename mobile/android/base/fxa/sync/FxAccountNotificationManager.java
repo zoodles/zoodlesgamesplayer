@@ -4,13 +4,17 @@
 
 package org.mozilla.gecko.fxa.sync;
 
+import org.mozilla.gecko.BrowserLocaleManager;
 import org.mozilla.gecko.R;
 import org.mozilla.gecko.background.common.log.Logger;
-import org.mozilla.gecko.fxa.FxAccountConstants;
+import org.mozilla.gecko.background.common.telemetry.TelemetryWrapper;
+import org.mozilla.gecko.background.fxa.FxAccountUtils;
+import org.mozilla.gecko.fxa.activities.FxAccountFinishMigratingActivity;
 import org.mozilla.gecko.fxa.activities.FxAccountStatusActivity;
 import org.mozilla.gecko.fxa.authenticator.AndroidFxAccount;
 import org.mozilla.gecko.fxa.login.State;
 import org.mozilla.gecko.fxa.login.State.Action;
+import org.mozilla.gecko.sync.telemetry.TelemetryContract;
 
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -34,8 +38,22 @@ public class FxAccountNotificationManager {
 
   protected final int notificationId;
 
+  // We're lazy about updating our locale info, because most syncs don't notify.
+  private volatile boolean localeUpdated;
+
   public FxAccountNotificationManager(int notificationId) {
     this.notificationId = notificationId;
+  }
+
+  /**
+   * Remove all Firefox Account related notifications from the notification manager.
+   *
+   * @param context
+   *          Android context.
+   */
+  public void clear(Context context) {
+    final NotificationManager notificationManager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+    notificationManager.cancel(notificationId);
   }
 
   /**
@@ -58,12 +76,28 @@ public class FxAccountNotificationManager {
       return;
     }
 
-    final String title = context.getResources().getString(R.string.fxaccount_sync_sign_in_error_notification_title);
-    final String text = context.getResources().getString(R.string.fxaccount_sync_sign_in_error_notification_text, state.email);
-    Logger.info(LOG_TAG, "State " + state.getStateLabel() + " needs action; offering notification with title: " + title);
-    FxAccountConstants.pii(LOG_TAG, "And text: " + text);
+    if (!localeUpdated) {
+      localeUpdated = true;
+      BrowserLocaleManager.getInstance().getAndApplyPersistedLocale(context);
+    }
 
-    final Intent notificationIntent = new Intent(context, FxAccountStatusActivity.class);
+    final String title;
+    final String text;
+    final Intent notificationIntent;
+    if (action == Action.NeedsFinishMigrating) {
+      TelemetryWrapper.addToHistogram(TelemetryContract.SYNC11_MIGRATION_NOTIFICATIONS_OFFERED, 1);
+
+      title = context.getResources().getString(R.string.fxaccount_sync_finish_migrating_notification_title);
+      text = context.getResources().getString(R.string.fxaccount_sync_finish_migrating_notification_text, state.email);
+      notificationIntent = new Intent(context, FxAccountFinishMigratingActivity.class);
+    } else {
+      title = context.getResources().getString(R.string.fxaccount_sync_sign_in_error_notification_title);
+      text = context.getResources().getString(R.string.fxaccount_sync_sign_in_error_notification_text, state.email);
+      notificationIntent = new Intent(context, FxAccountStatusActivity.class);
+    }
+    Logger.info(LOG_TAG, "State " + state.getStateLabel() + " needs action; offering notification with title: " + title);
+    FxAccountUtils.pii(LOG_TAG, "And text: " + text);
+
     final PendingIntent pendingIntent = PendingIntent.getActivity(context, 0, notificationIntent, 0);
 
     final Builder builder = new NotificationCompat.Builder(context);

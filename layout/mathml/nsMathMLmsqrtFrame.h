@@ -40,9 +40,9 @@ public:
                                           nsStyleContext* aContext);
 
   virtual void
-  Init(nsIContent* aContent,
-       nsIFrame*   aParent,
-       nsIFrame*   aPrevInFlow) MOZ_OVERRIDE;
+  Init(nsIContent*       aContent,
+       nsContainerFrame* aParent,
+       nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
 
   NS_IMETHOD
   InheritAutomaticData(nsIFrame* aParent) MOZ_OVERRIDE;
@@ -52,8 +52,15 @@ public:
                    nsIAtom*        aAttribute,
                    int32_t         aModType) MOZ_OVERRIDE;
 
+  virtual bool
+  IsMrowLike() MOZ_OVERRIDE
+  {
+    return mFrames.FirstChild() != mFrames.LastChild() ||
+           !mFrames.FirstChild();
+  }
+
 protected:
-  nsMathMLmsqrtFrame(nsStyleContext* aContext);
+  explicit nsMathMLmsqrtFrame(nsStyleContext* aContext);
   virtual ~nsMathMLmsqrtFrame();
 };
 

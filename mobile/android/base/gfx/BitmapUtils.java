@@ -11,10 +11,14 @@ import java.lang.reflect.Field;
 import java.net.MalformedURLException;
 import java.net.URL;
 
+import org.mozilla.gecko.GeckoProfile;
 import org.mozilla.gecko.R;
 import org.mozilla.gecko.util.GeckoJarReader;
 import org.mozilla.gecko.util.ThreadUtils;
-import org.mozilla.gecko.util.UiAsyncTask;
+import org.mozilla.gecko.util.UIAsyncTask;
+import org.mozilla.gecko.Tab;
+import org.mozilla.gecko.Tabs;
+import org.mozilla.gecko.ThumbnailHelper;
 
 import android.content.Context;
 import android.content.res.Resources;
@@ -71,10 +75,15 @@ public final class BitmapUtils {
             return;
         }
 
+        if (data.startsWith("thumbnail:")) {
+            getThumbnailDrawable(context, data, loader);
+            return;
+        }
+
         if (data.startsWith("jar:") || data.startsWith("file://")) {
-            (new UiAsyncTask<Void, Void, Drawable>(ThreadUtils.getBackgroundHandler()) {
+            (new UIAsyncTask.WithoutParams<Drawable>(ThreadUtils.getBackgroundHandler()) {
                 @Override
-                public Drawable doInBackground(Void... params) {
+                public Drawable doInBackground() {
                     try {
                         if (data.startsWith("jar:jar")) {
                             return GeckoJarReader.getBitmapDrawable(context.getResources(), data);
@@ -114,7 +123,7 @@ public final class BitmapUtils {
             try {
                 final Drawable d = context.getPackageManager().getApplicationIcon(resource);
                 runOnBitmapFoundOnUiThread(loader, d);
-            } catch(Exception ex) { }
+            } catch (Exception ex) { }
 
             return;
         }
@@ -129,6 +138,23 @@ public final class BitmapUtils {
         }
 
         runOnBitmapFoundOnUiThread(loader, null);
+    }
+
+    public static void getThumbnailDrawable(final Context context, final String data, final BitmapLoader loader) {
+         int id = Integer.parseInt(data.substring(10), 10);
+         final Tab tab = Tabs.getInstance().getTab(id);
+         runOnBitmapFoundOnUiThread(loader, tab.getThumbnail());
+         Tabs.registerOnTabsChangedListener(new Tabs.OnTabsChangedListener() {
+                 @Override
+                 public void onTabChanged(Tab t, Tabs.TabEvents msg, Object data) {
+                     if (tab == t && msg == Tabs.TabEvents.THUMBNAIL) {
+                         Tabs.unregisterOnTabsChangedListener(this);
+                         runOnBitmapFoundOnUiThread(loader, t.getThumbnail());
+                     }
+                 }
+             });
+         final GeckoProfile profile = GeckoProfile.get(context);
+         ThumbnailHelper.getInstance().getAndProcessThumbnailFor(tab, profile.getDB());
     }
 
     public static Bitmap decodeByteArray(byte[] bytes) {
@@ -314,14 +340,35 @@ public final class BitmapUtils {
      * @return        the decoded bitmap, or null if the data URI is invalid
      */
     public static Bitmap getBitmapFromDataURI(String dataURI) {
-        String base64 = dataURI.substring(dataURI.indexOf(',') + 1);
-        try {
-            byte[] raw = Base64.decode(base64, Base64.DEFAULT);
-            return BitmapUtils.decodeByteArray(raw);
-        } catch (Exception e) {
-            Log.e(LOGTAG, "exception decoding bitmap from data URI: " + dataURI, e);
+        if (dataURI == null) {
+            return null;
         }
+
+        byte[] raw = getBytesFromDataURI(dataURI);
+        if (raw == null || raw.length == 0) {
+            return null;
+        }
+
+        return decodeByteArray(raw);
+    }
+
+    /**
+     * Return a byte[] containing the bytes in a given base64 string, or null if this is not a valid
+     * base64 string.
+     */
+    public static byte[] getBytesFromBase64(String base64) {
+        try {
+            return Base64.decode(base64, Base64.DEFAULT);
+        } catch (Exception e) {
+            Log.e(LOGTAG, "exception decoding bitmap from data URI: " + base64, e);
+        }
+
         return null;
+    }
+
+    public static byte[] getBytesFromDataURI(String dataURI) {
+        final String base64 = dataURI.substring(dataURI.indexOf(',') + 1);
+        return getBytesFromBase64(base64);
     }
 
     public static Bitmap getBitmapFromDrawable(Drawable drawable) {

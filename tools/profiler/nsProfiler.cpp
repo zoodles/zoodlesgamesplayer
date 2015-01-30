@@ -5,9 +5,6 @@
 
 #include <string>
 #include <sstream>
-#ifdef MOZ_INSTRUMENT_EVENT_LOOP
-#include "EventTracer.h"
-#endif
 #include "GeckoProfiler.h"
 #include "nsProfiler.h"
 #include "nsMemory.h"
@@ -23,7 +20,7 @@
 
 using std::string;
 
-NS_IMPL_ISUPPORTS1(nsProfiler, nsIProfiler)
+NS_IMPL_ISUPPORTS(nsProfiler, nsIProfiler)
 
 nsProfiler::nsProfiler()
   : mLockedForPrivateBrowsing(false)
@@ -81,10 +78,6 @@ nsProfiler::StartProfiler(uint32_t aEntries, double aInterval,
   profiler_start(aEntries, aInterval,
                  aFeatures, aFeatureCount,
                  aThreadNameFilters, aFilterCount);
-#ifdef MOZ_INSTRUMENT_EVENT_LOOP
-  bool printToConsole = false;
-  mozilla::InitEventTracing(printToConsole);
-#endif
   return NS_OK;
 }
 
@@ -201,13 +194,20 @@ nsProfiler::GetSharedLibraryInformation(nsAString& aOutString)
   return NS_OK;
 }
 
+NS_IMETHODIMP
+nsProfiler::DumpProfileToFile(const char* aFilename)
+{
+  profiler_save_profile_to_file(aFilename);
+  return NS_OK;
+}
+
 NS_IMETHODIMP nsProfiler::GetProfileData(JSContext* aCx,
                                          JS::MutableHandle<JS::Value> aResult)
 {
-  JSObject *obj = profiler_get_profile_jsobject(aCx);
-  if (!obj)
+  JS::RootedObject obj(aCx, profiler_get_profile_jsobject(aCx));
+  if (!obj) {
     return NS_ERROR_FAILURE;
-
+  }
   aResult.setObject(*obj);
   return NS_OK;
 }
@@ -216,26 +216,6 @@ NS_IMETHODIMP
 nsProfiler::IsActive(bool *aIsActive)
 {
   *aIsActive = profiler_is_active();
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-nsProfiler::GetResponsivenessTimes(uint32_t *aCount, double **aResult)
-{
-  unsigned int len = 100;
-  const double* times = profiler_get_responsiveness();
-  if (!times) {
-    *aCount = 0;
-    *aResult = nullptr;
-    return NS_OK;
-  }
-
-  double *fs = static_cast<double *>
-                       (nsMemory::Clone(times, len * sizeof(double)));
-
-  *aCount = len;
-  *aResult = fs;
-
   return NS_OK;
 }
 

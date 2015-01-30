@@ -18,7 +18,7 @@
 extern PRLogModuleInfo* gPIPNSSLog;
 #endif
 
-NS_IMPL_ISUPPORTS1(nsPK11Token, nsIPK11Token)
+NS_IMPL_ISUPPORTS(nsPK11Token, nsIPK11Token)
 
 nsPK11Token::nsPK11Token(PK11SlotInfo *slot)
 {
@@ -63,11 +63,11 @@ nsPK11Token::refreshTokenInfo()
 
     // Set the Hardware Version field
     mTokenHWVersion.AppendInt(tok_info.hardwareVersion.major);
-    mTokenHWVersion.AppendLiteral(".");
+    mTokenHWVersion.Append('.');
     mTokenHWVersion.AppendInt(tok_info.hardwareVersion.minor);
     // Set the Firmware Version field
     mTokenFWVersion.AppendInt(tok_info.firmwareVersion.major);
-    mTokenFWVersion.AppendLiteral(".");
+    mTokenFWVersion.Append('.');
     mTokenFWVersion.AppendInt(tok_info.firmwareVersion.minor);
     // Set the Serial Number field
     const char *ccSerial = (const char*)tok_info.serialNumber;
@@ -422,7 +422,7 @@ NS_IMETHODIMP nsPK11Token::IsFriendly(bool *_retval)
 
 /*=========================================================*/
 
-NS_IMPL_ISUPPORTS1(nsPK11TokenDB, nsIPK11TokenDB)
+NS_IMPL_ISUPPORTS(nsPK11TokenDB, nsIPK11TokenDB)
 
 nsPK11TokenDB::nsPK11TokenDB()
 {

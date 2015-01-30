@@ -9,10 +9,14 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/ipc/Transport.h"
 
+template <class> struct already_AddRefed;
+
 namespace mozilla {
 namespace dom {
 
 class ContentParent;
+class FileImpl;
+class PBlobParent;
 
 } // namespace dom
 
@@ -20,15 +24,46 @@ namespace ipc {
 
 class PBackgroundParent;
 
-// This class is not designed for public consumption. It must only be used by
-// ContentParent.
+// This class is not designed for public consumption beyond the few static
+// member functions.
 class BackgroundParent MOZ_FINAL
 {
   friend class mozilla::dom::ContentParent;
 
   typedef base::ProcessId ProcessId;
   typedef mozilla::dom::ContentParent ContentParent;
+  typedef mozilla::dom::FileImpl FileImpl;
   typedef mozilla::ipc::Transport Transport;
+
+public:
+  // This function allows the caller to determine if the given parent actor
+  // corresponds to a child actor from another process or a child actor from a
+  // different thread in the same process.
+  // This function may only be called on the background thread.
+  static bool
+  IsOtherProcessActor(PBackgroundParent* aBackgroundActor);
+
+  // This function returns the ContentParent associated with the parent actor if
+  // the parent actor corresponds to a child actor from another process. If the
+  // parent actor corresponds to a child actor from a different thread in the
+  // same process then this function returns null.
+  // This function may only be called on the background thread. However,
+  // ContentParent is not threadsafe and the returned pointer may not be used on
+  // any thread other than the main thread. Callers must take care to use (and
+  // release) the returned pointer appropriately.
+  static already_AddRefed<ContentParent>
+  GetContentParent(PBackgroundParent* aBackgroundActor);
+
+  static mozilla::dom::PBlobParent*
+  GetOrCreateActorForBlobImpl(PBackgroundParent* aBackgroundActor,
+                              FileImpl* aBlobImpl);
+
+  // Get a value that represents the ContentParent associated with the parent
+  // actor for comparison. The value is not guaranteed to uniquely identify the
+  // ContentParent after the ContentParent has died. This function may only be
+  // called on the background thread.
+  static intptr_t
+  GetRawContentParentForComparison(PBackgroundParent* aBackgroundActor);
 
 private:
   // Only called by ContentParent for cross-process actors.

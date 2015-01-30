@@ -1,84 +1,90 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 package org.mozilla.gecko.tests;
 
-import com.jayway.android.robotium.solo.Condition;
-import com.jayway.android.robotium.solo.Solo;
-
-import org.mozilla.gecko.*;
-import org.mozilla.gecko.GeckoThread.LaunchState;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.util.ArrayList;
+import java.util.HashSet;
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import org.mozilla.gecko.Actions;
+import org.mozilla.gecko.Element;
+import org.mozilla.gecko.GeckoAppShell;
+import org.mozilla.gecko.GeckoEvent;
+import org.mozilla.gecko.GeckoProfile;
+import org.mozilla.gecko.GeckoThread;
+import org.mozilla.gecko.GeckoThread.LaunchState;
+import org.mozilla.gecko.R;
+import org.mozilla.gecko.RobocopUtils;
+import org.mozilla.gecko.Tab;
+import org.mozilla.gecko.Tabs;
+
 import android.app.Activity;
-import android.app.Instrumentation;
-import android.content.ContentResolver;
 import android.content.ContentValues;
-import android.content.ContentUris;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.res.AssetManager;
 import android.database.Cursor;
-import android.net.Uri;
 import android.os.Build;
 import android.os.SystemClock;
 import android.support.v4.app.Fragment;
 import android.support.v4.app.FragmentActivity;
 import android.support.v4.app.FragmentManager;
-import android.text.InputType;
 import android.text.TextUtils;
-import android.test.ActivityInstrumentationTestCase2;
 import android.util.DisplayMetrics;
-import android.view.inputmethod.InputMethodManager;
-import android.view.KeyEvent;
 import android.view.View;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.AdapterView;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ListAdapter;
-import android.widget.ListView;
 import android.widget.TextView;
 
-import java.io.File;
-import java.io.InputStream;
-import java.io.IOException;
-import java.io.PrintWriter;
-import java.io.StringWriter;
-import java.util.ArrayList;
-import java.util.HashMap;
+import com.jayway.android.robotium.solo.Condition;
+import com.jayway.android.robotium.solo.Solo;
+import com.jayway.android.robotium.solo.Timeout;
 
 /**
  *  A convenient base class suitable for most Robocop tests.
  */
-abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
-    public static final int TEST_MOCHITEST = 0;
-    public static final int TEST_TALOS = 1;
-
-    private static final String TARGET_PACKAGE_ID = "org.mozilla.gecko";
-    private static final String LAUNCH_ACTIVITY_FULL_CLASSNAME = TestConstants.ANDROID_PACKAGE_NAME + ".App";
+@SuppressWarnings("unchecked")
+abstract class BaseTest extends BaseRobocopTest {
     private static final int VERIFY_URL_TIMEOUT = 2000;
-    private static final int MAX_LIST_ATTEMPTS = 3;
     private static final int MAX_WAIT_ENABLED_TEXT_MS = 10000;
     private static final int MAX_WAIT_HOME_PAGER_HIDDEN_MS = 15000;
+    private static final int MAX_WAIT_VERIFY_PAGE_TITLE_MS = 15000;
     public static final int MAX_WAIT_MS = 4500;
     public static final int LONG_PRESS_TIME = 6000;
     private static final int GECKO_READY_WAIT_MS = 180000;
     public static final int MAX_WAIT_BLOCK_FOR_EVENT_DATA_MS = 90000;
 
-    private static Class<Activity> mLauncherActivityClass;
-    private Activity mActivity;
+    protected static final String URL_HTTP_PREFIX = "http://";
+
     private int mPreferenceRequestID = 0;
-    protected Solo mSolo;
-    protected Driver mDriver;
-    protected Assert mAsserter;
-    protected Actions mActions;
-    protected String mBaseUrl;
-    protected String mRawBaseUrl;
-    private String mLogFile;
-    protected String mProfile;
     public Device mDevice;
     protected DatabaseHelper mDatabaseHelper;
-    protected StringHelper mStringHelper;
+    protected int mScreenMidWidth;
+    protected int mScreenMidHeight;
+    private final HashSet<Integer> mKnownTabIDs = new HashSet<Integer>();
+
+    protected void blockForDelayedStartup() {
+        try {
+            Actions.EventExpecter delayedStartupExpector = mActions.expectGeckoEvent("Gecko:DelayedStartup");
+            delayedStartupExpector.blockForEvent(GECKO_READY_WAIT_MS, true);
+            delayedStartupExpector.unregisterListener();
+        } catch (Exception e) {
+            mAsserter.dumpLog("Exception in blockForDelayedStartup", e);
+        }
+    }
 
     protected void blockForGeckoReady() {
         try {
@@ -92,58 +98,32 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
         }
     }
 
-    static {
-        try {
-            mLauncherActivityClass = (Class<Activity>)Class.forName(LAUNCH_ACTIVITY_FULL_CLASSNAME);
-        } catch (ClassNotFoundException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    public BaseTest() {
-        super(TARGET_PACKAGE_ID, mLauncherActivityClass);
-    }
-
-    protected abstract int getTestType();
-
     @Override
-    protected void setUp() throws Exception {
-        // Load config file from root path (setup by python script)
-        String rootPath = FennecInstrumentationTestRunner.getFennecArguments().getString("deviceroot");
-        String configFile = FennecNativeDriver.getFile(rootPath + "/robotium.config");
-        HashMap config = FennecNativeDriver.convertTextToTable(configFile);
-        mLogFile = (String)config.get("logfile");
-        mBaseUrl = ((String)config.get("host")).replaceAll("(/$)", "");
-        mRawBaseUrl = ((String)config.get("rawhost")).replaceAll("(/$)", "");
-        // Initialize the asserter
-        if (getTestType() == TEST_TALOS) {
-            mAsserter = new FennecTalosAssert();
-        } else {
-            mAsserter = new FennecMochitestAssert();
-        }
-        mAsserter.setLogFile(mLogFile);
-        mAsserter.setTestName(this.getClass().getName());
-        // Create the intent to be used with all the important arguments.
-        Intent i = new Intent(Intent.ACTION_MAIN);
-        mProfile = (String)config.get("profile");
-        i.putExtra("args", "-no-remote -profile " + mProfile);
-        String envString = (String)config.get("envvars");
-        if (envString != "") {
-            String[] envStrings = envString.split(",");
-            for (int iter = 0; iter < envStrings.length; iter++) {
-                i.putExtra("env" + iter, envStrings[iter]);
-            }
-        }
-        // Start the activity
-        setActivityIntent(i);
-        mActivity = getActivity();
-        // Set up Robotium.solo and Driver objects
-        mSolo = new Solo(getInstrumentation(), mActivity);
-        mDriver = new FennecNativeDriver(mActivity, mSolo, rootPath);
-        mActions = new FennecNativeActions(mActivity, mSolo, getInstrumentation(), mAsserter);
+    public void setUp() throws Exception {
+        super.setUp();
+
         mDevice = new Device();
         mDatabaseHelper = new DatabaseHelper(mActivity, mAsserter);
-        mStringHelper = new StringHelper();
+
+        // Ensure Robocop tests have access to network, and are run with Display powered on.
+        throwIfHttpGetFails();
+        throwIfScreenNotOn();
+    }
+
+    protected GeckoProfile getTestProfile() {
+        if (mProfile.startsWith("/")) {
+            return GeckoProfile.get(getActivity(), "default", mProfile);
+        }
+
+        return GeckoProfile.get(getActivity(), mProfile);
+    }
+
+    protected void initializeProfile() {
+        final GeckoProfile profile = getTestProfile();
+
+        // In Robocop tests, we typically don't get initialized correctly, because
+        // GeckoProfile doesn't create the profile directory.
+        profile.enqueueInitialization(profile.getDir());
     }
 
     @Override
@@ -167,11 +147,32 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
     public void tearDown() throws Exception {
         try {
             mAsserter.endTest();
+            // request a force quit of the browser and wait for it to take effect
+            GeckoAppShell.sendEventToGecko(GeckoEvent.createBroadcastEvent("Robocop:Quit", null));
+            mSolo.sleep(120000);
+            // if still running, finish activities as recommended by Robotium
             mSolo.finishOpenedActivities();
         } catch (Throwable e) {
             e.printStackTrace();
         }
         super.tearDown();
+    }
+
+    @Override
+    protected Intent createActivityIntent() {
+        final Intent intent = new Intent(Intent.ACTION_MAIN);
+        intent.putExtra("args", "-no-remote -profile " + mProfile);
+
+        final String envString = mConfig.get("envvars");
+        if (!TextUtils.isEmpty(envString)) {
+            final String[] envStrings = envString.split(",");
+
+            for (int iter = 0; iter < envStrings.length; iter++) {
+                intent.putExtra("env" + iter, envStrings[iter]);
+            }
+        }
+
+        return intent;
     }
 
     public void assertMatches(String value, String regex, String name) {
@@ -187,6 +188,7 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
      */
     protected final void focusUrlBar() {
         // Click on the browser toolbar to enter editing mode
+        mSolo.waitForView(R.id.browser_toolbar);
         final View toolbarView = mSolo.getView(R.id.browser_toolbar);
         mSolo.clickOnView(toolbarView);
 
@@ -194,13 +196,12 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
         boolean success = waitForCondition(new Condition() {
             @Override
             public boolean isSatisfied() {
+                mSolo.waitForView(R.id.url_edit_text);
                 EditText urlEditText = (EditText) mSolo.getView(R.id.url_edit_text);
                 if (urlEditText.isInputMethodTarget()) {
                     return true;
-                } else {
-                    mSolo.clickOnView(urlEditText);
-                    return false;
                 }
+                return false;
             }
         }, MAX_WAIT_ENABLED_TEXT_MS);
 
@@ -208,9 +209,9 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
     }
 
     protected final void enterUrl(String url) {
-        final EditText urlEditView = (EditText) mSolo.getView(R.id.url_edit_text);
-
         focusUrlBar();
+
+        final EditText urlEditView = (EditText) mSolo.getView(R.id.url_edit_text);
 
         // Send the keys for the URL we want to enter
         mSolo.clearEditText(urlEditView);
@@ -261,6 +262,12 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
         }
     }
 
+    protected final void closeTab(int tabId) {
+        Tabs tabs = Tabs.getInstance();
+        Tab tab = tabs.getTab(tabId);
+        tabs.closeTab(tab);
+    }
+
     public final void verifyUrl(String url) {
         final EditText urlEditText = (EditText) mSolo.getView(R.id.url_edit_text);
         String urlBarText = null;
@@ -275,8 +282,8 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
     }
 
     class VerifyTextViewText implements Condition {
-        private TextView mTextView;
-        private String mExpected;
+        private final TextView mTextView;
+        private final String mExpected;
         public VerifyTextViewText(TextView textView, String expected) {
             mTextView = textView;
             mExpected = expected;
@@ -290,11 +297,11 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
     }
 
     protected final String getAbsoluteUrl(String url) {
-        return mBaseUrl + "/" + url.replaceAll("(^/)", "");
+        return mBaseHostnameUrl + "/" + url.replaceAll("(^/)", "");
     }
 
     protected final String getAbsoluteRawUrl(String url) {
-        return mRawBaseUrl + "/" + url.replaceAll("(^/)", "");
+        return mBaseIpUrl + "/" + url.replaceAll("(^/)", "");
     }
 
     /*
@@ -304,36 +311,37 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
         boolean result = mSolo.waitForCondition(condition, timeout);
         if (!result) {
             // Log timeout failure for diagnostic purposes only; a failed wait may
-            // be normal and does not necessarily warrant a test asssertion/failure.
+            // be normal and does not necessarily warrant a test assertion/failure.
             mAsserter.dumpLog("waitForCondition timeout after " + timeout + " ms.");
         }
         return result;
     }
 
-    // TODO: With Robotium 4.2, we should use Condition and waitForCondition instead.
-    // Future boolean tests should not use this method.
-    protected final boolean waitForTest(BooleanTest t, int timeout) {
-        long end = SystemClock.uptimeMillis() + timeout;
-        while (SystemClock.uptimeMillis() < end) {
-            if (t.test()) {
-                return true;
+    /**
+     * @deprecated use {@link #waitForCondition(Condition, int)} instead
+     */
+    @Deprecated
+    protected final boolean waitForTest(final BooleanTest t, final int timeout) {
+        final boolean isSatisfied = mSolo.waitForCondition(new Condition() {
+            @Override
+            public boolean isSatisfied() {
+                return t.test();
             }
-            mSolo.sleep(100);
+        }, timeout);
+
+        if (!isSatisfied) {
+            // log out wait failure for diagnostic purposes only;
+            // a failed wait may be normal and does not necessarily
+            // warrant a test assertion/failure
+            mAsserter.dumpLog("waitForTest timeout after " + timeout + " ms");
         }
-        // log out wait failure for diagnostic purposes only;
-        // a failed wait may be normal and does not necessarily
-        // warrant a test assertion/failure
-        mAsserter.dumpLog("waitForTest timeout after "+timeout+" ms");
-        return false;
+        return isSatisfied;
     }
 
-    // TODO: With Robotium 4.2, we should use Condition and waitForCondition instead.
-    // Future boolean tests should not implement this interface.
     protected interface BooleanTest {
         public boolean test();
     }
 
-    @SuppressWarnings({"unchecked", "non-varargs"})
     public void SqliteCompare(String dbName, String sqlCommand, ContentValues[] cvs) {
         File profile = new File(mProfile);
         String dbPath = new File(profile, dbName).getPath();
@@ -342,27 +350,6 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
         SqliteCompare(c, cvs);
     }
 
-    private boolean CursorMatches(Cursor c, String[] columns, ContentValues cv) {
-        for (int i = 0; i < columns.length; i++) {
-            String column = columns[i];
-            if (cv.containsKey(column)) {
-                mAsserter.info("Comparing", "Column values for: " + column);
-                Object value = cv.get(column);
-                if (value == null) {
-                    if (!c.isNull(i)) {
-                        return false;
-                    }
-                } else {
-                    if (c.isNull(i) || !value.toString().equals(c.getString(i))) {
-                        return false;
-                    }
-                }
-            }
-        }
-        return true;
-    }
-
-    @SuppressWarnings({"unchecked", "non-varargs"})
     public void SqliteCompare(Cursor c, ContentValues[] cvs) {
         mAsserter.is(c.getCount(), cvs.length, "List is correct length");
         if (c.moveToFirst()) {
@@ -374,7 +361,7 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
                     }
                 }
                 mAsserter.is(found, true, "Password was found");
-            } while(c.moveToNext());
+            } while (c.moveToNext());
         }
     }
 
@@ -403,14 +390,44 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
         return assets.open(filename);
     }
 
-    public boolean waitForText(String text) {
-        boolean rc = mSolo.waitForText(text);
+    public boolean waitForText(final String text) {
+        // false is the default value for finding only
+        // visible views in `Solo.waitForText(String)`.
+        return waitForText(text, false);
+    }
+
+    public boolean waitForText(final String text, final boolean onlyVisibleViews) {
+        // We use the default robotium values from
+        // `Waiter.waitForText(String)` for unspecified arguments.
+        final boolean rc =
+                mSolo.waitForText(text, 0, Timeout.getLargeTimeout(), true, onlyVisibleViews);
         if (!rc) {
             // log out failed wait for diagnostic purposes only;
             // waitForText failures are sometimes expected/normal
             mAsserter.dumpLog("waitForText timeout on "+text);
         }
         return rc;
+    }
+
+    // waitForText usually scrolls down in a view when text is not visible.
+    // For PreferenceScreens and dialogs, Solo.waitForText scrolling does not
+    // work, so we use this hack to do the same thing.
+    protected boolean waitForPreferencesText(String txt) {
+        boolean foundText = waitForText(txt);
+        if (!foundText) {
+            if ((mScreenMidWidth == 0) || (mScreenMidHeight == 0)) {
+                mScreenMidWidth = mDriver.getGeckoWidth()/2;
+                mScreenMidHeight = mDriver.getGeckoHeight()/2;
+            }
+
+            // If we don't see the item, scroll down once in case it's off-screen.
+            // Hacky way to scroll down.  solo.scroll* does not work in dialogs.
+            MotionEventHelper meh = new MotionEventHelper(getInstrumentation(), mDriver.getGeckoLeft(), mDriver.getGeckoTop());
+            meh.dragSync(mScreenMidWidth, mScreenMidHeight+100, mScreenMidWidth, mScreenMidHeight-100);
+
+            foundText = mSolo.waitForText(txt);
+        }
+        return foundText;
     }
 
     /**
@@ -445,7 +462,7 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
     }
 
 
-    /** 
+    /**
      * Select <item> from Menu > "Settings" > <section>.
      */
     public void selectSettingsItem(String section, String item) {
@@ -464,9 +481,8 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
         if (listLength > 1) {
             for (int i = 1; i < listLength; i++) {
                 String itemName = "^" + listItems[i] + "$";
-                if (!waitForEnabledText(itemName)) {
-                    mSolo.scrollDown();
-                }
+                mAsserter.ok(waitForPreferencesText(itemName), "Waiting for and scrolling once to find item " + itemName, itemName + " found");
+                mAsserter.ok(waitForEnabledText(itemName), "Waiting for enabled text " + itemName, itemName + " option is present and enabled");
                 mSolo.clickOnText(itemName);
             }
         }
@@ -476,7 +492,7 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
         // build the item name ready to be used
         String itemName = "^" + menuItemName + "$";
         mActions.sendSpecialKey(Actions.SpecialKey.MENU);
-        if (waitForText(itemName)) {
+        if (waitForText(itemName, true)) {
             mSolo.clickOnText(itemName);
         } else {
             // Older versions of Android have additional settings under "More",
@@ -504,16 +520,27 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
         }
     }
 
-    public final void verifyPageTitle(String title) {
+    public final void verifyUrlBarTitle(String url) {
+        mAsserter.isnot(url, null, "The url argument is not null");
+
+        final String expected;
+        if (StringHelper.ABOUT_HOME_URL.equals(url)) {
+            expected = StringHelper.ABOUT_HOME_TITLE;
+        } else if (url.startsWith(URL_HTTP_PREFIX)) {
+            expected = url.substring(URL_HTTP_PREFIX.length());
+        } else {
+            expected = url;
+        }
+
         final TextView urlBarTitle = (TextView) mSolo.getView(R.id.url_bar_title);
         String pageTitle = null;
         if (urlBarTitle != null) {
             // Wait for the title to make sure it has been displayed in case the view
             // does not update fast enough
-            waitForCondition(new VerifyTextViewText(urlBarTitle, title), MAX_WAIT_MS);
+            waitForCondition(new VerifyTextViewText(urlBarTitle, expected), MAX_WAIT_VERIFY_PAGE_TITLE_MS);
             pageTitle = urlBarTitle.getText().toString();
         }
-        mAsserter.is(pageTitle, title, "Page title is correct");
+        mAsserter.is(pageTitle, expected, "Page title is correct");
     }
 
     public final void verifyTabCount(int expectedTabCount) {
@@ -521,6 +548,43 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
         String tabCountText = tabCount.getText();
         int tabCountInt = Integer.parseInt(tabCountText);
         mAsserter.is(tabCountInt, expectedTabCount, "The correct number of tabs are opened");
+    }
+
+    public void verifyPinned(final boolean isPinned, final String gridItemTitle) {
+        boolean viewFound = waitForText(gridItemTitle);
+        mAsserter.ok(viewFound, "Found top site title: " + gridItemTitle, null);
+
+        boolean success = waitForCondition(new Condition() {
+            @Override
+            public boolean isSatisfied() {
+                // We set the left compound drawable (index 0) to the pin icon.
+                final TextView gridItemTextView = mSolo.getText(gridItemTitle);
+                return isPinned == (gridItemTextView.getCompoundDrawables()[0] != null);
+            }
+        }, MAX_WAIT_MS);
+        mAsserter.ok(success, "Top site item was pinned: " + isPinned, null);
+    }
+
+    public void pinTopSite(String gridItemTitle) {
+        verifyPinned(false, gridItemTitle);
+        mSolo.clickLongOnText(gridItemTitle);
+        boolean dialogOpened = mSolo.waitForDialogToOpen();
+        mAsserter.ok(dialogOpened, "Pin site dialog opened: " + gridItemTitle, null);
+        boolean pinSiteFound = waitForText(StringHelper.CONTEXT_MENU_PIN_SITE);
+        mAsserter.ok(pinSiteFound, "Found pin site menu item", null);
+        mSolo.clickOnText(StringHelper.CONTEXT_MENU_PIN_SITE);
+        verifyPinned(true, gridItemTitle);
+    }
+
+    public void unpinTopSite(String gridItemTitle) {
+        verifyPinned(true, gridItemTitle);
+        mSolo.clickLongOnText(gridItemTitle);
+        boolean dialogOpened = mSolo.waitForDialogToOpen();
+        mAsserter.ok(dialogOpened, "Pin site dialog opened: " + gridItemTitle, null);
+        boolean unpinSiteFound = waitForText(StringHelper.CONTEXT_MENU_UNPIN_SITE);
+        mAsserter.ok(unpinSiteFound, "Found unpin site menu item", null);
+        mSolo.clickOnText(StringHelper.CONTEXT_MENU_UNPIN_SITE);
+        verifyPinned(false, gridItemTitle);
     }
 
     // Used to perform clicks on pop-up buttons without having to close the virtual keyboard
@@ -558,7 +622,26 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
             }
         }, MAX_WAIT_MS);
         mAsserter.ok(success, "waiting for add tab view", "add tab view available");
+        final Actions.RepeatedEventExpecter pageShowExpecter = mActions.expectGeckoEvent("Content:PageShow");
         mSolo.clickOnView(mSolo.getView(R.id.add_tab));
+        // Wait until we get a PageShow event for a new tab ID
+        for(;;) {
+            try {
+                JSONObject data = new JSONObject(pageShowExpecter.blockForEventData());
+                int tabID = data.getInt("tabID");
+                if (tabID == 0) {
+                    mAsserter.dumpLog("addTab ignoring PageShow for tab 0");
+                    continue;
+                }
+                if (!mKnownTabIDs.contains(tabID)) {
+                    mKnownTabIDs.add(tabID);
+                    break;
+                }
+            } catch(JSONException e) {
+                mAsserter.ok(false, "Exception in addTab", getStackTraceString(e));
+            }
+        }
+        pageShowExpecter.unregisterListener();
     }
 
     public void addTab(String url) {
@@ -568,26 +651,32 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
         inputAndLoadUrl(url);
     }
 
+    public void closeAddedTabs() {
+        for(int tabID : mKnownTabIDs) {
+            closeTab(tabID);
+        }
+    }
+
     /**
      * Gets the AdapterView of the tabs list.
      *
-     * @return List view in the tabs tray
+     * @return List view in the tabs panel
      */
-    private final AdapterView<ListAdapter> getTabsList() {
+    private final AdapterView<ListAdapter> getTabsLayout() {
         Element tabs = mDriver.findElement(getActivity(), R.id.tabs);
         tabs.click();
         return (AdapterView<ListAdapter>) getActivity().findViewById(R.id.normal_tabs);
     }
 
     /**
-     * Gets the view in the tabs tray at the specified index.
+     * Gets the view in the tabs panel at the specified index.
      *
      * @return View at index
      */
     private View getTabViewAt(final int index) {
         final View[] childView = { null };
 
-        final AdapterView<ListAdapter> view = getTabsList();
+        final AdapterView<ListAdapter> view = getTabsLayout();
 
         runOnUiThreadSync(new Runnable() {
             @Override
@@ -734,8 +823,8 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
     }
 
     class Navigation {
-        private String devType;
-        private String osVersion;
+        private final String devType;
+        private final String osVersion;
 
         public Navigation(Device mDevice) {
             devType = mDevice.type;
@@ -760,14 +849,14 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
             Actions.EventExpecter pageShowExpecter = mActions.expectGeckoEvent("Content:PageShow");
 
             if (devType.equals("tablet")) {
-                Element fwdBtn = mDriver.findElement(getActivity(), R.id.forward);
-                fwdBtn.click();
+                mSolo.waitForView(R.id.forward);
+                mSolo.clickOnView(mSolo.getView(R.id.forward));
             } else {
                 mActions.sendSpecialKey(Actions.SpecialKey.MENU);
                 waitForText("^New Tab$");
                 if (!osVersion.equals("2.x")) {
-                    Element fwdBtn = mDriver.findElement(getActivity(), R.id.forward);
-                    fwdBtn.click();
+                    mSolo.waitForView(R.id.forward);
+                    mSolo.clickOnView(mSolo.getView(R.id.forward));
                 } else {
                     mSolo.clickOnText("^Forward$");
                 }
@@ -780,14 +869,14 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
 
         public void reload() {
             if (devType.equals("tablet")) {
-                Element reloadBtn = mDriver.findElement(getActivity(), R.id.reload);
-                reloadBtn.click();
+                mSolo.waitForView(R.id.reload);
+                mSolo.clickOnView(mSolo.getView(R.id.reload));
             } else {
                 mActions.sendSpecialKey(Actions.SpecialKey.MENU);
                 waitForText("^New Tab$");
                 if (!osVersion.equals("2.x")) {
-                    Element reloadBtn = mDriver.findElement(getActivity(), R.id.reload);
-                    reloadBtn.click();
+                    mSolo.waitForView(R.id.reload);
+                    mSolo.clickOnView(mSolo.getView(R.id.reload));
                 } else {
                     mSolo.clickOnText("^Reload$");
                 }
@@ -839,8 +928,8 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
      */
     private class DescriptionCondition<T extends View> implements Condition {
         public T mView;
-        private String mDescr;
-        private Class<T> mCls;
+        private final String mDescr;
+        private final Class<T> mCls;
 
         public DescriptionCondition(Class<T> cls, String descr) {
             mDescr = descr;
@@ -910,7 +999,7 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
     public void setPreferenceAndWaitForChange(final JSONObject jsonPref) {
         mActions.sendGeckoEvent("Preferences:Set", jsonPref.toString());
 
-        // Get the preference name from the json and store it in an array. This array 
+        // Get the preference name from the json and store it in an array. This array
         // will be used later while fetching the preference data.
         String[] prefNames = new String[1];
         try {

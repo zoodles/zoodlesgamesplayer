@@ -32,6 +32,16 @@ AudioChannelServiceChild::GetAudioChannelService()
 {
   MOZ_ASSERT(NS_IsMainThread());
 
+  return gAudioChannelServiceChild;
+
+}
+
+// static
+AudioChannelService*
+AudioChannelServiceChild::GetOrCreateAudioChannelService()
+{
+  MOZ_ASSERT(NS_IsMainThread());
+
   // If we already exist, exit early
   if (gAudioChannelServiceChild) {
     return gAudioChannelServiceChild;
@@ -39,7 +49,7 @@ AudioChannelServiceChild::GetAudioChannelService()
 
   // Create new instance, register, return
   nsRefPtr<AudioChannelServiceChild> service = new AudioChannelServiceChild();
-  NS_ENSURE_TRUE(service, nullptr);
+  MOZ_ASSERT(service);
 
   gAudioChannelServiceChild = service;
   return gAudioChannelServiceChild;
@@ -72,13 +82,15 @@ AudioChannelServiceChild::GetState(AudioChannelAgent* aAgent, bool aElementHidde
   AudioChannelState state = AUDIO_CHANNEL_STATE_MUTED;
   bool oldElementHidden = data->mElementHidden;
 
-  UpdateChannelType(data->mType, CONTENT_PROCESS_ID_MAIN, aElementHidden, oldElementHidden);
+  UpdateChannelType(data->mChannel, CONTENT_PROCESS_ID_MAIN, aElementHidden,
+                    oldElementHidden);
 
   // Update visibility.
   data->mElementHidden = aElementHidden;
 
   ContentChild* cc = ContentChild::GetSingleton();
-  cc->SendAudioChannelGetState(data->mType, aElementHidden, oldElementHidden, &state);
+  cc->SendAudioChannelGetState(data->mChannel, aElementHidden, oldElementHidden,
+                               &state);
   data->mState = state;
   cc->SendAudioChannelChangedNotification();
 
@@ -87,14 +99,12 @@ AudioChannelServiceChild::GetState(AudioChannelAgent* aAgent, bool aElementHidde
 
 void
 AudioChannelServiceChild::RegisterAudioChannelAgent(AudioChannelAgent* aAgent,
-                                                    AudioChannelType aType,
+                                                    AudioChannel aChannel,
                                                     bool aWithVideo)
 {
-  MOZ_ASSERT(aType != AUDIO_CHANNEL_DEFAULT);
+  AudioChannelService::RegisterAudioChannelAgent(aAgent, aChannel, aWithVideo);
 
-  AudioChannelService::RegisterAudioChannelAgent(aAgent, aType, aWithVideo);
-
-  ContentChild::GetSingleton()->SendAudioChannelRegisterType(aType, aWithVideo);
+  ContentChild::GetSingleton()->SendAudioChannelRegisterType(aChannel, aWithVideo);
 
   nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
   if (obs) {
@@ -117,7 +127,7 @@ AudioChannelServiceChild::UnregisterAudioChannelAgent(AudioChannelAgent* aAgent)
   AudioChannelService::UnregisterAudioChannelAgent(aAgent);
 
   ContentChild::GetSingleton()->SendAudioChannelUnregisterType(
-      data.mType, data.mElementHidden, data.mWithVideo);
+      data.mChannel, data.mElementHidden, data.mWithVideo);
 
   nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
   if (obs) {
@@ -132,11 +142,11 @@ AudioChannelServiceChild::UnregisterAudioChannelAgent(AudioChannelAgent* aAgent)
 }
 
 void
-AudioChannelServiceChild::SetDefaultVolumeControlChannel(
-  AudioChannelType aType, bool aHidden)
+AudioChannelServiceChild::SetDefaultVolumeControlChannel(int32_t aChannel,
+                                                         bool aHidden)
 {
   ContentChild *cc = ContentChild::GetSingleton();
   if (cc) {
-    cc->SendAudioChannelChangeDefVolChannel(aType, aHidden);
+    cc->SendAudioChannelChangeDefVolChannel(aChannel, aHidden);
   }
 }

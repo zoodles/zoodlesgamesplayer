@@ -6,6 +6,8 @@
 // Check that the variables view sidebar can be closed by pressing Escape in the
 // web console.
 
+"use strict";
+
 const TEST_URI = "http://example.com/browser/browser/devtools/webconsole/test/test-eval-in-stackframe.html";
 
 function test()
@@ -23,7 +25,7 @@ function test()
     ok(msg, "output message found");
 
     let anchor = msg.querySelector("a");
-    let body = msg.querySelector(".body");
+    let body = msg.querySelector(".message-body");
     ok(anchor, "object anchor");
     ok(body, "message body");
     ok(body.textContent.contains('testProp: "testValue"'), "message text check");
@@ -44,9 +46,6 @@ function test()
     let prop = result.matchedProp;
     ok(prop, "matched the |testProp| property in the variables view");
 
-    is(content.wrappedJSObject.fooObj.testProp, result.value,
-       "|fooObj.testProp| value is correct");
-
     vview.window.focus();
 
     executeSoon(() => {
@@ -59,7 +58,7 @@ function test()
     msg = yield execute("window.location");
     ok(msg, "output message found");
 
-    body = msg.querySelector(".body");
+    body = msg.querySelector(".message-body");
     ok(body, "message body");
     anchor = msg.querySelector("a");
     ok(anchor, "object anchor");

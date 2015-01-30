@@ -23,13 +23,18 @@ namespace layers {
 class GLManagerCompositor : public GLManager
 {
 public:
-  GLManagerCompositor(CompositorOGL* aCompositor)
+  explicit GLManagerCompositor(CompositorOGL* aCompositor)
     : mImpl(aCompositor)
   {}
 
   virtual GLContext* gl() const MOZ_OVERRIDE
   {
     return mImpl->gl();
+  }
+
+  virtual void ActivateProgram(ShaderProgramOGL *aProg) MOZ_OVERRIDE
+  {
+    mImpl->ActivateProgram(aProg);
   }
 
   virtual ShaderProgramOGL* GetProgram(GLenum aTarget, gfx::SurfaceFormat aFormat) MOZ_OVERRIDE
@@ -43,9 +48,11 @@ public:
     return mImpl->GetProjMatrix();
   }
 
-  virtual void BindAndDrawQuad(ShaderProgramOGL *aProg) MOZ_OVERRIDE
+  virtual void BindAndDrawQuad(ShaderProgramOGL *aProg,
+                               const gfx::Rect& aLayerRect,
+                               const gfx::Rect& aTextureRect) MOZ_OVERRIDE
   {
-    mImpl->BindAndDrawQuad(aProg);
+    mImpl->BindAndDrawQuad(aProg, aLayerRect, aTextureRect);
   }
 
 private:

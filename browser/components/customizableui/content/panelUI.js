@@ -149,10 +149,6 @@ const PanelUI = {
       } else {
         anchor = aEvent.target;
       }
-      let iconAnchor =
-        document.getAnonymousElementByAttribute(anchor, "class",
-                                                "toolbarbutton-icon");
-      this.panel.openPopup(iconAnchor || anchor);
 
       this.panel.addEventListener("popupshown", function onPopupShown() {
         this.removeEventListener("popupshown", onPopupShown);
@@ -162,6 +158,11 @@ const PanelUI = {
         gCustomizationTabPreloader.ensurePreloading();
         deferred.resolve();
       });
+
+      let iconAnchor =
+        document.getAnonymousElementByAttribute(anchor, "class",
+                                                "toolbarbutton-icon");
+      this.panel.openPopup(iconAnchor || anchor);
     });
 
     return deferred.promise;
@@ -198,6 +199,10 @@ const PanelUI = {
         this.toggle(aEvent);
         break;
     }
+  },
+
+  get isReady() {
+    return !!this._isReady;
   },
 
   /**
@@ -263,6 +268,7 @@ const PanelUI = {
       }
       this._updateQuitTooltip();
       this.panel.hidden = false;
+      this._isReady = true;
     }.bind(this)).then(null, Cu.reportError);
 
     return this._readyPromise;
@@ -323,6 +329,9 @@ const PanelUI = {
       tempPanel.setAttribute("type", "arrow");
       tempPanel.setAttribute("id", "customizationui-widget-panel");
       tempPanel.setAttribute("class", "cui-widget-panel");
+      if (this._disableAnimations) {
+        tempPanel.setAttribute("animate", "false");
+      }
       tempPanel.setAttribute("context", "");
       document.getElementById(CustomizableUI.AREA_NAVBAR).appendChild(tempPanel);
       // If the view has a footer, set a convenience class on the panel.
@@ -330,6 +339,7 @@ const PanelUI = {
                                  viewNode.querySelector(".panel-subview-footer"));
 
       let multiView = document.createElement("panelmultiview");
+      multiView.setAttribute("id", "customizationui-widget-multiview");
       multiView.setAttribute("nosubviews", "true");
       tempPanel.appendChild(multiView);
       multiView.setAttribute("mainViewIsSubView", "true");
@@ -354,19 +364,24 @@ const PanelUI = {
         document.getAnonymousElementByAttribute(aAnchor, "class",
                                                 "toolbarbutton-icon");
 
+      if (iconAnchor && aAnchor.id) {
+        iconAnchor.setAttribute("consumeanchor", aAnchor.id);
+      }
       tempPanel.openPopup(iconAnchor || aAnchor, "bottomcenter topright");
     }
   },
 
   /**
-   * Open a dialog window that allow the user to customize listed character sets.
+   * NB: The enable- and disableSingleSubviewPanelAnimations methods only
+   * affect the hiding/showing animations of single-subview panels (tempPanel
+   * in the showSubView method).
    */
-  onCharsetCustomizeCommand: function() {
-    this.hide();
-    window.openDialog("chrome://global/content/customizeCharset.xul",
-                      "PrefWindow",
-                      "chrome,modal=yes,resizable=yes",
-                      "browser");
+  disableSingleSubviewPanelAnimations: function() {
+    this._disableAnimations = true;
+  },
+
+  enableSingleSubviewPanelAnimations: function() {
+    this._disableAnimations = false;
   },
 
   onWidgetAfterDOMChange: function(aNode, aNextNode, aContainer, aWasRemoval) {

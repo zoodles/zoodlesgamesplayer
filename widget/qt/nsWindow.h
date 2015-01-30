@@ -23,9 +23,6 @@
 
 #ifdef MOZ_LOGGING
 
-// make sure that logging is enabled before including prlog.h
-#define FORCE_PR_LOG
-
 #include "prlog.h"
 #include "nsTArray.h"
 
@@ -85,7 +82,6 @@ class nsWindow : public nsBaseWidget,
 {
 public:
     nsWindow();
-    virtual ~nsWindow();
 
     NS_DECL_ISUPPORTS_INHERITED
 
@@ -138,7 +134,7 @@ public:
     }
     NS_IMETHOD ReparentNativeWidget(nsIWidget* aNewParent);
 
-    NS_IMETHOD MakeFullScreen(bool aFullScreen);
+    NS_IMETHOD MakeFullScreen(bool aFullScreen, nsIScreen* aTargetScreen = nullptr);
     virtual mozilla::layers::LayerManager*
         GetLayerManager(PLayerTransactionChild* aShadowManager = nullptr,
                         LayersBackend aBackendHint = mozilla::layers::LayersBackend::LAYERS_NONE,
@@ -150,6 +146,8 @@ public:
     NS_IMETHOD_(InputContext) GetInputContext();
 
     virtual uint32_t GetGLFrameBufferFormat() MOZ_OVERRIDE;
+
+    mozilla::TemporaryRef<mozilla::gfx::DrawTarget> StartRemoteDrawing() MOZ_OVERRIDE;
 
     // Widget notifications
     virtual void OnPaint();
@@ -170,6 +168,8 @@ public:
     virtual nsEventStatus tabletEvent(QTabletEvent* event);
 
 protected:
+    virtual ~nsWindow();
+
     nsWindow* mParent;
     bool  mVisible;
     InputContext mInputContext;
@@ -177,10 +177,6 @@ protected:
     MozQWidget* mWidget;
 
 private:
-    void InitButtonEvent(mozilla::WidgetMouseEvent& event,
-                         QMouseEvent* aEvent,
-                         int aClickCount = 1);
-
     // event handling code
     nsEventStatus DispatchEvent(mozilla::WidgetGUIEvent* aEvent);
     void DispatchActivateEvent(void);

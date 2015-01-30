@@ -20,6 +20,7 @@
 #include "nsIConsoleService.h"
 #include "nsIScriptError.h"
 #include "nsDocShellLoadTypes.h"
+#include "nsIMultiPartChannel.h"
 
 using namespace mozilla;
 
@@ -28,8 +29,9 @@ using namespace mozilla;
 //*****************************************************************************
 
 nsDSURIContentListener::nsDSURIContentListener(nsDocShell* aDocShell)
-    : mDocShell(aDocShell), 
-      mParentContentListener(nullptr)
+    : mDocShell(aDocShell)
+    , mExistingJPEGRequest(nullptr)
+    , mParentContentListener(nullptr)
 {
 }
 
@@ -118,8 +120,33 @@ nsDSURIContentListener::DoContent(const char* aContentType,
 
         mDocShell->SetLoadType(aIsContentPreferred ? LOAD_LINK : LOAD_NORMAL);
     }
+  
+    // In case of multipart jpeg request (mjpeg) we don't really want to
+    // create new viewer since the one we already have is capable of
+    // rendering multipart jpeg correctly (see bug 625012)
+    nsCOMPtr<nsIChannel> baseChannel;
+    if (nsCOMPtr<nsIMultiPartChannel> mpchan = do_QueryInterface(request)) {
+        mpchan->GetBaseChannel(getter_AddRefs(baseChannel));
+    }
 
-    rv = mDocShell->CreateContentViewer(aContentType, request, aContentHandler);
+    bool reuseCV = baseChannel
+        && baseChannel == mExistingJPEGRequest
+        && nsDependentCString(aContentType).EqualsLiteral("image/jpeg");
+
+    if (mExistingJPEGStreamListener && reuseCV) {
+        nsRefPtr<nsIStreamListener> copy(mExistingJPEGStreamListener);
+        copy.forget(aContentHandler);
+        rv = NS_OK;
+    } else {
+        rv = mDocShell->CreateContentViewer(aContentType, request, aContentHandler);
+        if (NS_SUCCEEDED(rv) && reuseCV) {
+           mExistingJPEGStreamListener = *aContentHandler;
+        } else {
+           mExistingJPEGStreamListener = nullptr;
+        }
+        mExistingJPEGRequest = baseChannel;
+    }
+
 
     if (rv == NS_ERROR_REMOTE_XUL) {
       request->Cancel(rv);
@@ -134,7 +161,8 @@ nsDSURIContentListener::DoContent(const char* aContentType,
     }
 
     if (loadFlags & nsIChannel::LOAD_RETARGETED_DOCUMENT_URI) {
-        nsCOMPtr<nsIDOMWindow> domWindow = do_GetInterface(static_cast<nsIDocShell*>(mDocShell));
+        nsCOMPtr<nsIDOMWindow> domWindow = mDocShell ? mDocShell->GetWindow()
+          : nullptr;
         NS_ENSURE_TRUE(domWindow, NS_ERROR_FAILURE);
         domWindow->Focus();
     }
@@ -286,7 +314,7 @@ bool nsDSURIContentListener::CheckOneFrameOptionsPolicy(nsIHttpChannel *httpChan
     // window, if we're not the top.  X-F-O: SAMEORIGIN requires that the
     // document must be same-origin with top window.  X-F-O: DENY requires that
     // the document must never be framed.
-    nsCOMPtr<nsIDOMWindow> thisWindow = do_GetInterface(static_cast<nsIDocShell*>(mDocShell));
+    nsCOMPtr<nsIDOMWindow> thisWindow = mDocShell->GetWindow();
     // If we don't have DOMWindow there is no risk of clickjacking
     if (!thisWindow)
         return true;
@@ -328,7 +356,7 @@ bool nsDSURIContentListener::CheckOneFrameOptionsPolicy(nsIHttpChannel *httpChan
         }
 
         bool system = false;
-        topDoc = do_GetInterface(parentDocShellItem);
+        topDoc = parentDocShellItem->GetDocument();
         if (topDoc) {
             if (NS_SUCCEEDED(ssm->IsSystemPrincipal(topDoc->NodePrincipal(),
                                                     &system)) && system) {
@@ -355,7 +383,7 @@ bool nsDSURIContentListener::CheckOneFrameOptionsPolicy(nsIHttpChannel *httpChan
         return false;
     }
 
-    topDoc = do_GetInterface(curDocShellItem);
+    topDoc = curDocShellItem->GetDocument();
     nsCOMPtr<nsIURI> topUri;
     topDoc->NodePrincipal()->GetURI(getter_AddRefs(topUri));
 
@@ -452,9 +480,9 @@ nsDSURIContentListener::ReportXFOViolation(nsIDocShellTreeItem* aTopDocShellItem
                                            nsIURI* aThisURI,
                                            XFOHeader aHeader)
 {
-    nsresult rv = NS_OK;
+  MOZ_ASSERT(aTopDocShellItem, "Need a top docshell");
 
-    nsCOMPtr<nsPIDOMWindow> topOuterWindow = do_GetInterface(aTopDocShellItem);
+    nsCOMPtr<nsPIDOMWindow> topOuterWindow = aTopDocShellItem->GetWindow();
     if (!topOuterWindow)
         return;
 
@@ -465,10 +493,8 @@ nsDSURIContentListener::ReportXFOViolation(nsIDocShellTreeItem* aTopDocShellItem
 
     nsCOMPtr<nsIURI> topURI;
 
-    nsCOMPtr<nsIDocument> document;
-
-    document = do_GetInterface(aTopDocShellItem);
-    rv = document->NodePrincipal()->GetURI(getter_AddRefs(topURI));
+    nsCOMPtr<nsIDocument> document = aTopDocShellItem->GetDocument();
+    nsresult rv = document->NodePrincipal()->GetURI(getter_AddRefs(topURI));
     if (NS_FAILED(rv))
         return;
 
@@ -507,7 +533,7 @@ nsDSURIContentListener::ReportXFOViolation(nsIDocShellTreeItem* aTopDocShellItem
         case eALLOWFROM:
             msg.AppendLiteral(" does not permit framing by ");
             msg.Append(NS_ConvertUTF8toUTF16(topURIString));
-            msg.AppendLiteral(".");
+            msg.Append('.');
             break;
     }
 

@@ -7,7 +7,7 @@ Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "Promise",
-  "resource://gre/modules/commonjs/sdk/core/promise.js");
+  "resource://gre/modules/Promise.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "PlacesUtils",
   "resource://gre/modules/PlacesUtils.jsm");
 
@@ -71,6 +71,7 @@ function initApp() {
     blocklistFile.remove(false);
   var source = do_get_file("blocklist.xml");
   source.copyTo(gProfD, "blocklist.xml");
+  blocklistFile.lastModifiedTime = Date.now();
 }
 
 function AsyncRunner() {
@@ -203,23 +204,4 @@ function promiseAddVisits(aPlaceInfo)
   );
 
   return deferred.promise;
-}
-
-function promiseTopicObserved(aTopic)
-{
-  let deferred = Promise.defer();
-
-  Services.obs.addObserver(
-    function PTO_observe(aSubject, aTopic, aData) {
-      Services.obs.removeObserver(PTO_observe, aTopic);
-      deferred.resolve([aSubject, aData]);
-    }, aTopic, false);
-
-  return deferred.promise;
-}
-
-function promiseClearHistory() {
-  let promise = promiseTopicObserved(PlacesUtils.TOPIC_EXPIRATION_FINISHED);
-  do_execute_soon(function() PlacesUtils.bhistory.removeAllPages());
-  return promise;
 }

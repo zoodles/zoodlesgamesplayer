@@ -24,10 +24,24 @@ class SANDBOX_EXPORT SandboxBroker
 {
 public:
   SandboxBroker();
-  bool AllowPipe(const wchar_t *aPath);
-  bool LaunchApp(const wchar_t *aPath, const wchar_t *aArguments,
+  bool LaunchApp(const wchar_t *aPath,
+                 const wchar_t *aArguments,
+                 const bool aEnableLogging,
                  void **aProcessHandle);
   virtual ~SandboxBroker();
+
+  // Security levels for different types of processes
+#if defined(MOZ_CONTENT_SANDBOX)
+  bool SetSecurityLevelForContentProcess(bool aMoreStrict);
+#endif
+  bool SetSecurityLevelForPluginProcess();
+  bool SetSecurityLevelForIPDLUnitTestProcess();
+  bool SetSecurityLevelForGMPlugin();
+
+  // File system permissions
+  bool AllowReadFile(wchar_t const *file);
+  bool AllowReadWriteFile(wchar_t const *file);
+  bool AllowDirectory(wchar_t const *dir);
 
 private:
   static sandbox::BrokerServices *sBrokerService;

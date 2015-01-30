@@ -1,6 +1,11 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 package org.mozilla.gecko.tests;
 
-import org.mozilla.gecko.*;
+import org.mozilla.gecko.Actions;
+import org.mozilla.gecko.PaintedSurface;
 
 /**
  * Basic test for axis locking behaviour.
@@ -11,13 +16,8 @@ import org.mozilla.gecko.*;
  * - Verify that the 45-degree angle was not thrown out and it dragged diagonally
  */
 public class testAxisLocking extends PixelTest {
-    @Override
-    protected int getTestType() {
-        return TEST_MOCHITEST;
-    }
-
     public void testAxisLocking() {
-        String url = getAbsoluteUrl("/robocop/robocop_boxes.html");
+        String url = getAbsoluteUrl(StringHelper.ROBOCOP_BOXES_URL);
 
         MotionEventHelper meh = new MotionEventHelper(getInstrumentation(), mDriver.getGeckoLeft(), mDriver.getGeckoTop());
 

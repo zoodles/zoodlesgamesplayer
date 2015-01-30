@@ -46,7 +46,6 @@ NS_INTERFACE_MAP_END
 nsHistory::nsHistory(nsPIDOMWindow* aInnerWindow)
   : mInnerWindow(do_GetWeakReference(aInnerWindow))
 {
-  SetIsDOMBinding();
 }
 
 nsHistory::~nsHistory()
@@ -61,9 +60,9 @@ nsHistory::GetParentObject() const
 }
 
 JSObject*
-nsHistory::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+nsHistory::WrapObject(JSContext* aCx)
 {
-  return HistoryBinding::Wrap(aCx, aScope, this);
+  return HistoryBinding::Wrap(aCx, this);
 }
 
 uint32_t
@@ -96,50 +95,46 @@ nsHistory::GetLength(ErrorResult& aRv) const
   return len >= 0 ? len : 0;
 }
 
-JS::Value
-nsHistory::GetState(JSContext* aCx, ErrorResult& aRv) const
+void
+nsHistory::GetState(JSContext* aCx, JS::MutableHandle<JS::Value> aResult,
+                    ErrorResult& aRv) const
 {
   nsCOMPtr<nsPIDOMWindow> win(do_QueryReferent(mInnerWindow));
   if (!win) {
     aRv.Throw(NS_ERROR_NOT_AVAILABLE);
-
-    return JS::UndefinedValue();
+    return;
   }
 
   if (!win->HasActiveDocument()) {
     aRv.Throw(NS_ERROR_DOM_SECURITY_ERR);
-
-    return JS::UndefinedValue();
+    return;
   }
 
   nsCOMPtr<nsIDocument> doc =
     do_QueryInterface(win->GetExtantDoc());
   if (!doc) {
     aRv.Throw(NS_ERROR_NOT_AVAILABLE);
-
-    return JS::UndefinedValue();
+    return;
   }
 
   nsCOMPtr<nsIVariant> variant;
   doc->GetStateObject(getter_AddRefs(variant));
 
   if (variant) {
-    JS::Rooted<JS::Value> jsData(aCx);
-    aRv = variant->GetAsJSVal(&jsData);
+    aRv = variant->GetAsJSVal(aResult);
 
     if (aRv.Failed()) {
-      return JS::UndefinedValue();
+      return;
     }
 
-    if (!JS_WrapValue(aCx, &jsData)) {
+    if (!JS_WrapValue(aCx, aResult)) {
       aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
-      return JS::UndefinedValue();
     }
 
-    return jsData;
+    return;
   }
 
-  return JS::NullValue();
+  aResult.setNull();
 }
 
 void
@@ -153,7 +148,10 @@ nsHistory::Go(int32_t aDelta, ErrorResult& aRv)
   }
 
   if (!aDelta) {
-    nsCOMPtr<nsPIDOMWindow> window(do_GetInterface(GetDocShell()));
+    nsCOMPtr<nsPIDOMWindow> window;
+    if (nsIDocShell* docShell = GetDocShell()) {
+      window = docShell->GetWindow();
+    }
 
     if (window && window->IsHandlingResizeEvent()) {
       // history.go(0) (aka location.reload()) was called on a window
@@ -169,7 +167,7 @@ nsHistory::Go(int32_t aDelta, ErrorResult& aRv)
       nsIPresShell *shell;
       nsPresContext *pcx;
       if (doc && (shell = doc->GetShell()) && (pcx = shell->GetPresContext())) {
-        pcx->RebuildAllStyleData(NS_STYLE_HINT_REFLOW);
+        pcx->RebuildAllStyleData(NS_STYLE_HINT_REFLOW, eRestyle_Subtree);
       }
 
       return;

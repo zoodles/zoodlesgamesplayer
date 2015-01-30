@@ -148,7 +148,7 @@ gfxWindowsSurface::CreateSimilarSurface(gfxContentType aContent,
         return nullptr;
     }
 
-    nsRefPtr<gfxASurface> result = Wrap(surface);
+    nsRefPtr<gfxASurface> result = Wrap(surface, aSize);
     cairo_surface_destroy(surface);
     return result.forget();
 }
@@ -281,17 +281,6 @@ gfxWindowsSurface::EndPage()
 #else
     return NS_ERROR_FAILURE;
 #endif
-}
-
-int32_t
-gfxWindowsSurface::GetDefaultContextFlags() const
-{
-    if (mForPrinting)
-        return gfxContext::FLAG_SIMPLIFY_OPERATORS |
-               gfxContext::FLAG_DISABLE_SNAPPING |
-               gfxContext::FLAG_DISABLE_COPY_BACKGROUND;
-
-    return 0;
 }
 
 const gfxIntSize 

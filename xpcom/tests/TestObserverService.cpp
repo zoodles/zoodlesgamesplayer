@@ -34,7 +34,7 @@ class TestObserver MOZ_FINAL : public nsIObserver,
                                public nsSupportsWeakReference
 {
 public:
-    TestObserver( const nsAString &name )
+    explicit TestObserver( const nsAString &name )
         : mName( name ) {
     }
     NS_DECL_ISUPPORTS
@@ -46,7 +46,7 @@ private:
     ~TestObserver() {}
 };
 
-NS_IMPL_ISUPPORTS2( TestObserver, nsIObserver, nsISupportsWeakReference )
+NS_IMPL_ISUPPORTS( TestObserver, nsIObserver, nsISupportsWeakReference )
 
 NS_IMETHODIMP
 TestObserver::Observe( nsISupports     *aSubject,

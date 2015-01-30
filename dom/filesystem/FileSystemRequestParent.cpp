@@ -6,6 +6,7 @@
 #include "mozilla/dom/FileSystemRequestParent.h"
 
 #include "CreateDirectoryTask.h"
+#include "CreateFileTask.h"
 #include "GetFileOrDirectoryTask.h"
 #include "RemoveTask.h"
 
@@ -40,6 +41,7 @@ FileSystemRequestParent::Dispatch(ContentParent* aParent,
   switch (aParams.type()) {
 
     FILESYSTEM_REQUEST_PARENT_DISPATCH_ENTRY(CreateDirectory)
+    FILESYSTEM_REQUEST_PARENT_DISPATCH_ENTRY(CreateFile)
     FILESYSTEM_REQUEST_PARENT_DISPATCH_ENTRY(GetFileOrDirectory)
     FILESYSTEM_REQUEST_PARENT_DISPATCH_ENTRY(Remove)
 
@@ -62,7 +64,7 @@ FileSystemRequestParent::Dispatch(ContentParent* aParent,
 
     nsAutoCString permissionName;
     permissionName = mFileSystem->GetPermission();
-    permissionName.AppendLiteral("-");
+    permissionName.Append('-');
     permissionName.Append(access);
 
     if (!AssertAppProcessPermission(aParent, permissionName.get())) {

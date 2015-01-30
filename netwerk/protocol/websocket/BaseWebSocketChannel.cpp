@@ -6,9 +6,11 @@
 
 #include "WebSocketLog.h"
 #include "BaseWebSocketChannel.h"
+#include "MainThreadUtils.h"
 #include "nsILoadGroup.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsAutoPtr.h"
+#include "nsProxyRelease.h"
 #include "nsStandardURL.h"
 
 #if defined(PR_LOGGING)
@@ -23,6 +25,7 @@ BaseWebSocketChannel::BaseWebSocketChannel()
   , mWasOpened(0)
   , mClientSetPingInterval(0)
   , mClientSetPingTimeout(0)
+  , mPingForced(0)
   , mPingInterval(0)
   , mPingResponseTimeout(10000)
 {
@@ -92,6 +95,20 @@ BaseWebSocketChannel::SetLoadGroup(nsILoadGroup *aLoadGroup)
 {
   LOG(("BaseWebSocketChannel::SetLoadGroup() %p\n", this));
   mLoadGroup = aLoadGroup;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+BaseWebSocketChannel::SetLoadInfo(nsILoadInfo* aLoadInfo)
+{
+  mLoadInfo = aLoadInfo;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+BaseWebSocketChannel::GetLoadInfo(nsILoadInfo** aLoadInfo)
+{
+  NS_IF_ADDREF(*aLoadInfo = mLoadInfo);
   return NS_OK;
 }
 
@@ -225,6 +242,15 @@ BaseWebSocketChannel::NewURI(const nsACString & aSpec, const char *aOriginCharse
 }
 
 NS_IMETHODIMP
+BaseWebSocketChannel::NewChannel2(nsIURI* aURI,
+                                  nsILoadInfo* aLoadInfo,
+                                  nsIChannel** outChannel)
+{
+  LOG(("BaseWebSocketChannel::NewChannel2() %p\n", this));
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
 BaseWebSocketChannel::NewChannel(nsIURI *aURI, nsIChannel **_retval)
 {
   LOG(("BaseWebSocketChannel::NewChannel() %p\n", this));
@@ -240,6 +266,44 @@ BaseWebSocketChannel::AllowPort(int32_t port, const char *scheme,
   // do not override any blacklisted ports
   *_retval = false;
   return NS_OK;
+}
+
+//-----------------------------------------------------------------------------
+// BaseWebSocketChannel::nsIThreadRetargetableRequest
+//-----------------------------------------------------------------------------
+
+NS_IMETHODIMP
+BaseWebSocketChannel::RetargetDeliveryTo(nsIEventTarget* aTargetThread)
+{
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(aTargetThread);
+  MOZ_ASSERT(!mTargetThread, "Delivery target should be set once, before AsyncOpen");
+  MOZ_ASSERT(!mWasOpened, "Should not be called after AsyncOpen!");
+
+  mTargetThread = do_QueryInterface(aTargetThread);
+  MOZ_ASSERT(mTargetThread);
+  return NS_OK;
+}
+
+BaseWebSocketChannel::ListenerAndContextContainer::ListenerAndContextContainer(
+                                               nsIWebSocketListener* aListener,
+                                               nsISupports* aContext)
+  : mListener(aListener)
+  , mContext(aContext)
+{
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(mListener);
+}
+
+BaseWebSocketChannel::ListenerAndContextContainer::~ListenerAndContextContainer()
+{
+  MOZ_ASSERT(mListener);
+
+  nsCOMPtr<nsIThread> mainThread;
+  NS_GetMainThread(getter_AddRefs(mainThread));
+
+  NS_ProxyRelease(mainThread, mListener, false);
+  NS_ProxyRelease(mainThread, mContext, false);
 }
 
 } // namespace net

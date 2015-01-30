@@ -25,10 +25,6 @@ function test()
     if (Services.prefs.prefHasUserValue(kPrefName_AutoScroll))
       Services.prefs.clearUserPref(kPrefName_AutoScroll);
 
-    // cleaning-up
-    gBrowser.addTab("about:blank");
-    gBrowser.removeCurrentTab();
-
     // waitForFocus() fixes a failure in the next test if the latter runs too soon.
     waitForFocus(finish);
   }
@@ -59,8 +55,10 @@ function test()
                                gBrowser.contentWindow);
 
     var iframe = gBrowser.contentDocument.getElementById("iframe");
-    var e = iframe.contentDocument.createEvent("pagetransition");
-    e.initPageTransitionEvent("pagehide", true, true, false);
+    var e = new iframe.contentWindow.PageTransitionEvent("pagehide",
+                                                         { bubbles: true,
+                                                           cancelable: true,
+                                                           persisted: false });
     iframe.contentDocument.dispatchEvent(e);
     iframe.contentDocument.documentElement.dispatchEvent(e);
 

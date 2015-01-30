@@ -91,10 +91,10 @@ DecomposeCacheEntryKey(const nsCString *fullKey,
 class AutoResetStatement
 {
   public:
-    AutoResetStatement(mozIStorageStatement *s)
+    explicit AutoResetStatement(mozIStorageStatement *s)
       : mStatement(s) {}
     ~AutoResetStatement() { mStatement->Reset(); }
-    mozIStorageStatement *operator->() { return mStatement; }
+    mozIStorageStatement *operator->() MOZ_NO_ADDREF_RELEASE_ON_RETURN { return mStatement; }
   private:
     mozIStorageStatement *mStatement;
 };
@@ -151,7 +151,7 @@ DCacheHash(const char * key)
  * nsOfflineCacheEvictionFunction
  */
 
-NS_IMPL_ISUPPORTS1(nsOfflineCacheEvictionFunction, mozIStorageFunction)
+NS_IMPL_ISUPPORTS(nsOfflineCacheEvictionFunction, mozIStorageFunction)
 
 // helper function for directly exposing the same data file binding
 // path algorithm used in nsOfflineCacheBinding::Create
@@ -194,7 +194,7 @@ nsOfflineCacheEvictionFunction::OnFunctionCall(mozIStorageValueArray *values, ns
   const char *clientID = values->AsSharedUTF8String(0, &valueLen);
   const char *key = values->AsSharedUTF8String(1, &valueLen);
   nsAutoCString fullKey(clientID);
-  fullKey.AppendLiteral(":");
+  fullKey.Append(':');
   fullKey.Append(key);
   int generation  = values->AsInt32(2);
 
@@ -275,15 +275,17 @@ public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSICACHEDEVICEINFO
 
-  nsOfflineCacheDeviceInfo(nsOfflineCacheDevice* device)
+  explicit nsOfflineCacheDeviceInfo(nsOfflineCacheDevice* device)
     : mDevice(device)
   {}
 
 private:
+  ~nsOfflineCacheDeviceInfo() {}
+
   nsOfflineCacheDevice* mDevice;
 };
 
-NS_IMPL_ISUPPORTS1(nsOfflineCacheDeviceInfo, nsICacheDeviceInfo)
+NS_IMPL_ISUPPORTS(nsOfflineCacheDeviceInfo, nsICacheDeviceInfo)
 
 NS_IMETHODIMP
 nsOfflineCacheDeviceInfo::GetDescription(char **aDescription)
@@ -347,6 +349,8 @@ nsOfflineCacheDeviceInfo::GetMaximumSize(uint32_t *aMaximumSize)
 
 class nsOfflineCacheBinding MOZ_FINAL : public nsISupports
 {
+  ~nsOfflineCacheBinding() {}
+
 public:
   NS_DECL_THREADSAFE_ISUPPORTS
 
@@ -514,6 +518,8 @@ CreateCacheEntry(nsOfflineCacheDevice *device,
 
 class nsOfflineCacheEntryInfo MOZ_FINAL : public nsICacheEntryInfo
 {
+  ~nsOfflineCacheEntryInfo() {}
+
 public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSICACHEENTRYINFO
@@ -521,7 +527,7 @@ public:
   nsOfflineCacheRecord *mRec;
 };
 
-NS_IMPL_ISUPPORTS1(nsOfflineCacheEntryInfo, nsICacheEntryInfo)
+NS_IMPL_ISUPPORTS(nsOfflineCacheEntryInfo, nsICacheEntryInfo)
 
 NS_IMETHODIMP
 nsOfflineCacheEntryInfo::GetClientID(char **result)
@@ -591,7 +597,7 @@ nsOfflineCacheEntryInfo::GetDataSize(uint32_t *aDataSize)
  * nsApplicationCacheNamespace
  */
 
-NS_IMPL_ISUPPORTS1(nsApplicationCacheNamespace, nsIApplicationCacheNamespace)
+NS_IMPL_ISUPPORTS(nsApplicationCacheNamespace, nsIApplicationCacheNamespace)
 
 NS_IMETHODIMP
 nsApplicationCacheNamespace::Init(uint32_t itemType,
@@ -629,9 +635,9 @@ nsApplicationCacheNamespace::GetData(nsACString &out)
  * nsApplicationCache
  */
 
-NS_IMPL_ISUPPORTS2(nsApplicationCache,
-                   nsIApplicationCache,
-                   nsISupportsWeakReference)
+NS_IMPL_ISUPPORTS(nsApplicationCache,
+                  nsIApplicationCache,
+                  nsISupportsWeakReference)
 
 nsApplicationCache::nsApplicationCache()
   : mDevice(nullptr)
@@ -855,7 +861,7 @@ nsApplicationCache::GetUsage(uint32_t *usage)
 
 class nsCloseDBEvent : public nsRunnable {
 public:
-  nsCloseDBEvent(mozIStorageConnection *aDB)
+  explicit nsCloseDBEvent(mozIStorageConnection *aDB)
   {
     mDB = aDB;
   }
@@ -887,10 +893,13 @@ nsOfflineCacheDevice::nsOfflineCacheDevice()
   , mDeltaCounter(0)
   , mAutoShutdown(false)
   , mLock("nsOfflineCacheDevice.lock")
-  , mActiveCaches(5)
-  , mLockedEntries(64)
+  , mActiveCaches(4)
+  , mLockedEntries(32)
 {
 }
+
+nsOfflineCacheDevice::~nsOfflineCacheDevice()
+{}
 
 /* static */
 bool

@@ -10,6 +10,7 @@
 
 class nsAccessKeyInfo;
 class nsAsyncAccesskeyUpdate;
+class nsFontMetrics;
 
 typedef nsLeafBoxFrame nsTextBoxFrameSuper;
 class nsTextBoxFrame : public nsTextBoxFrameSuper
@@ -23,15 +24,15 @@ public:
   virtual nsSize GetMinSize(nsBoxLayoutState& aBoxLayoutState) MOZ_OVERRIDE;
   virtual nscoord GetBoxAscent(nsBoxLayoutState& aBoxLayoutState) MOZ_OVERRIDE;
   NS_IMETHOD DoLayout(nsBoxLayoutState& aBoxLayoutState) MOZ_OVERRIDE;
-  virtual void MarkIntrinsicWidthsDirty() MOZ_OVERRIDE;
+  virtual void MarkIntrinsicISizesDirty() MOZ_OVERRIDE;
 
   enum CroppingStyle { CropNone, CropLeft, CropRight, CropCenter };
 
   friend nsIFrame* NS_NewTextBoxFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
 
-  virtual void Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        asPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         asPrevInFlow) MOZ_OVERRIDE;
 
   virtual void DestroyFrom(nsIFrame* aDestructRoot) MOZ_OVERRIDE;
 
@@ -64,6 +65,8 @@ public:
 
   void GetCroppedTitle(nsString& aTitle) const { aTitle = mCroppedTitle; }
 
+  virtual void DidSetStyleContext(nsStyleContext* aOldStyleContext) MOZ_OVERRIDE;
+
 protected:
   friend class nsAsyncAccesskeyUpdate;
   friend class nsDisplayXULTextBox;
@@ -73,18 +76,23 @@ protected:
   void UpdateAccessTitle();
   void UpdateAccessIndex();
 
+  // Recompute our title, ignoring the access key but taking into
+  // account text-transform.
+  void RecomputeTitle();
+
   // REVIEW: SORRY! Couldn't resist devirtualizing these
   void LayoutTitle(nsPresContext*      aPresContext,
                    nsRenderingContext& aRenderingContext,
                    const nsRect&        aRect);
 
-  void CalculateUnderline(nsRenderingContext& aRenderingContext);
+  void CalculateUnderline(nsRenderingContext& aRenderingContext,
+                          nsFontMetrics& aFontMetrics);
 
   void CalcTextSize(nsBoxLayoutState& aBoxLayoutState);
 
   void CalcDrawRect(nsRenderingContext &aRenderingContext);
 
-  nsTextBoxFrame(nsIPresShell* aShell, nsStyleContext* aContext);
+  explicit nsTextBoxFrame(nsStyleContext* aContext);
 
   nscoord CalculateTitleForWidth(nsPresContext*      aPresContext,
                                  nsRenderingContext& aRenderingContext,

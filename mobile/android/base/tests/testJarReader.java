@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 package org.mozilla.gecko.tests;
 
 import java.io.InputStream;
@@ -10,11 +14,6 @@ import org.mozilla.gecko.util.GeckoJarReader;
  * as loading some invalid jar urls.
  */
 public class testJarReader extends BaseTest {
-    @Override
-    protected int getTestType() {
-        return TEST_MOCHITEST;
-    }
-
     public void testJarReader() {
         String appPath = getActivity().getApplication().getPackageResourcePath();
         mAsserter.isnot(appPath, null, "getPackageResourcePath is non-null");

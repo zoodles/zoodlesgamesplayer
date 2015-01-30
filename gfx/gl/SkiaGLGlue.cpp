@@ -322,7 +322,7 @@ const GLubyte* glGetString_mozilla(GrGLenum name)
     // on the GL implementation and change them to match what GLContext actually exposes.
 
     if (name == LOCAL_GL_VERSION) {
-        if (sGLContext.get()->IsGLES2()) {
+        if (sGLContext.get()->IsGLES()) {
             return reinterpret_cast<const GLubyte*>("OpenGL ES 2.0");
         } else {
             return reinterpret_cast<const GLubyte*>("2.0");
@@ -336,7 +336,7 @@ const GLubyte* glGetString_mozilla(GrGLenum name)
         if (!extensionsStringBuilt) {
             extensionsString[0] = '\0';
 
-            if (sGLContext.get()->IsGLES2()) {
+            if (sGLContext.get()->IsGLES()) {
                 // OES is only applicable to GLES2
                 if (sGLContext.get()->IsExtensionSupported(GLContext::OES_packed_depth_stencil)) {
                     strcat(extensionsString, "GL_OES_packed_depth_stencil ");
@@ -384,7 +384,7 @@ const GLubyte* glGetString_mozilla(GrGLenum name)
         return reinterpret_cast<const GLubyte*>(extensionsString);
 
     } else if (name == LOCAL_GL_SHADING_LANGUAGE_VERSION) {
-        if (sGLContext.get()->IsGLES2()) {
+        if (sGLContext.get()->IsGLES()) {
             return reinterpret_cast<const GLubyte*>("OpenGL ES GLSL ES 1.0");
         } else {
             return reinterpret_cast<const GLubyte*>("1.10");
@@ -730,33 +730,6 @@ GrGLvoid glGenVertexArrays_mozilla(GrGLsizei n, GrGLuint *arrays) {
     return sGLContext.get()->fGenVertexArrays(n, arrays);
 }
 
-// Additional functions required for desktop GL < version 3.2
-
-GrGLvoid glLoadMatrixf_mozilla(const GLfloat* matrix)
-{
-    return sGLContext.get()->fLoadMatrixf(matrix);
-}
-
-GrGLvoid glLoadIdentity_mozilla()
-{
-    return sGLContext.get()->fLoadIdentity();
-}
-
-GrGLvoid glMatrixMode_mozilla(GrGLenum mode)
-{
-    return sGLContext.get()->fMatrixMode(mode);
-}
-
-GrGLvoid glTexGeni_mozilla(GrGLenum coord, GrGLenum pname, GrGLint param)
-{
-    return sGLContext.get()->fTexGeni(coord, pname, param);
-}
-
-GrGLvoid glTexGenfv_mozilla(GrGLenum coord, GrGLenum pname, const GrGLfloat* param)
-{
-    return sGLContext.get()->fTexGenfv(coord, pname, param);
-}
-
 } // extern "C"
 
 static GrGLInterface* CreateGrGLInterfaceFromGLContext(GLContext* context)
@@ -770,7 +743,7 @@ static GrGLInterface* CreateGrGLInterfaceFromGLContext(GLContext* context)
     context->MakeCurrent();
 
     // We support both desktop GL and GLES2
-    if (context->IsGLES2()) {
+    if (context->IsGLES()) {
         i->fStandard = kGLES_GrGLStandard;
     } else {
         i->fStandard = kGL_GrGLStandard;
@@ -778,6 +751,7 @@ static GrGLInterface* CreateGrGLInterfaceFromGLContext(GLContext* context)
 
     GrGLExtensions extensions;
     if (!extensions.init(i->fStandard, glGetString_mozilla, NULL, glGetIntegerv_mozilla)) {
+        delete i;
         return nullptr;
     }
 
@@ -915,23 +889,13 @@ static GrGLInterface* CreateGrGLInterfaceFromGLContext(GLContext* context)
     // Desktop OpenGL > 2.0
     i->fFunctions.fDrawBuffers = glDrawBuffers_mozilla;
 
-    // Desktop OpenGL < 3.2 (which we pretend to be)
-    i->fFunctions.fLoadIdentity = glLoadIdentity_mozilla;
-    i->fFunctions.fLoadMatrixf = glLoadMatrixf_mozilla;
-    i->fFunctions.fMatrixMode = glMatrixMode_mozilla;
-    i->fFunctions.fTexGenfv = glTexGenfv_mozilla;
-    i->fFunctions.fTexGeni = glTexGeni_mozilla;
-
     return i;
 }
 
 SkiaGLGlue::SkiaGLGlue(GLContext* context)
     : mGLContext(context)
 {
-    SkAutoTUnref<GrGLInterface> i(CreateGrGLInterfaceFromGLContext(mGLContext));
-    i->fCallbackData = reinterpret_cast<GrGLInterfaceCallbackData>(this);
-    mGrGLInterface = i;
-    SkAutoTUnref<GrContext> gr(GrContext::Create(kOpenGL_GrBackend, (GrBackendContext)mGrGLInterface.get()));
-
-    mGrContext = gr;
+    mGrGLInterface.adopt(CreateGrGLInterfaceFromGLContext(mGLContext));
+    mGrGLInterface->fCallbackData = reinterpret_cast<GrGLInterfaceCallbackData>(this);
+    mGrContext.adopt(GrContext::Create(kOpenGL_GrBackend, (GrBackendContext)mGrGLInterface.get()));
 }

@@ -26,7 +26,7 @@ public class SyncConfiguration {
 
   public class EditorBranch implements Editor {
 
-    private String prefix;
+    private final String prefix;
     private Editor editor;
 
     public EditorBranch(SyncConfiguration config, String prefix) {
@@ -105,8 +105,8 @@ public class SyncConfiguration {
    */
   public class ConfigurationBranch implements SharedPreferences {
 
-    private SyncConfiguration config;
-    private String prefix;                // Including trailing period.
+    private final SyncConfiguration config;
+    private final String prefix;                // Including trailing period.
 
     public ConfigurationBranch(SyncConfiguration syncConfiguration,
         String prefix) {
@@ -244,6 +244,7 @@ public class SyncConfiguration {
 
   public static final String CLIENTS_COLLECTION_TIMESTAMP = "serverClientsTimestamp";  // When the collection was touched.
   public static final String CLIENT_RECORD_TIMESTAMP = "serverClientRecordTimestamp";  // When our record was touched.
+  public static final String MIGRATION_SENTINEL_CHECK_TIMESTAMP = "migrationSentinelCheckTimestamp";  // When we last looked in meta/fxa_credentials.
 
   public static final String PREF_CLUSTER_URL = "clusterURL";
   public static final String PREF_SYNC_ID = "syncID";
@@ -258,16 +259,9 @@ public class SyncConfiguration {
   public static final String PREF_ACCOUNT_GUID = "account.guid";
   public static final String PREF_CLIENT_NAME = "account.clientName";
   public static final String PREF_NUM_CLIENTS = "account.numClients";
+  public static final String PREF_CLIENT_DATA_TIMESTAMP = "account.clientDataTimestamp";
 
   private static final String API_VERSION = "1.5";
-
-  /**
-   * Create a new SyncConfiguration instance. Pass in a PrefsSource to
-   * provide access to preferences.
-   */
-  public SyncConfiguration(String username, AuthHeaderProvider authHeaderProvider, String prefsPath, PrefsSource prefsSource) {
-    this(username, authHeaderProvider, prefsSource.getPrefs(prefsPath, Utils.SHARED_PREFERENCES_MODE));
-  }
 
   public SyncConfiguration(String username, AuthHeaderProvider authHeaderProvider, SharedPreferences prefs) {
     this.username = username;
@@ -415,8 +409,8 @@ public class SyncConfiguration {
 
     // Our history checkbox drives form history, too.
     // We don't need to do this for enablement: that's done at retrieval time.
-    if (selectedEngines.containsKey("history") && !selectedEngines.get("history").booleanValue()) {
-        declined.add("forms");
+    if (selectedEngines.containsKey("history") && !selectedEngines.get("history")) {
+      declined.add("forms");
     }
 
     String json = jObj.toJSONString();
@@ -479,7 +473,7 @@ public class SyncConfiguration {
     } else {
       edit.putString(PREF_ENABLED_ENGINE_NAMES, setToJSONObjectString(enabledEngineNames));
     }
-    if (declinedEngineNames.isEmpty()) {
+    if (declinedEngineNames == null || declinedEngineNames.isEmpty()) {
       edit.remove(PREF_DECLINED_ENGINE_NAMES);
     } else {
       edit.putString(PREF_DECLINED_ENGINE_NAMES, setToJSONObjectString(declinedEngineNames));
@@ -590,7 +584,7 @@ public class SyncConfiguration {
   }
 
   public long getPersistedServerClientRecordTimestamp() {
-    return getPrefs().getLong(SyncConfiguration.CLIENT_RECORD_TIMESTAMP, 0);
+    return getPrefs().getLong(SyncConfiguration.CLIENT_RECORD_TIMESTAMP, 0L);
   }
 
   public void persistServerClientsTimestamp(long timestamp) {
@@ -598,7 +592,15 @@ public class SyncConfiguration {
   }
 
   public long getPersistedServerClientsTimestamp() {
-    return getPrefs().getLong(SyncConfiguration.CLIENTS_COLLECTION_TIMESTAMP, 0);
+    return getPrefs().getLong(SyncConfiguration.CLIENTS_COLLECTION_TIMESTAMP, 0L);
+  }
+
+  public void persistLastMigrationSentinelCheckTimestamp(long timestamp) {
+    getEditor().putLong(SyncConfiguration.MIGRATION_SENTINEL_CHECK_TIMESTAMP, timestamp).commit();
+  }
+
+  public long getLastMigrationSentinelCheckTimestamp() {
+    return getPrefs().getLong(SyncConfiguration.MIGRATION_SENTINEL_CHECK_TIMESTAMP, 0L);
   }
 
   public void purgeCryptoKeys() {

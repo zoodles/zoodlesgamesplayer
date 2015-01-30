@@ -17,6 +17,7 @@
 #include "nsIProtocolProxyService.h"
 #include "nsIProxyInfo.h"
 #include "nsIProxiedChannel.h"
+#include "nsIHttpProtocolHandler.h"
 
 #include "nsAutoPtr.h"
 #include "nsStandardURL.h"
@@ -31,8 +32,8 @@
 #include "nsProxyRelease.h"
 #include "nsNetUtil.h"
 #include "mozilla/Attributes.h"
-#include "TimeStamp.h"
 #include "mozilla/Telemetry.h"
+#include "mozilla/TimeStamp.h"
 #include "prlog.h"
 
 #include "plbase64.h"
@@ -49,8 +50,11 @@ extern PRLogModuleInfo* gRtspLog;
 namespace mozilla {
 namespace net {
 
-NS_IMPL_ISUPPORTS1(RtspController,
-                   nsIStreamingProtocolController)
+//-----------------------------------------------------------------------------
+// RtspController
+//-----------------------------------------------------------------------------
+NS_IMPL_ISUPPORTS(RtspController,
+                  nsIStreamingProtocolController)
 
 RtspController::RtspController(nsIChannel *channel)
   : mState(INIT)
@@ -66,6 +70,9 @@ RtspController::~RtspController()
   }
 }
 
+//-----------------------------------------------------------------------------
+// nsIStreamingProtocolController
+//-----------------------------------------------------------------------------
 NS_IMETHODIMP
 RtspController::GetTrackMetaData(uint8_t index,
                                  nsIStreamingProtocolMetaData * *_retval)
@@ -111,35 +118,13 @@ RtspController::Pause(void)
 NS_IMETHODIMP
 RtspController::Resume(void)
 {
-  LOG(("RtspController::Resume()"));
-  if (!mRtspSource.get()) {
-    MOZ_ASSERT(mRtspSource.get(), "mRtspSource should not be null!");
-    return NS_ERROR_NOT_INITIALIZED;
-  }
-
-  if (mState != CONNECTED) {
-    return NS_ERROR_NOT_CONNECTED;
-  }
-
-  mRtspSource->play();
-  return NS_OK;
+  return Play();
 }
 
 NS_IMETHODIMP
 RtspController::Suspend(void)
 {
-  LOG(("RtspController::Suspend()"));
-  if (!mRtspSource.get()) {
-    MOZ_ASSERT(mRtspSource.get(), "mRtspSource should not be null!");
-    return NS_ERROR_NOT_INITIALIZED;
-  }
-
-  if (mState != CONNECTED) {
-    return NS_ERROR_NOT_CONNECTED;
-  }
-
-  mRtspSource->pause();
-  return NS_OK;
+  return Pause();
 }
 
 NS_IMETHODIMP
@@ -200,7 +185,8 @@ RtspController::AsyncOpen(nsIStreamingProtocolListener *aListener)
   LOG(("RtspController AsyncOpen uri=%s", uriSpec.get()));
 
   if (!mRtspSource.get()) {
-    mRtspSource = new android::RTSPSource(this, uriSpec.get(), false, 0);
+    mRtspSource = new android::RTSPSource(this, uriSpec.get(),
+                                          mUserAgent.get(), false, 0);
   }
   // Connect to Rtsp Server.
   mRtspSource->start();
@@ -208,6 +194,9 @@ RtspController::AsyncOpen(nsIStreamingProtocolListener *aListener)
   return NS_OK;
 }
 
+//-----------------------------------------------------------------------------
+// nsIStreamingProtocolListener
+//-----------------------------------------------------------------------------
 class SendMediaDataTask : public nsRunnable
 {
 public:
@@ -327,9 +316,13 @@ RtspController::OnDisconnected(uint8_t index,
 {
   LOG(("RtspController::OnDisconnected() for track %d reason = 0x%x", index, reason));
   mState = DISCONNECTED;
+
   if (mListener) {
     nsRefPtr<SendOnDisconnectedTask> task =
       new SendOnDisconnectedTask(mListener, index, reason);
+    // Break the cycle reference between the Listener (RtspControllerParent) and
+    // us.
+    mListener = nullptr;
     return NS_DispatchToMainThread(task);
   }
   return NS_ERROR_NOT_AVAILABLE;
@@ -363,6 +356,27 @@ RtspController::Init(nsIURI *aURI)
 
   mURI = aURI;
 
+  // Get User-Agent.
+  nsCOMPtr<nsIHttpProtocolHandler>
+    service(do_GetService(NS_NETWORK_PROTOCOL_CONTRACTID_PREFIX "http", &rv));
+  rv = service->GetUserAgent(mUserAgent);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+RtspController::PlaybackEnded()
+{
+  LOG(("RtspController::PlaybackEnded()"));
+  if (!mRtspSource.get()) {
+    MOZ_ASSERT(mRtspSource.get(), "mRtspSource should not be null!");
+    return NS_ERROR_NOT_INITIALIZED;
+  }
+
+  mRtspSource->playbackEnded();
   return NS_OK;
 }
 

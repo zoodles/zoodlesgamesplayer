@@ -1,4 +1,4 @@
-﻿/* This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -137,9 +137,6 @@ exports["test compatibility"] = function(assert) {
 
   assert.equal(require("querystring"),
                require("sdk/querystring"), "sdk/querystring -> querystring");
-
-  assert.equal(loader.require("addon-page"),
-               loader.require("sdk/addon-page"), "sdk/addon-page -> addon-page");
 
   assert.equal(require("tabs/utils"),
                require("sdk/tabs/utils"), "sdk/tabs/utils -> tabs/utils");

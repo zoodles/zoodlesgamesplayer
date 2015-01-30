@@ -1,4 +1,4 @@
-/* -*- Mode: Java; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim:set ts=2 sw=2 sts=2 et: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -34,7 +34,7 @@ add_test(function removed_bookmark()
       do_check_eq(frecencyForUrl(TEST_URI), 0);
 
       remove_all_bookmarks();
-      promiseClearHistory().then(run_next_test);
+      PlacesTestUtils.clearHistory().then(run_next_test);
     });
   });
 });
@@ -62,7 +62,7 @@ add_test(function removed_but_visited_bookmark()
         do_check_neq(frecencyForUrl(TEST_URI), 0);
 
         remove_all_bookmarks();
-        promiseClearHistory().then(run_next_test);
+        PlacesTestUtils.clearHistory().then(run_next_test);
       });
     });
   });
@@ -94,7 +94,7 @@ add_test(function remove_bookmark_still_bookmarked()
       do_check_neq(frecencyForUrl(TEST_URI), 0);
 
       remove_all_bookmarks();
-      promiseClearHistory().then(run_next_test);
+      PlacesTestUtils.clearHistory().then(run_next_test);
     });
   });
 });
@@ -122,7 +122,7 @@ add_test(function cleared_parent_of_visited_bookmark()
         do_check_neq(frecencyForUrl(TEST_URI), 0);
 
         remove_all_bookmarks();
-        promiseClearHistory().then(run_next_test);
+        PlacesTestUtils.clearHistory().then(run_next_test);
       });
     });
   });
@@ -156,7 +156,7 @@ add_test(function cleared_parent_of_bookmark_still_bookmarked()
       do_check_neq(frecencyForUrl(TEST_URI), 0);
 
       remove_all_bookmarks();
-      promiseClearHistory().then(run_next_test);
+      PlacesTestUtils.clearHistory().then(run_next_test);
     });
   });
 });

@@ -16,9 +16,7 @@ class nsIAtom;
 class nsIContent;
 class nsIFrame;
 class nsIPresShell;
-class nsRenderingContext;
 class nsStyleContext;
-class nsSVGFilterPaintCallback;
 class nsSVGIntegerPair;
 class nsSVGLength2;
 
@@ -37,7 +35,7 @@ class nsSVGFilterFrame : public nsSVGFilterFrameBase
   friend nsIFrame*
   NS_NewSVGFilterFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
 protected:
-  nsSVGFilterFrame(nsStyleContext* aContext)
+  explicit nsSVGFilterFrame(nsStyleContext* aContext)
     : nsSVGFilterFrameBase(aContext),
       mLoopFlag(false),
       mNoHRefURI(false)
@@ -58,9 +56,9 @@ public:
                                     int32_t         aModType) MOZ_OVERRIDE;
 
 #ifdef DEBUG
-  virtual void Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
 #endif
 
   /**

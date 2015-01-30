@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 package org.mozilla.gecko.tests;
 
 import java.util.HashSet;
@@ -7,7 +11,6 @@ import java.util.concurrent.Callable;
 import org.mozilla.gecko.db.BrowserContract;
 import org.mozilla.gecko.db.BrowserContract.ReadingListItems;
 import org.mozilla.gecko.db.ReadingListProvider;
-import org.mozilla.gecko.db.TransactionalProvider;
 
 import android.content.ContentProvider;
 import android.content.ContentUris;
@@ -48,17 +51,12 @@ public class testReadingListProvider extends ContentProviderTest {
      * We want a fresh provider each test, so this should be invoked in
      * <code>setUp</code> before each individual test.
      */
-    private static Callable<ContentProvider> sProviderFactory = new Callable<ContentProvider>() {
+    private static final Callable<ContentProvider> sProviderFactory = new Callable<ContentProvider>() {
         @Override
         public ContentProvider call() {
             return new ReadingListProvider();
         }
     };
-
-    @Override
-    protected int getTestType() {
-        return TEST_MOCHITEST;
-    }
 
     @Override
     public void setUp() throws Exception {
@@ -68,12 +66,13 @@ public class testReadingListProvider extends ContentProviderTest {
         }
     }
 
-    public void testReadingListProvider() throws Exception {
+    public void testReadingListProviderTests() throws Exception {
         for (Runnable test : mTests) {
             setTestName(test.getClass().getSimpleName());
             ensureEmptyDatabase();
             test.run();
         }
+
         // Ensure browser initialization is complete before completing test,
         // so that the minidumps directory is consistently created.
         blockForGeckoReady();
@@ -92,6 +91,10 @@ public class testReadingListProvider extends ContentProviderTest {
             try {
                 mAsserter.ok(c.moveToFirst(), "Inserted item found", "");
                 assertRowEqualsContentValues(c, b);
+
+                mAsserter.is(c.getInt(c.getColumnIndex(ReadingListItems.CONTENT_STATUS)),
+                             ReadingListItems.STATUS_UNFETCHED,
+                             "Inserted item has correct default content status");
             } finally {
                 c.close();
             }

@@ -1,4 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -28,7 +29,7 @@ namespace mozilla {
  * BackgroundHangManager is the global object that
  * manages all instances of BackgroundHangThread.
  */
-class BackgroundHangManager : public AtomicRefCounted<BackgroundHangManager>
+class BackgroundHangManager
 {
 private:
   // Background hang monitor thread function
@@ -38,8 +39,6 @@ private:
 
 #ifdef MOZ_NUWA_PROCESS
     if (IsNuwaProcess()) {
-      NS_ASSERTION(NuwaMarkCurrentThread != nullptr,
-                   "NuwaMarkCurrentThread is undefined!");
       NuwaMarkCurrentThread(nullptr, nullptr);
     }
 #endif
@@ -62,8 +61,9 @@ private:
   void RunMonitorThread();
 
 public:
-  MOZ_DECLARE_REFCOUNTED_TYPENAME(BackgroundHangManager)
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(BackgroundHangManager)
   static StaticRefPtr<BackgroundHangManager> sInstance;
+  static bool sProhibited;
 
   // Lock for access to members of this class
   Monitor mLock;
@@ -89,6 +89,7 @@ public:
   }
 
   BackgroundHangManager();
+private:
   ~BackgroundHangManager();
 };
 
@@ -96,14 +97,14 @@ public:
  * BackgroundHangThread is a per-thread object that is used
  * by all instances of BackgroundHangMonitor to monitor hangs.
  */
-class BackgroundHangThread : public RefCounted<BackgroundHangThread>
-                           , public LinkedListElement<BackgroundHangThread>
+class BackgroundHangThread : public LinkedListElement<BackgroundHangThread>
 {
 private:
   static ThreadLocal<BackgroundHangThread*> sTlsKey;
 
   BackgroundHangThread(const BackgroundHangThread&);
   BackgroundHangThread& operator=(const BackgroundHangThread&);
+  ~BackgroundHangThread();
 
   /* Keep a reference to the manager, so we can keep going even
      after BackgroundHangManager::Shutdown is called. */
@@ -112,14 +113,13 @@ private:
   const PRThread* mThreadID;
 
 public:
-  MOZ_DECLARE_REFCOUNTED_TYPENAME(BackgroundHangThread)
+  NS_INLINE_DECL_REFCOUNTING(BackgroundHangThread)
   static BackgroundHangThread* FindThread();
 
   static void Startup()
   {
-    /* We can tolerate init() failing.
-       The if block turns off warn_unused_result. */
-    if (!sTlsKey.init()) {}
+    /* We can tolerate init() failing. */
+    (void)!sTlsKey.init();
   }
 
   // Hang timeout in ticks
@@ -137,17 +137,16 @@ public:
   // Platform-specific helper to get hang stacks
   ThreadStackHelper mStackHelper;
   // Stack of current hang
-  Telemetry::HangHistogram::Stack mHangStack;
+  Telemetry::HangStack mHangStack;
   // Statistics for telemetry
   Telemetry::ThreadHangStats mStats;
 
   BackgroundHangThread(const char* aName,
                        uint32_t aTimeoutMs,
                        uint32_t aMaxTimeoutMs);
-  ~BackgroundHangThread();
 
   // Report a hang; aManager->mLock IS locked
-  void ReportHang(PRIntervalTime aHangTime);
+  Telemetry::HangHistogram& ReportHang(PRIntervalTime aHangTime);
   // Report a permanent hang; aManager->mLock IS locked
   void ReportPermaHang();
   // Called by BackgroundHangMonitor::NotifyActivity
@@ -162,6 +161,7 @@ public:
 
 
 StaticRefPtr<BackgroundHangManager> BackgroundHangManager::sInstance;
+bool BackgroundHangManager::sProhibited = false;
 
 ThreadLocal<BackgroundHangThread*> BackgroundHangThread::sTlsKey;
 
@@ -177,18 +177,14 @@ BackgroundHangManager::BackgroundHangManager()
     PR_USER_THREAD, MonitorThread, this,
     PR_PRIORITY_LOW, PR_GLOBAL_THREAD, PR_JOINABLE_THREAD, 0);
 
-  MOZ_ASSERT(mHangMonitorThread,
-    "Failed to create monitor thread");
+  MOZ_ASSERT(mHangMonitorThread, "Failed to create monitor thread");
 }
 
 BackgroundHangManager::~BackgroundHangManager()
 {
-  MOZ_ASSERT(mShutdown,
-    "Destruction without Shutdown call");
-  MOZ_ASSERT(mHangThreads.isEmpty(),
-    "Destruction with outstanding monitors");
-  MOZ_ASSERT(mHangMonitorThread,
-    "No monitor thread");
+  MOZ_ASSERT(mShutdown, "Destruction without Shutdown call");
+  MOZ_ASSERT(mHangThreads.isEmpty(), "Destruction with outstanding monitors");
+  MOZ_ASSERT(mHangMonitorThread, "No monitor thread");
 
   // PR_CreateThread could have failed above due to resource limitation
   if (mHangMonitorThread) {
@@ -358,11 +354,18 @@ BackgroundHangThread::~BackgroundHangThread()
   Telemetry::RecordThreadHangStats(mStats);
 }
 
-void
+Telemetry::HangHistogram&
 BackgroundHangThread::ReportHang(PRIntervalTime aHangTime)
 {
   // Recovered from a hang; called on the monitor thread
   // mManager->mLock IS locked
+
+  // Remove unwanted "js::RunScript" frame from the stack
+  for (const char** f = &mHangStack.back(); f >= mHangStack.begin(); f--) {
+    if (!mHangStack.IsInBuffer(*f) && !strcmp(*f, "js::RunScript")) {
+      mHangStack.erase(f);
+    }
+  }
 
   Telemetry::HangHistogram newHistogram(Move(mHangStack));
   for (Telemetry::HangHistogram* oldHistogram = mStats.mHangs.begin();
@@ -370,12 +373,13 @@ BackgroundHangThread::ReportHang(PRIntervalTime aHangTime)
     if (newHistogram == *oldHistogram) {
       // New histogram matches old one
       oldHistogram->Add(aHangTime);
-      return;
+      return *oldHistogram;
     }
   }
   // Add new histogram
   newHistogram.Add(aHangTime);
   mStats.mHangs.append(Move(newHistogram));
+  return mStats.mHangs.back();
 }
 
 void
@@ -384,8 +388,11 @@ BackgroundHangThread::ReportPermaHang()
   // Permanently hanged; called on the monitor thread
   // mManager->mLock IS locked
 
-  // TODO: Add more detailed analysis for perma-hangs
-  ReportHang(mMaxTimeout);
+  Telemetry::HangHistogram& hang = ReportHang(mMaxTimeout);
+  Telemetry::HangStack& stack = hang.GetNativeStack();
+  if (stack.empty()) {
+    mStackHelper.GetNativeStack(stack);
+  }
 }
 
 MOZ_ALWAYS_INLINE void
@@ -413,8 +420,16 @@ BackgroundHangThread*
 BackgroundHangThread::FindThread()
 {
 #ifdef MOZ_ENABLE_BACKGROUND_HANG_MONITOR
+  if (BackgroundHangManager::sInstance == nullptr) {
+    MOZ_ASSERT(BackgroundHangManager::sProhibited,
+               "BackgroundHandleManager is not initialized");
+    return nullptr;
+  }
+
   if (sTlsKey.initialized()) {
     // Use TLS if available
+    MOZ_ASSERT(!BackgroundHangManager::sProhibited,
+               "BackgroundHandleManager is not initialized");
     return sTlsKey.get();
   }
   // If TLS is unavailable, we can search through the thread list
@@ -440,6 +455,7 @@ void
 BackgroundHangMonitor::Startup()
 {
 #ifdef MOZ_ENABLE_BACKGROUND_HANG_MONITOR
+  MOZ_ASSERT(!BackgroundHangManager::sProhibited, "Prohibited");
   MOZ_ASSERT(!BackgroundHangManager::sInstance, "Already initialized");
   ThreadStackHelper::Startup();
   BackgroundHangThread::Startup();
@@ -451,6 +467,7 @@ void
 BackgroundHangMonitor::Shutdown()
 {
 #ifdef MOZ_ENABLE_BACKGROUND_HANG_MONITOR
+  MOZ_ASSERT(!BackgroundHangManager::sProhibited, "Prohibited");
   MOZ_ASSERT(BackgroundHangManager::sInstance, "Not initialized");
   /* Scope our lock inside Shutdown() because the sInstance object can
      be destroyed as soon as we set sInstance to nullptr below, and
@@ -467,7 +484,8 @@ BackgroundHangMonitor::BackgroundHangMonitor(const char* aName,
   : mThread(BackgroundHangThread::FindThread())
 {
 #ifdef MOZ_ENABLE_BACKGROUND_HANG_MONITOR
-  if (!mThread) {
+  if (!BackgroundHangManager::sProhibited && !mThread) {
+    // If sProhibit is true, mThread would be null, and no monitoring.
     mThread = new BackgroundHangThread(aName, aTimeoutMs, aMaxTimeoutMs);
   }
 #endif
@@ -477,7 +495,8 @@ BackgroundHangMonitor::BackgroundHangMonitor()
   : mThread(BackgroundHangThread::FindThread())
 {
 #ifdef MOZ_ENABLE_BACKGROUND_HANG_MONITOR
-  MOZ_ASSERT(mThread, "Thread not initialized for hang monitoring");
+  MOZ_ASSERT(!BackgroundHangManager::sProhibited || mThread,
+             "This thread is not initialized for hang monitoring");
 #endif
 }
 
@@ -489,7 +508,15 @@ void
 BackgroundHangMonitor::NotifyActivity()
 {
 #ifdef MOZ_ENABLE_BACKGROUND_HANG_MONITOR
-  mThread->NotifyActivity();
+  if (mThread == nullptr) {
+    MOZ_ASSERT(BackgroundHangManager::sProhibited,
+               "This thread is not initialized for hang monitoring");
+    return;
+  }
+
+  if (Telemetry::CanRecord()) {
+    mThread->NotifyActivity();
+  }
 #endif
 }
 
@@ -497,7 +524,35 @@ void
 BackgroundHangMonitor::NotifyWait()
 {
 #ifdef MOZ_ENABLE_BACKGROUND_HANG_MONITOR
-  mThread->NotifyWait();
+  if (mThread == nullptr) {
+    MOZ_ASSERT(BackgroundHangManager::sProhibited,
+               "This thread is not initialized for hang monitoring");
+    return;
+  }
+
+  if (Telemetry::CanRecord()) {
+    mThread->NotifyWait();
+  }
+#endif
+}
+
+void
+BackgroundHangMonitor::Prohibit()
+{
+#ifdef MOZ_ENABLE_BACKGROUND_HANG_MONITOR
+  MOZ_ASSERT(BackgroundHangManager::sInstance == nullptr,
+             "The background hang monitor is already initialized");
+  BackgroundHangManager::sProhibited = true;
+#endif
+}
+
+void
+BackgroundHangMonitor::Allow()
+{
+#ifdef MOZ_ENABLE_BACKGROUND_HANG_MONITOR
+  MOZ_ASSERT(BackgroundHangManager::sInstance == nullptr,
+             "The background hang monitor is already initialized");
+  BackgroundHangManager::sProhibited = false;
 #endif
 }
 
@@ -507,8 +562,14 @@ BackgroundHangMonitor::NotifyWait()
    sure all of that is taken care of for us. */
 BackgroundHangMonitor::ThreadHangStatsIterator::ThreadHangStatsIterator()
   : MonitorAutoLock(BackgroundHangManager::sInstance->mLock)
-  , mThread(BackgroundHangManager::sInstance->mHangThreads.getFirst())
+  , mThread(BackgroundHangManager::sInstance ?
+            BackgroundHangManager::sInstance->mHangThreads.getFirst() :
+            nullptr)
 {
+#ifdef MOZ_ENABLE_BACKGROUND_HANG_MONITOR
+  MOZ_ASSERT(BackgroundHangManager::sInstance || BackgroundHangManager::sProhibited,
+             "Inconsistent state");
+#endif
 }
 
 Telemetry::ThreadHangStats*

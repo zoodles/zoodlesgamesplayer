@@ -1,4 +1,4 @@
-/* -*- Mode: Java; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
@@ -21,7 +21,9 @@ XPCOMUtils.defineLazyServiceGetter(this, "gNetworkManager",
                                    "@mozilla.org/network/manager;1",
                                    "nsINetworkManager");
 
-const kNetworkInterfaceStateChangedTopic = "network-interface-state-changed";
+XPCOMUtils.defineLazyServiceGetter(this, "gNetworkService",
+                                   "@mozilla.org/network/service;1",
+                                   "nsINetworkService");
 
 this.EXPORTED_SYMBOLS = ["WifiP2pManager"];
 
@@ -93,7 +95,6 @@ const DEFAULT_P2P_DEVICE_TYPE = "10-0050F204-5"; // For wpa_supplicant.
 const GO_NETWORK_INTERFACE = {
   ip:         "192.168.2.1",
   maskLength: 24,
-  broadcast:  "192.168.2.255",
   gateway:    "192.168.2.1",
   dns1:       "0.0.0.0",
   dns2:       "0.0.0.0",
@@ -492,17 +493,36 @@ function P2pStateMachine(aP2pCommand, aNetUtil) {
     state: Ci.nsINetworkInterface.NETWORK_STATE_DISCONNECTED,
     type: Ci.nsINetworkInterface.NETWORK_TYPE_WIFI_P2P,
     name: P2P_INTERFACE_NAME,
-    ip: null,
-    prefixLength: 0,
-    broadcast: null,
-    dns1: null,
-    dns2: null,
-    gateway: null,
+    ips: [],
+    prefixLengths: [],
+    dnses: [],
+    gateways: [],
     httpProxyHost: null,
     httpProxyPort: null,
 
     // help
     registered: false,
+
+    getAddresses: function (ips, prefixLengths) {
+      ips.value = this.ips.slice();
+      prefixLengths.value = this.prefixLengths.slice();
+
+      return this.ips.length;
+    },
+
+    getGateways: function (count) {
+      if (count) {
+        count.value = this.gateways.length;
+      }
+      return this.gateways.slice();
+    },
+
+    getDnses: function (count) {
+      if (count) {
+        count.value = this.dnses.length;
+      }
+      return this.dnses.slice();
+    }
   };
 
   //---------------------------------------------------------
@@ -588,18 +608,28 @@ function P2pStateMachine(aP2pCommand, aNetUtil) {
 
       _sm.pause();
 
-      // Step 1: Connect to p2p0.
-      aP2pCommand.connectToSupplicant(function (status) {
-        let detail;
-
-        if (0 !== status) {
-          debug('Failed to connect to p2p0');
-          onFailure();
+      // This function will only call back on success.
+      function connectToSupplicantIfNeeded(callback) {
+        if (aP2pCommand.getSdkVersion() >= 19) {
+          // No need to connect to supplicant on KK. Call back directly.
+          callback();
           return;
         }
+        aP2pCommand.connectToSupplicant(function (status) {
+          if (0 !== status) {
+            debug('Failed to connect to p2p0');
+            onFailure();
+            return;
+          }
+          debug('wpa_supplicant p2p0 connected!');
+          _onSupplicantConnected();
+          callback();
+        });
+      }
 
-        debug('wpa_supplicant p2p0 connected!');
-        _onSupplicantConnected();
+      // Step 1: Connect to p2p0 if needed.
+      connectToSupplicantIfNeeded(function callback () {
+        let detail;
 
         // Step 2: Get MAC address.
         if (!_localDevice.address) {
@@ -631,7 +661,7 @@ function P2pStateMachine(aP2pCommand, aNetUtil) {
 
           // Step 4: Enable p2p0 net interface. wpa_supplicant may have
           //         already done it for us.
-          aNetUtil.enableInterface(P2P_INTERFACE_NAME, function (success) {
+          gNetworkService.enableInterface(P2P_INTERFACE_NAME, function (success) {
             onSuccess();
           });
         });
@@ -1151,7 +1181,7 @@ function P2pStateMachine(aP2pCommand, aNetUtil) {
     enter: function() {
       this.groupOwner = {
         macAddress: _groupInfo.goAddress,
-        ipAddress:  _groupInfo.networkInterface.gateway,
+        ipAddress:  _groupInfo.networkInterface.gateways[0],
         passphrase: _groupInfo.passphrase,
         ssid:       _groupInfo.ssid,
         freq:       _groupInfo.freq,
@@ -1253,7 +1283,7 @@ function P2pStateMachine(aP2pCommand, aNetUtil) {
 
           _sm.pause();
           if (WPS_METHOD_PBC === _savedConfig.wpsMethod) {
-            aP2pCommand.wpsPbc(_groupInfo.ifname, onWpsCommandSent);
+            aP2pCommand.wpsPbc(onWpsCommandSent, _groupInfo.ifname);
           } else {
             let detail = { pin: _savedConfig.pin, iface: _groupInfo.ifname };
             aP2pCommand.wpsPin(detail, onWpsCommandSent);
@@ -1300,9 +1330,9 @@ function P2pStateMachine(aP2pCommand, aNetUtil) {
         debug('Stop DHCP server result: ' + success);
         aP2pCommand.p2pDisable(function(success) {
           debug('P2P function disabled');
-          aP2pCommand.closeSupplicantConnection(function (status) {
+          closeSupplicantConnectionIfNeeded(function() {
             debug('Supplicant connection closed');
-            aNetUtil.disableInterface(P2P_INTERFACE_NAME, function (success){
+            gNetworkService.disableInterface(P2P_INTERFACE_NAME, function (success){
               debug('Disabled interface: ' + P2P_INTERFACE_NAME);
               _onDisabled(true);
               _sm.gotoState(stateDisabled);
@@ -1310,6 +1340,15 @@ function P2pStateMachine(aP2pCommand, aNetUtil) {
           });
         });
       });
+
+      function closeSupplicantConnectionIfNeeded(callback) {
+        // No need to connect to supplicant on KK. Call back directly.
+        if (aP2pCommand.getSdkVersion() >= 19) {
+          callback();
+          return;
+        }
+        aP2pCommand.closeSupplicantConnection(callback);
+      }
     },
 
     handleEvent: function(aEvent) {
@@ -1378,9 +1417,9 @@ function P2pStateMachine(aP2pCommand, aNetUtil) {
 
         // Update p2p network interface.
         _p2pNetworkInterface.state = Ci.nsINetworkInterface.NETWORK_STATE_CONNECTED;
-        _p2pNetworkInterface.ip = GO_NETWORK_INTERFACE.ip;
-        _p2pNetworkInterface.prefixLength = GO_NETWORK_INTERFACE.maskLength;
-        _p2pNetworkInterface.gateway = GO_NETWORK_INTERFACE.ip;
+        _p2pNetworkInterface.ips = [GO_NETWORK_INTERFACE.ip];
+        _p2pNetworkInterface.prefixLengths = [GO_NETWORK_INTERFACE.maskLength];
+        _p2pNetworkInterface.gateways = [GO_NETWORK_INTERFACE.ip];
         handleP2pNetworkInterfaceStateChanged();
 
         _groupInfo.networkInterface = _p2pNetworkInterface;
@@ -1409,13 +1448,21 @@ function P2pStateMachine(aP2pCommand, aNetUtil) {
       // Update p2p network interface.
       let maskLength =
         netHelpers.getMaskLength(netHelpers.stringToIP(dhcpData.info.mask_str));
+      if (!maskLength) {
+        maskLength = 32; // max prefix for IPv4.
+      }
       _p2pNetworkInterface.state = Ci.nsINetworkInterface.NETWORK_STATE_CONNECTED;
-      _p2pNetworkInterface.ip = dhcpData.info.ipaddr_str;
-      _p2pNetworkInterface.prefixLength = maskLength;
-      _p2pNetworkInterface.broadcast = dhcpData.info.broadcast_str;
-      _p2pNetworkInterface.dns1 = dhcpData.info.dns1_str;
-      _p2pNetworkInterface.dns2 = dhcpData.info.dns2_str;
-      _p2pNetworkInterface.gateway = dhcpData.info.gateway_str;
+      _p2pNetworkInterface.ips = [dhcpData.info.ipaddr_str];
+      _p2pNetworkInterface.prefixLengths = [maskLength];
+      if (typeof dhcpData.info.dns1_str == "string" &&
+          dhcpData.info.dns1_str.length) {
+        _p2pNetworkInterface.dnses.push(dhcpData.info.dns1_str);
+      }
+      if (typeof dhcpData.info.dns2_str == "string" &&
+          dhcpData.info.dns2_str.length) {
+        _p2pNetworkInterface.dnses.push(dhcpData.info.dns2_str);
+      }
+      _p2pNetworkInterface.gateways = [dhcpData.info.gateway_str];
       handleP2pNetworkInterfaceStateChanged();
 
       _groupInfo.networkInterface = _p2pNetworkInterface;
@@ -1427,12 +1474,10 @@ function P2pStateMachine(aP2pCommand, aNetUtil) {
 
   function resetP2pNetworkInterface() {
     _p2pNetworkInterface.state = Ci.nsINetworkInterface.NETWORK_STATE_DISCONNECTED;
-    _p2pNetworkInterface.ip = null;
-    _p2pNetworkInterface.prefixLength = 0;
-    _p2pNetworkInterface.broadcast = null;
-    _p2pNetworkInterface.dns1 = null;
-    _p2pNetworkInterface.dns2 = null;
-    _p2pNetworkInterface.gateway = null;
+    _p2pNetworkInterface.ips = [];
+    _p2pNetworkInterface.prefixLengths = [];
+    _p2pNetworkInterface.dnses = [];
+    _p2pNetworkInterface.gateways = [];
   }
 
   function registerP2pNetworkInteface() {
@@ -1452,9 +1497,7 @@ function P2pStateMachine(aP2pCommand, aNetUtil) {
   }
 
   function handleP2pNetworkInterfaceStateChanged() {
-    Services.obs.notifyObservers(_p2pNetworkInterface,
-                                 kNetworkInterfaceStateChangedTopic,
-                                 null);
+    gNetworkManager.updateNetworkInterface(_p2pNetworkInterface);
   }
 
   // Handle 'P2P_GROUP_STARTED' event.

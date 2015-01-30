@@ -36,21 +36,18 @@ public:
   const NPP mNpp;
 };
 
-extern const JSClass sNPObjectJSWrapperClass;
-
 class nsJSObjWrapper : public NPObject
 {
 public:
-  JSObject *mJSObj;  /* Added as a GC root. */
+  JS::Heap<JSObject *> mJSObj;
   const NPP mNpp;
 
   static NPObject *GetNewOrUsed(NPP npp, JSContext *cx,
                                 JS::Handle<JSObject*> obj);
-
-  void ClearJSObject();
+  static bool HasOwnProperty(NPObject* npobj, NPIdentifier npid);
 
 protected:
-  nsJSObjWrapper(NPP npp);
+  explicit nsJSObjWrapper(NPP npp);
   ~nsJSObjWrapper();
 
   static NPObject * NP_Allocate(NPP npp, NPClass *aClass);
@@ -80,6 +77,7 @@ public:
 class nsNPObjWrapper
 {
 public:
+  static bool IsWrapper(JSObject *obj);
   static void OnDestroy(NPObject *npobj);
   static JSObject *GetNewOrUsed(NPP npp, JSContext *cx, NPObject *npobj);
 };

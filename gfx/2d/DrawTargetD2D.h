@@ -14,11 +14,7 @@
 #include <vector>
 #include <sstream>
 
-#ifdef _MSC_VER
-#include <hash_set>
-#else
 #include <unordered_set>
-#endif
 
 struct IDWriteFactory;
 
@@ -47,7 +43,8 @@ public:
   DrawTargetD2D();
   virtual ~DrawTargetD2D();
 
-  virtual BackendType GetType() const { return BackendType::DIRECT2D; }
+  virtual DrawTargetType GetType() const MOZ_OVERRIDE { return DrawTargetType::HARDWARE_RASTER; }
+  virtual BackendType GetBackendType() const { return BackendType::DIRECT2D; }
   virtual TemporaryRef<SourceSurface> Snapshot();
   virtual IntSize GetSize() { return mSize; }
 
@@ -130,6 +127,8 @@ public:
 
   virtual TemporaryRef<FilterNode> CreateFilter(FilterType aType);
 
+  virtual bool SupportsRegionClipping() const { return false; }
+
   virtual void *GetNativeSurface(NativeSurfaceType aType);
 
   bool Init(const IntSize &aSize, SurfaceFormat aFormat);
@@ -138,6 +137,8 @@ public:
   uint32_t GetByteSize() const;
   TemporaryRef<ID2D1Layer> GetCachedLayer();
   void PopCachedLayer(ID2D1RenderTarget *aRT);
+
+  TemporaryRef<ID2D1Image> GetImageForSurface(SourceSurface *aSurface);
 
   static ID2D1Factory *factory();
   static void CleanupD2D();
@@ -160,11 +161,7 @@ private:
   friend class AutoSaveRestoreClippedOut;
   friend class SourceSurfaceD2DTarget;
 
-#ifdef _MSC_VER
-  typedef stdext::hash_set<DrawTargetD2D*> TargetSet;
-#else
   typedef std::unordered_set<DrawTargetD2D*> TargetSet;
-#endif
 
   bool InitD2DRenderTarget();
   void PrepareForDrawing(ID2D1RenderTarget *aRT);

@@ -31,8 +31,14 @@ public:
                                 const nsRect&           aDirtyRect,
                                 const nsDisplayListSet& aLists) MOZ_OVERRIDE {}
 
+  bool
+  IsMrowLike() MOZ_OVERRIDE {
+    return mFrames.FirstChild() != mFrames.LastChild() ||
+           !mFrames.FirstChild();
+  }
+
 protected:
-  nsMathMLmphantomFrame(nsStyleContext* aContext)
+  explicit nsMathMLmphantomFrame(nsStyleContext* aContext)
     : nsMathMLContainerFrame(aContext) {}
   virtual ~nsMathMLmphantomFrame();
 };

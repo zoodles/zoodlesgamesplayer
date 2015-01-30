@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 // Keep in (case-insensitive) order:
+#include "nsContainerFrame.h"
 #include "nsFrame.h"
 #include "nsGkAtoms.h"
 #include "nsStyleContext.h"
@@ -20,7 +21,7 @@ class nsSVGStopFrame : public nsSVGStopFrameBase
   friend nsIFrame*
   NS_NewSVGStopFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
 protected:
-  nsSVGStopFrame(nsStyleContext* aContext)
+  explicit nsSVGStopFrame(nsStyleContext* aContext)
     : nsSVGStopFrameBase(aContext)
   {
     AddStateBits(NS_FRAME_IS_NONDISPLAY);
@@ -31,9 +32,9 @@ public:
 
   // nsIFrame interface:
 #ifdef DEBUG
-  virtual void Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
 #endif
 
   void BuildDisplayList(nsDisplayListBuilder*   aBuilder,
@@ -74,9 +75,9 @@ NS_IMPL_FRAMEARENA_HELPERS(nsSVGStopFrame)
 
 #ifdef DEBUG
 void
-nsSVGStopFrame::Init(nsIContent* aContent,
-                     nsIFrame* aParent,
-                     nsIFrame* aPrevInFlow)
+nsSVGStopFrame::Init(nsIContent*       aContent,
+                     nsContainerFrame* aParent,
+                     nsIFrame*         aPrevInFlow)
 {
   NS_ASSERTION(aContent->IsSVG(nsGkAtoms::stop), "Content is not a stop element");
 
@@ -97,7 +98,10 @@ nsSVGStopFrame::AttributeChanged(int32_t         aNameSpaceID,
 {
   if (aNameSpaceID == kNameSpaceID_None &&
       aAttribute == nsGkAtoms::offset) {
-    nsSVGEffects::InvalidateRenderingObservers(this);
+    MOZ_ASSERT(GetParent()->GetType() == nsGkAtoms::svgLinearGradientFrame ||
+               GetParent()->GetType() == nsGkAtoms::svgRadialGradientFrame,
+               "Observers observe the gradient, so that's what we must invalidate");
+    nsSVGEffects::InvalidateDirectRenderingObservers(GetParent());
   }
 
   return nsSVGStopFrameBase::AttributeChanged(aNameSpaceID,

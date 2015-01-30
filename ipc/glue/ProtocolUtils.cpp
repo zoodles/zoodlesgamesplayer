@@ -17,13 +17,20 @@ using namespace IPC;
 namespace mozilla {
 namespace ipc {
 
+#ifdef MOZ_IPDL_TESTS
+bool IToplevelProtocol::sAllowNonMainThreadUse;
+#endif
+
 IToplevelProtocol::~IToplevelProtocol()
 {
+  MOZ_ASSERT(NS_IsMainThread() || AllowNonMainThreadUse());
   mOpenActors.clear();
 }
 
 void IToplevelProtocol::AddOpenedActor(IToplevelProtocol* aActor)
 {
+  MOZ_ASSERT(NS_IsMainThread() || AllowNonMainThreadUse());
+
 #ifdef DEBUG
   for (const IToplevelProtocol* actor = mOpenActors.getFirst();
        actor;
@@ -59,15 +66,24 @@ IToplevelProtocol::CloneOpenedToplevels(IToplevelProtocol* aTemplate,
   }
 }
 
+#ifdef MOZ_IPDL_TESTS
+void
+IToplevelProtocol::SetAllowNonMainThreadUse()
+{
+  sAllowNonMainThreadUse = true;
+}
+#endif
+
 class ChannelOpened : public IPC::Message
 {
 public:
   ChannelOpened(TransportDescriptor aDescriptor,
                 ProcessId aOtherProcess,
-                ProtocolId aProtocol)
+                ProtocolId aProtocol,
+                PriorityValue aPriority = PRIORITY_NORMAL)
     : IPC::Message(MSG_ROUTING_CONTROL, // these only go to top-level actors
                    CHANNEL_OPENED_MESSAGE_TYPE,
-                   PRIORITY_NORMAL)
+                   aPriority)
   {
     IPC::WriteParam(this, aDescriptor);
     IPC::WriteParam(this, aOtherProcess);
@@ -110,10 +126,12 @@ Bridge(const PrivateIPDLInterface&,
 
   if (!aParentChannel->Send(new ChannelOpened(parentSide,
                                               childId,
-                                              aProtocol)) ||
+                                              aProtocol,
+                                              IPC::Message::PRIORITY_URGENT)) ||
       !aChildChannel->Send(new ChannelOpened(childSide,
                                              parentId,
-                                             aChildProtocol))) {
+                                             aChildProtocol,
+                                             IPC::Message::PRIORITY_URGENT))) {
     CloseDescriptor(parentSide);
     CloseDescriptor(childSide);
     return false;
@@ -189,7 +207,8 @@ FatalError(const char* aProtocolName, const char* aMsg,
     formattedMessage.AppendLiteral("\". Killing child side as a result.");
     NS_ERROR(formattedMessage.get());
 
-    if (!base::KillProcess(aHandle, base::PROCESS_END_KILLED_BY_USER, false)) {
+    if (aHandle != kInvalidProcessHandle &&
+        !base::KillProcess(aHandle, base::PROCESS_END_KILLED_BY_USER, false)) {
       NS_ERROR("May have failed to kill child!");
     }
   } else {

@@ -18,7 +18,6 @@
 #include "nsString.h"
 #include "nsGkAtoms.h"
 #include "nsObjCExceptions.h"
-#include "nsHashtable.h"
 #include "nsThreadUtils.h"
 
 #include "nsIContent.h"
@@ -38,11 +37,10 @@ BOOL gSomeMenuBarPainted = NO;
 // window does not have a quit or pref item. We don't need strong refs here because
 // these items are always strong ref'd by their owning menu bar (instance variable).
 static nsIContent* sAboutItemContent  = nullptr;
-static nsIContent* sUpdateItemContent = nullptr;
 static nsIContent* sPrefItemContent   = nullptr;
 static nsIContent* sQuitItemContent   = nullptr;
 
-NS_IMPL_ISUPPORTS1(nsNativeMenuServiceX, nsINativeMenuService)
+NS_IMPL_ISUPPORTS(nsNativeMenuServiceX, nsINativeMenuService)
 
 NS_IMETHODIMP nsNativeMenuServiceX::CreateNativeMenuBar(nsIWidget* aParent, nsIContent* aMenuBarNode)
 {
@@ -76,8 +74,6 @@ nsMenuBarX::~nsMenuBarX()
   // hidden window, thus we need to invalidate the weak references.
   if (sAboutItemContent == mAboutItemContent)
     sAboutItemContent = nullptr;
-  if (sUpdateItemContent == mUpdateItemContent)
-    sUpdateItemContent = nullptr;
   if (sQuitItemContent == mQuitItemContent)
     sQuitItemContent = nullptr;
   if (sPrefItemContent == mPrefItemContent)
@@ -424,7 +420,7 @@ char nsMenuBarX::GetLocalizedAccelKey(const char *shortcutID)
   if (!sLastGeckoMenuBarPainted)
     return 0;
 
-  nsCOMPtr<nsIDOMDocument> domDoc(do_QueryInterface(sLastGeckoMenuBarPainted->mDocument));
+  nsCOMPtr<nsIDOMDocument> domDoc(do_QueryInterface(sLastGeckoMenuBarPainted->mContent->OwnerDoc()));
   if (!domDoc)
     return 0;
 
@@ -471,20 +467,13 @@ void nsMenuBarX::HideItem(nsIDOMDocument* inDoc, const nsAString & inID, nsICont
 // Do what is necessary to conform to the Aqua guidelines for menus.
 void nsMenuBarX::AquifyMenuBar()
 {
-  nsCOMPtr<nsIDOMDocument> domDoc(do_QueryInterface(mContent->GetDocument()));
+  nsCOMPtr<nsIDOMDocument> domDoc(do_QueryInterface(mContent->GetComposedDoc()));
   if (domDoc) {
     // remove the "About..." item and its separator
     HideItem(domDoc, NS_LITERAL_STRING("aboutSeparator"), nullptr);
     HideItem(domDoc, NS_LITERAL_STRING("aboutName"), getter_AddRefs(mAboutItemContent));
     if (!sAboutItemContent)
       sAboutItemContent = mAboutItemContent;
-
-    // Hide the software update menu item, since it belongs in the application
-    // menu on Mac OS X.
-    HideItem(domDoc, NS_LITERAL_STRING("updateSeparator"), nullptr);
-    HideItem(domDoc, NS_LITERAL_STRING("checkForUpdates"), getter_AddRefs(mUpdateItemContent));
-    if (!sUpdateItemContent)
-      sUpdateItemContent = mUpdateItemContent;
 
     // remove quit item and its separator
     HideItem(domDoc, NS_LITERAL_STRING("menu_FileQuitSeparator"), nullptr);
@@ -513,7 +502,7 @@ NSMenuItem* nsMenuBarX::CreateNativeAppMenuItem(nsMenuX* inMenu, const nsAString
 {
   NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NIL;
 
-  nsCOMPtr<nsIDocument> doc = inMenu->Content()->GetDocument();
+  nsCOMPtr<nsIDocument> doc = inMenu->Content()->GetUncomposedDoc();
   if (!doc)
     return nil;
 
@@ -601,7 +590,6 @@ nsresult nsMenuBarX::CreateApplicationMenu(nsMenuX* inMenu)
   
   ========================
   = About This App       = <- aboutName
-  = Check for Updates... = <- checkForUpdates
   ========================
   = Preferences...       = <- menu_preferences
   ========================
@@ -637,17 +625,6 @@ nsresult nsMenuBarX::CreateApplicationMenu(nsMenuX* inMenu)
     // Add the About menu item
     itemBeingAdded = CreateNativeAppMenuItem(inMenu, NS_LITERAL_STRING("aboutName"), @selector(menuItemHit:),
                                              eCommand_ID_About, nsMenuBarX::sNativeEventTarget);
-    if (itemBeingAdded) {
-      [sApplicationMenu addItem:itemBeingAdded];
-      [itemBeingAdded release];
-      itemBeingAdded = nil;
-
-      addAboutSeparator = TRUE;
-    }
-
-    // Add the software update menu item
-    itemBeingAdded = CreateNativeAppMenuItem(inMenu, NS_LITERAL_STRING("checkForUpdates"), @selector(menuItemHit:),
-                                             eCommand_ID_Update, nsMenuBarX::sNativeEventTarget);
     if (itemBeingAdded) {
       [sApplicationMenu addItem:itemBeingAdded];
       [itemBeingAdded release];
@@ -855,40 +832,17 @@ static BOOL gMenuItemsExecuteCommands = YES;
     return [super performKeyEquivalent:theEvent];
   }
 
-  // Plugins normally eat all keyboard commands, this hack mitigates
-  // the problem.
-  BOOL handleForPluginHack = NO;
   NSResponder *firstResponder = [keyWindow firstResponder];
-  if (firstResponder &&
-      [firstResponder isKindOfClass:[ChildView class]] &&
-      [(ChildView*)firstResponder isPluginView]) {
-    handleForPluginHack = YES;
-    // Maintain a list of cmd+key combinations that we never act on (in the
-    // browser) when the keyboard focus is in a plugin.  What a particular
-    // cmd+key combo means here (to the browser) is governed by browser.dtd,
-    // which "contains the browser main menu items".
-    UInt32 modifierFlags = [theEvent modifierFlags] & NSDeviceIndependentModifierFlagsMask;
-    if (modifierFlags == NSCommandKeyMask) {
-      NSString *unmodchars = [theEvent charactersIgnoringModifiers];
-      if ([unmodchars length] == 1) {
-        if ([unmodchars characterAtIndex:0] == nsMenuBarX::GetLocalizedAccelKey("key_selectAll")) {
-          handleForPluginHack = NO;
-        }
-      }
-    }
-  }
 
-  gMenuItemsExecuteCommands = handleForPluginHack;
+  gMenuItemsExecuteCommands = NO;
   [super performKeyEquivalent:theEvent];
   gMenuItemsExecuteCommands = YES; // return to default
 
   // Return YES if we invoked a command and there is now no key window or we changed
   // the first responder. In this case we do not want to propagate the event because
   // we don't want it handled again.
-  if (handleForPluginHack) {
-    if (![NSApp keyWindow] || [[NSApp keyWindow] firstResponder] != firstResponder) {
-      return YES;
-    }
+  if (![NSApp keyWindow] || [[NSApp keyWindow] firstResponder] != firstResponder) {
+    return YES;
   }
 
   // Return NO so that we can handle the event via NSView's "keyDown:".
@@ -950,12 +904,6 @@ static BOOL gMenuItemsExecuteCommands = YES;
       mostSpecificContent = menuBar->mAboutItemContent;
     nsMenuUtilsX::DispatchCommandTo(mostSpecificContent);
     return;
-  }
-  else if (tag == eCommand_ID_Update) {
-    nsIContent* mostSpecificContent = sUpdateItemContent;
-    if (menuBar && menuBar->mUpdateItemContent)
-      mostSpecificContent = menuBar->mUpdateItemContent;
-    nsMenuUtilsX::DispatchCommandTo(mostSpecificContent);
   }
   else if (tag == eCommand_ID_Prefs) {
     nsIContent* mostSpecificContent = sPrefItemContent;

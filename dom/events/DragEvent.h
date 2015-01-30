@@ -30,10 +30,9 @@ public:
 
   NS_FORWARD_TO_MOUSEEVENT
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE
+  virtual JSObject* WrapObjectInternal(JSContext* aCx) MOZ_OVERRIDE
   {
-    return DragEventBinding::Wrap(aCx, aScope, this);
+    return DragEventBinding::Wrap(aCx, this);
   }
 
   DataTransfer* GetDataTransfer();
@@ -48,6 +47,9 @@ public:
                      EventTarget* aRelatedTarget,
                      DataTransfer* aDataTransfer,
                      ErrorResult& aError);
+
+protected:
+  ~DragEvent() {}
 };
 
 } // namespace dom

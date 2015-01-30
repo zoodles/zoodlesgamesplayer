@@ -14,11 +14,6 @@ import android.graphics.Color;
  * - finally, test that BrowserDB.removeThumbnails drops the thumbnails
  */
 public class testThumbnails extends BaseTest {
-    @Override
-    protected int getTestType() {
-        return TEST_MOCHITEST;
-    }
-
     public void testThumbnails() {
         final String site1Url = getAbsoluteUrl("/robocop/robocop_404.sjs?type=changeColor");
         final String site2Url = getAbsoluteUrl("/robocop/robocop_404.sjs?type=do404");
@@ -37,7 +32,7 @@ public class testThumbnails extends BaseTest {
         mSolo.sleep(thumbnailDelay);
         inputAndLoadUrl(site2Url);
         mSolo.sleep(thumbnailDelay);
-        inputAndLoadUrl("about:home");
+        inputAndLoadUrl(StringHelper.ABOUT_HOME_URL);
         waitForTest(new ThumbnailTest(site1Title, Color.GREEN), 5000);
         mAsserter.is(getTopSiteThumbnailColor(site1Title), Color.GREEN, "Top site thumbnail updated for HTTP 200");
         waitForTest(new ThumbnailTest(site2Title, Color.GREEN), 5000);
@@ -48,7 +43,7 @@ public class testThumbnails extends BaseTest {
         mSolo.sleep(thumbnailDelay);
         inputAndLoadUrl(site2Url);
         mSolo.sleep(thumbnailDelay);
-        inputAndLoadUrl("about:home");
+        inputAndLoadUrl(StringHelper.ABOUT_HOME_URL);
         waitForTest(new ThumbnailTest(site1Title, Color.RED), 5000);
         mAsserter.is(getTopSiteThumbnailColor(site1Title), Color.RED, "Top site thumbnail updated for HTTP 200");
         waitForTest(new ThumbnailTest(site2Title, Color.GREEN), 5000);
@@ -56,19 +51,22 @@ public class testThumbnails extends BaseTest {
 
         // test dropping thumbnails
         final ContentResolver resolver = getActivity().getContentResolver();
+        final DatabaseHelper helper = new DatabaseHelper(getActivity(), mAsserter);
+        final BrowserDB db = helper.getProfileDB();
+
         // check that the thumbnail is non-null
-        byte[] thumbnailData = BrowserDB.getThumbnailForUrl(resolver, site1Url);
+        byte[] thumbnailData = db.getThumbnailForUrl(resolver, site1Url);
         mAsserter.ok(thumbnailData != null && thumbnailData.length > 0, "Checking for thumbnail data", "No thumbnail data found");
         // drop thumbnails
-        BrowserDB.removeThumbnails(resolver);
+        db.removeThumbnails(resolver);
         // check that the thumbnail is now null
-        thumbnailData = BrowserDB.getThumbnailForUrl(resolver, site1Url);
+        thumbnailData = db.getThumbnailForUrl(resolver, site1Url);
         mAsserter.ok(thumbnailData == null || thumbnailData.length == 0, "Checking for thumbnail data", "Thumbnail data found");
     }
 
     private class ThumbnailTest implements BooleanTest {
-        private String mTitle;
-        private int mColor;
+        private final String mTitle;
+        private final int mColor;
 
         public ThumbnailTest(String title, int color) {
             mTitle = title;

@@ -1,6 +1,13 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
+///////////////////
+//
+// Whitelisting this test.
+// As part of bug 1077403, the leaking uncaught rejection should be fixed. 
+//
+thisTestLeaksUncaughtRejectionsAndShouldBeFixed("Error: Unknown sheet source");
+
 const TESTCASE_URI = TEST_BASE + "four.html";
 
 let gUI;
@@ -8,24 +15,16 @@ let gUI;
 function test() {
   waitForExplicitFinish();
 
-  let count = 0;
-  addTabAndOpenStyleEditor(function(panel) {
-    gUI = panel.UI;
-    gUI.on("editor-added", function(event, editor) {
-      count++;
-      if (count == 4) {
-        info("all editors added");
-        runTests();
-      }
-    })
-  });
+  addTabAndOpenStyleEditors(4, runTests);
 
   content.location = TESTCASE_URI;
 }
 
 let timeoutID;
 
-function runTests() {
+function runTests(panel) {
+  gUI = panel.UI;
+
   gBrowser.tabContainer.addEventListener("TabOpen", onTabAdded, false);
   gUI.editors[0].getSourceEditor().then(onEditor0Attach);
   gUI.editors[1].getSourceEditor().then(onEditor1Attach);
@@ -50,16 +49,19 @@ function onEditor0Attach(aEditor) {
 function onEditor1Attach(aEditor) {
   info("second editor selected");
 
-  ok(aEditor.sourceEditor.hasFocus(),
-     "left mouse click has given editor 1 focus");
+  // Wait for the focus to be set.
+  executeSoon(function () {
+    ok(aEditor.sourceEditor.hasFocus(),
+       "left mouse click has given editor 1 focus");
 
-  // right mouse click should not open a new tab
-  EventUtils.synthesizeMouseAtCenter(
-    getStylesheetNameLinkFor(gUI.editors[2]),
-    {button: 1},
-    gPanelWindow);
+    // right mouse click should not open a new tab
+    EventUtils.synthesizeMouseAtCenter(
+      getStylesheetNameLinkFor(gUI.editors[2]),
+      {button: 1},
+      gPanelWindow);
 
-  setTimeout(finish, 0);
+    setTimeout(finish, 0);
+  });
 }
 
 function onTabAdded() {

@@ -54,20 +54,20 @@ import android.content.Context;
 public class AccountPickler {
   public static final String LOG_TAG = AccountPickler.class.getSimpleName();
 
-  public static final long PICKLE_VERSION = 1;
+  public static final long PICKLE_VERSION = 2;
 
-  private static final String KEY_PICKLE_VERSION = "pickle_version";
-  private static final String KEY_PICKLE_TIMESTAMP = "pickle_timestamp";
+  public static final String KEY_PICKLE_VERSION = "pickle_version";
+  public static final String KEY_PICKLE_TIMESTAMP = "pickle_timestamp";
 
-  private static final String KEY_ACCOUNT_VERSION = "account_version";
-  private static final String KEY_ACCOUNT_TYPE = "account_type";
-  private static final String KEY_EMAIL = "email";
-  private static final String KEY_PROFILE = "profile";
-  private static final String KEY_IDP_SERVER_URI = "idpServerURI";
-  private static final String KEY_TOKEN_SERVER_URI = "tokenServerURI";
-  private static final String KEY_IS_SYNCING_ENABLED = "isSyncingEnabled";
+  public static final String KEY_ACCOUNT_VERSION = "account_version";
+  public static final String KEY_ACCOUNT_TYPE = "account_type";
+  public static final String KEY_EMAIL = "email";
+  public static final String KEY_PROFILE = "profile";
+  public static final String KEY_IDP_SERVER_URI = "idpServerURI";
+  public static final String KEY_TOKEN_SERVER_URI = "tokenServerURI";
+  public static final String KEY_IS_SYNCING_ENABLED = "isSyncingEnabled";
 
-  private static final String KEY_BUNDLE = "bundle";
+  public static final String KEY_BUNDLE = "bundle";
 
   /**
    * Remove Firefox account persisted to disk.
@@ -80,16 +80,10 @@ public class AccountPickler {
     return context.deleteFile(filename);
   }
 
-  /**
-   * Persist Firefox account to disk as a JSON object.
-   *
-   * @param AndroidFxAccount the account to persist to disk
-   * @param filename name of file to persist to; must not contain path separators.
-   */
-  public static void pickle(final AndroidFxAccount account, final String filename) {
+  public static ExtendedJSONObject toJSON(final AndroidFxAccount account, final long now) {
     final ExtendedJSONObject o = new ExtendedJSONObject();
-    o.put(KEY_PICKLE_VERSION, Long.valueOf(PICKLE_VERSION));
-    o.put(KEY_PICKLE_TIMESTAMP, Long.valueOf(System.currentTimeMillis()));
+    o.put(KEY_PICKLE_VERSION, PICKLE_VERSION);
+    o.put(KEY_PICKLE_TIMESTAMP, now);
 
     o.put(KEY_ACCOUNT_VERSION, AndroidFxAccount.CURRENT_ACCOUNT_VERSION);
     o.put(KEY_ACCOUNT_TYPE, FxAccountConstants.ACCOUNT_TYPE);
@@ -104,10 +98,21 @@ public class AccountPickler {
     final ExtendedJSONObject bundle = account.unbundle();
     if (bundle == null) {
       Logger.warn(LOG_TAG, "Unable to obtain account bundle; aborting.");
-      return;
+      return null;
     }
     o.put(KEY_BUNDLE, bundle);
 
+    return o;
+  }
+
+  /**
+   * Persist Firefox account to disk as a JSON object.
+   *
+   * @param AndroidFxAccount the account to persist to disk
+   * @param filename name of file to persist to; must not contain path separators.
+   */
+  public static void pickle(final AndroidFxAccount account, final String filename) {
+    final ExtendedJSONObject o = toJSON(account, System.currentTimeMillis());
     writeToDisk(account.context, filename, o);
   }
 
@@ -183,7 +188,7 @@ public class AccountPickler {
     Long timestamp = json.getLong(KEY_PICKLE_TIMESTAMP);
     if (timestamp == null) {
       Logger.warn(LOG_TAG, "Did not find timestamp in pickle file; ignoring.");
-      timestamp = Long.valueOf(-1);
+      timestamp = -1L;
     }
 
     Logger.info(LOG_TAG, "Un-pickled Android account named " + params.email + " (version " +
@@ -216,10 +221,34 @@ public class AccountPickler {
         throw new IllegalStateException("Pickle version not found.");
       }
 
+      /*
+       * Version 1 and version 2 are identical, except version 2 throws if the
+       * internal Android Account type has changed. Version 1 used to throw in
+       * this case, but we intentionally used the pickle file to migrate across
+       * Account types, bumping the version simultaneously.
+       */
       switch (params.pickleVersion.intValue()) {
-        case 1:
+        case 2: {
+          // Sanity check.
+          final String accountType = json.getString(KEY_ACCOUNT_TYPE);
+          if (!FxAccountConstants.ACCOUNT_TYPE.equals(accountType)) {
+            throw new IllegalStateException("Account type has changed from " + accountType + " to " + FxAccountConstants.ACCOUNT_TYPE + ".");
+          }
+
           params.unpickleV1(json);
-          break;
+        }
+        break;
+
+        case 1: {
+          // Warn about account type changing, but don't throw over it.
+          final String accountType = json.getString(KEY_ACCOUNT_TYPE);
+          if (!FxAccountConstants.ACCOUNT_TYPE.equals(accountType)) {
+            Logger.warn(LOG_TAG, "Account type has changed from " + accountType + " to " + FxAccountConstants.ACCOUNT_TYPE + "; ignoring.");
+          }
+
+          params.unpickleV1(json);
+        }
+        break;
 
         default:
           throw new IllegalStateException("Unknown pickle version, " + params.pickleVersion + ".");
@@ -230,12 +259,6 @@ public class AccountPickler {
 
     private void unpickleV1(final ExtendedJSONObject json)
         throws NonObjectJSONException, NoSuchAlgorithmException, InvalidKeySpecException {
-      // Sanity check.
-      final String accountType = json.getString(KEY_ACCOUNT_TYPE);
-      if (!FxAccountConstants.ACCOUNT_TYPE.equals(accountType)) {
-        throw new IllegalStateException("Account type has changed from, " + accountType +
-            ", to, " + FxAccountConstants.ACCOUNT_TYPE + ".");
-      }
 
       this.accountVersion = json.getIntegerSafely(KEY_ACCOUNT_VERSION);
       this.email = json.getString(KEY_EMAIL);

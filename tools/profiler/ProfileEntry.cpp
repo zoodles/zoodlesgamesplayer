@@ -4,18 +4,19 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include <ostream>
+#include <sstream>
 #include "platform.h"
 #include "nsThreadUtils.h"
 #include "nsXULAppAPI.h"
+#include "jsapi.h"
 
 // JSON
-#include "JSObjectBuilder.h"
-#include "JSCustomObjectBuilder.h"
+#include "JSStreamWriter.h"
 
 // Self
 #include "ProfileEntry.h"
 
-#if _MSC_VER
+#if defined(_MSC_VER) && _MSC_VER < 1900
  #define snprintf _snprintf
 #endif
 
@@ -43,7 +44,7 @@ ProfileEntry::ProfileEntry(char aTagName, void *aTagPtr)
   , mTagName(aTagName)
 { }
 
-ProfileEntry::ProfileEntry(char aTagName, double aTagFloat)
+ProfileEntry::ProfileEntry(char aTagName, float aTagFloat)
   : mTagFloat(aTagFloat)
   , mTagName(aTagName)
 { }
@@ -58,8 +59,8 @@ ProfileEntry::ProfileEntry(char aTagName, Address aTagAddress)
   , mTagName(aTagName)
 { }
 
-ProfileEntry::ProfileEntry(char aTagName, int aTagLine)
-  : mTagLine(aTagLine)
+ProfileEntry::ProfileEntry(char aTagName, int aTagInt)
+  : mTagInt(aTagInt)
   , mTagName(aTagName)
 { }
 
@@ -93,9 +94,9 @@ void ProfileEntry::log()
   //   mTagMarker (ProfilerMarker*) m
   //   mTagData   (const char*)  c,s
   //   mTagPtr    (void*)        d,l,L,B (immediate backtrace), S(start-of-stack)
-  //   mTagLine   (int)          n,f
+  //   mTagInt    (int)          n,f,y
   //   mTagChar   (char)         h
-  //   mTagFloat  (double)       r,t
+  //   mTagFloat  (double)       r,t,p,R (resident memory), U (unshared memory)
   switch (mTagName) {
     case 'm':
       LOGF("%c \"%s\"", mTagName, mTagMarker->GetMarkerName()); break;
@@ -103,11 +104,11 @@ void ProfileEntry::log()
       LOGF("%c \"%s\"", mTagName, mTagData); break;
     case 'd': case 'l': case 'L': case 'B': case 'S':
       LOGF("%c %p", mTagName, mTagPtr); break;
-    case 'n': case 'f':
-      LOGF("%c %d", mTagName, mTagLine); break;
+    case 'n': case 'f': case 'y':
+      LOGF("%c %d", mTagName, mTagInt); break;
     case 'h':
       LOGF("%c \'%c\'", mTagName, mTagChar); break;
-    case 'r': case 't':
+    case 'r': case 't': case 'p': case 'R': case 'U':
       LOGF("%c %f", mTagName, mTagFloat); break;
     default:
       LOGF("'%c' unknown_tag", mTagName); break;
@@ -142,30 +143,33 @@ std::ostream& operator<<(std::ostream& stream, const ProfileEntry& entry)
 
 #define DYNAMIC_MAX_STRING 512
 
-ThreadProfile::ThreadProfile(const char* aName, int aEntrySize,
-                             PseudoStack *aStack, Thread::tid_t aThreadId,
-                             PlatformData* aPlatform,
-                             bool aIsMainThread, void *aStackTop)
-  : mWritePos(0)
+ThreadProfile::ThreadProfile(ThreadInfo* aInfo, int aEntrySize)
+  : mThreadInfo(aInfo)
+  , mWritePos(0)
   , mLastFlushPos(0)
   , mReadPos(0)
   , mEntrySize(aEntrySize)
-  , mPseudoStack(aStack)
+  , mPseudoStack(aInfo->Stack())
   , mMutex("ThreadProfile::mMutex")
-  , mName(strdup(aName))
-  , mThreadId(aThreadId)
-  , mIsMainThread(aIsMainThread)
-  , mPlatformData(aPlatform)
+  , mThreadId(aInfo->ThreadId())
+  , mIsMainThread(aInfo->IsMainThread())
+  , mPlatformData(aInfo->GetPlatformData())
   , mGeneration(0)
   , mPendingGenerationFlush(0)
-  , mStackTop(aStackTop)
+  , mStackTop(aInfo->StackTop())
+  , mRespInfo(this)
+#ifdef XP_LINUX
+  , mRssMemory(0)
+  , mUssMemory(0)
+#endif
 {
+  MOZ_COUNT_CTOR(ThreadProfile);
   mEntries = new ProfileEntry[mEntrySize];
 }
 
 ThreadProfile::~ThreadProfile()
 {
-  free(mName);
+  MOZ_COUNT_DTOR(ThreadProfile);
   delete[] mEntries;
 }
 
@@ -308,137 +312,189 @@ void ThreadProfile::IterateTags(IterateTagsCallback aCallback)
 
 void ThreadProfile::ToStreamAsJSON(std::ostream& stream)
 {
-  JSCustomObjectBuilder b;
-  JSCustomObject *profile = b.CreateObject();
-  BuildJSObject(b, profile);
-  b.Serialize(profile, stream);
-  b.DeleteObject(profile);
+  JSStreamWriter b(stream);
+  StreamJSObject(b);
+}
+
+void ThreadProfile::StreamJSObject(JSStreamWriter& b)
+{
+  b.BeginObject();
+    // Thread meta data
+    if (XRE_GetProcessType() == GeckoProcessType_Plugin) {
+      // TODO Add the proper plugin name
+      b.NameValue("name", "Plugin");
+    } else if (XRE_GetProcessType() == GeckoProcessType_Content) {
+      // This isn't going to really help once we have multiple content
+      // processes, but it'll do for now.
+      b.NameValue("name", "Content");
+    } else {
+      b.NameValue("name", Name());
+    }
+    b.NameValue("tid", static_cast<int>(mThreadId));
+
+    b.Name("samples");
+    b.BeginArray();
+
+      bool sample = false;
+      int readPos = mReadPos;
+      while (readPos != mLastFlushPos) {
+        // Number of tag consumed
+        ProfileEntry entry = mEntries[readPos];
+
+        switch (entry.mTagName) {
+          case 'r':
+            {
+              if (sample) {
+                b.NameValue("responsiveness", entry.mTagFloat);
+              }
+            }
+            break;
+          case 'p':
+            {
+              if (sample) {
+                b.NameValue("power", entry.mTagFloat);
+              }
+            }
+            break;
+          case 'R':
+            {
+              if (sample) {
+                b.NameValue("rss", entry.mTagFloat);
+              }
+            }
+            break;
+          case 'U':
+            {
+              if (sample) {
+                b.NameValue("uss", entry.mTagFloat);
+              }
+            }
+            break;
+          case 'f':
+            {
+              if (sample) {
+                b.NameValue("frameNumber", entry.mTagInt);
+              }
+            }
+            break;
+          case 't':
+            {
+              if (sample) {
+                b.NameValue("time", entry.mTagFloat);
+              }
+            }
+            break;
+          case 's':
+            {
+              // end the previous sample if there was one
+              if (sample) {
+                b.EndObject();
+              }
+              // begin the next sample
+              b.BeginObject();
+
+              sample = true;
+
+              // Seek forward through the entire sample, looking for frames
+              // this is an easier approach to reason about than adding more
+              // control variables and cases to the loop that goes through the buffer once
+              b.Name("frames");
+              b.BeginArray();
+
+                b.BeginObject();
+                  b.NameValue("location", "(root)");
+                b.EndObject();
+
+                int framePos = (readPos + 1) % mEntrySize;
+                ProfileEntry frame = mEntries[framePos];
+                while (framePos != mLastFlushPos && frame.mTagName != 's') {
+                  int incBy = 1;
+                  frame = mEntries[framePos];
+
+                  // Read ahead to the next tag, if it's a 'd' tag process it now
+                  const char* tagStringData = frame.mTagData;
+                  int readAheadPos = (framePos + 1) % mEntrySize;
+                  char tagBuff[DYNAMIC_MAX_STRING];
+                  // Make sure the string is always null terminated if it fills up
+                  // DYNAMIC_MAX_STRING-2
+                  tagBuff[DYNAMIC_MAX_STRING-1] = '\0';
+
+                  if (readAheadPos != mLastFlushPos && mEntries[readAheadPos].mTagName == 'd') {
+                    tagStringData = processDynamicTag(framePos, &incBy, tagBuff);
+                  }
+
+                  // Write one frame. It can have either
+                  // 1. only location - 'l' containing a memory address
+                  // 2. location and line number - 'c' followed by 'd's,
+                  // an optional 'n' and an optional 'y'
+                  if (frame.mTagName == 'l') {
+                    b.BeginObject();
+                      // Bug 753041
+                      // We need a double cast here to tell GCC that we don't want to sign
+                      // extend 32-bit addresses starting with 0xFXXXXXX.
+                      unsigned long long pc = (unsigned long long)(uintptr_t)frame.mTagPtr;
+                      snprintf(tagBuff, DYNAMIC_MAX_STRING, "%#llx", pc);
+                      b.NameValue("location", tagBuff);
+                    b.EndObject();
+                  } else if (frame.mTagName == 'c') {
+                    b.BeginObject();
+                      b.NameValue("location", tagStringData);
+                      readAheadPos = (framePos + incBy) % mEntrySize;
+                      if (readAheadPos != mLastFlushPos &&
+                          mEntries[readAheadPos].mTagName == 'n') {
+                        b.NameValue("line", mEntries[readAheadPos].mTagInt);
+                        incBy++;
+                      }
+                      readAheadPos = (framePos + incBy) % mEntrySize;
+                      if (readAheadPos != mLastFlushPos &&
+                          mEntries[readAheadPos].mTagName == 'y') {
+                        b.NameValue("category", mEntries[readAheadPos].mTagInt);
+                        incBy++;
+                      }
+                    b.EndObject();
+                  }
+                  framePos = (framePos + incBy) % mEntrySize;
+                }
+              b.EndArray();
+            }
+            break;
+        }
+        readPos = (readPos + 1) % mEntrySize;
+      }
+      if (sample) {
+        b.EndObject();
+      }
+    b.EndArray();
+
+    b.Name("markers");
+    b.BeginArray();
+      readPos = mReadPos;
+      while (readPos != mLastFlushPos) {
+        ProfileEntry entry = mEntries[readPos];
+        if (entry.mTagName == 'm') {
+           entry.getMarker()->StreamJSObject(b);
+        }
+        readPos = (readPos + 1) % mEntrySize;
+      }
+    b.EndArray();
+  b.EndObject();
 }
 
 JSObject* ThreadProfile::ToJSObject(JSContext *aCx)
 {
-  JSObjectBuilder b(aCx);
-  JS::RootedObject profile(aCx, b.CreateObject());
-  BuildJSObject(b, profile);
-  return profile;
-}
-
-template <typename Builder>
-void ThreadProfile::BuildJSObject(Builder& b,
-                                  typename Builder::ObjectHandle profile)
-{
-  // Thread meta data
-  if (XRE_GetProcessType() == GeckoProcessType_Plugin) {
-    // TODO Add the proper plugin name
-    b.DefineProperty(profile, "name", "Plugin");
-  } else {
-    b.DefineProperty(profile, "name", mName);
+  JS::RootedValue val(aCx);
+  std::stringstream ss;
+  {
+    // Define a scope to prevent a moving GC during ~JSStreamWriter from
+    // trashing the return value.
+    JSStreamWriter b(ss);
+    StreamJSObject(b);
+    NS_ConvertUTF8toUTF16 js_string(nsDependentCString(ss.str().c_str()));
+    JS_ParseJSON(aCx, static_cast<const char16_t*>(js_string.get()),
+                 js_string.Length(), &val);
   }
-
-  b.DefineProperty(profile, "tid", static_cast<int>(mThreadId));
-
-  typename Builder::RootedArray samples(b.context(), b.CreateArray());
-  b.DefineProperty(profile, "samples", samples);
-
-  typename Builder::RootedArray markers(b.context(), b.CreateArray());
-  b.DefineProperty(profile, "markers", markers);
-
-  typename Builder::RootedObject sample(b.context());
-  typename Builder::RootedArray frames(b.context());
-
-  int readPos = mReadPos;
-  while (readPos != mLastFlushPos) {
-    // Number of tag consumed
-    int incBy = 1;
-    ProfileEntry entry = mEntries[readPos];
-
-    // Read ahead to the next tag, if it's a 'd' tag process it now
-    const char* tagStringData = entry.mTagData;
-    int readAheadPos = (readPos + 1) % mEntrySize;
-    char tagBuff[DYNAMIC_MAX_STRING];
-    // Make sure the string is always null terminated if it fills up
-    // DYNAMIC_MAX_STRING-2
-    tagBuff[DYNAMIC_MAX_STRING-1] = '\0';
-
-    if (readAheadPos != mLastFlushPos && mEntries[readAheadPos].mTagName == 'd') {
-      tagStringData = processDynamicTag(readPos, &incBy, tagBuff);
-    }
-
-    switch (entry.mTagName) {
-      case 'm':
-        {
-          entry.getMarker()->BuildJSObject(b, markers);
-        }
-        break;
-      case 'r':
-        {
-          if (sample) {
-            b.DefineProperty(sample, "responsiveness", entry.mTagFloat);
-          }
-        }
-        break;
-      case 'p':
-        {
-          if (sample) {
-            b.DefineProperty(sample, "power", entry.mTagFloat);
-          }
-        }
-        break;
-      case 'f':
-        {
-          if (sample) {
-            b.DefineProperty(sample, "frameNumber", entry.mTagLine);
-          }
-        }
-        break;
-      case 't':
-        {
-          if (sample) {
-            b.DefineProperty(sample, "time", entry.mTagFloat);
-          }
-        }
-        break;
-      case 's':
-        sample = b.CreateObject();
-        b.DefineProperty(sample, "name", tagStringData);
-        frames = b.CreateArray();
-        b.DefineProperty(sample, "frames", frames);
-        b.ArrayPush(samples, sample);
-        // Fall though to create a label for the 's' tag
-      case 'c':
-      case 'l':
-        {
-          if (sample) {
-            typename Builder::RootedObject frame(b.context(), b.CreateObject());
-            if (entry.mTagName == 'l') {
-              // Bug 753041
-              // We need a double cast here to tell GCC that we don't want to sign
-              // extend 32-bit addresses starting with 0xFXXXXXX.
-              unsigned long long pc = (unsigned long long)(uintptr_t)entry.mTagPtr;
-              snprintf(tagBuff, DYNAMIC_MAX_STRING, "%#llx", pc);
-              b.DefineProperty(frame, "location", tagBuff);
-            } else {
-              b.DefineProperty(frame, "location", tagStringData);
-              readAheadPos = (readPos + incBy) % mEntrySize;
-              if (readAheadPos != mLastFlushPos &&
-                  mEntries[readAheadPos].mTagName == 'n') {
-                b.DefineProperty(frame, "line",
-                                 mEntries[readAheadPos].mTagLine);
-                incBy++;
-              }
-            }
-            b.ArrayPush(frames, frame);
-          }
-        }
-    }
-    readPos = (readPos + incBy) % mEntrySize;
-  }
+  return &val.toObject();
 }
-
-template void ThreadProfile::BuildJSObject<JSObjectBuilder>(JSObjectBuilder& b,
-                                                            JS::HandleObject profile);
-template void ThreadProfile::BuildJSObject<JSCustomObjectBuilder>(JSCustomObjectBuilder& b,
-                                                                  JSCustomObject *profile);
 
 PseudoStack* ThreadProfile::GetPseudoStack()
 {
@@ -458,6 +514,38 @@ void ThreadProfile::EndUnwind()
 mozilla::Mutex* ThreadProfile::GetMutex()
 {
   return &mMutex;
+}
+
+void ThreadProfile::DuplicateLastSample() {
+  // Scan the whole buffer (even unflushed parts)
+  // Adding mEntrySize makes the result of the modulus positive
+  // We search backwards from mWritePos-1 to mReadPos
+  for (int readPos  = (mWritePos + mEntrySize - 1) % mEntrySize;
+           readPos !=  (mReadPos + mEntrySize - 1) % mEntrySize;
+           readPos  =   (readPos + mEntrySize - 1) % mEntrySize) {
+    if (mEntries[readPos].mTagName == 's') {
+      // Found the start of the last entry at position readPos
+      int copyEndIdx = mWritePos;
+      // Go through the whole entry and duplicate it
+      for (;readPos != copyEndIdx; readPos = (readPos + 1) % mEntrySize) {
+        switch (mEntries[readPos].mTagName) {
+          // Copy with new time
+          case 't':
+            addTag(ProfileEntry('t', static_cast<float>((mozilla::TimeStamp::Now() - sStartTime).ToMilliseconds())));
+            break;
+          // Don't copy markers
+          case 'm':
+            break;
+          // Copy anything else we don't know about
+          // L, B, S, c, s, d, l, f, h, r, t, p
+          default:
+            addTag(mEntries[readPos]);
+            break;
+        }
+      }
+      break;
+    }
+  }
 }
 
 std::ostream& operator<<(std::ostream& stream, const ThreadProfile& profile)

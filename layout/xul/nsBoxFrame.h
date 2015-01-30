@@ -21,6 +21,12 @@
 
 class nsBoxLayoutState;
 
+namespace mozilla {
+namespace gfx {
+class DrawTarget;
+}
+}
+
 nsIFrame* NS_NewBoxFrame(nsIPresShell* aPresShell,
                          nsStyleContext* aContext,
                          bool aIsRoot,
@@ -30,6 +36,9 @@ nsIFrame* NS_NewBoxFrame(nsIPresShell* aPresShell,
 
 class nsBoxFrame : public nsContainerFrame
 {
+protected:
+  typedef mozilla::gfx::DrawTarget DrawTarget;
+
 public:
   NS_DECL_FRAMEARENA_HELPERS
 #ifdef DEBUG
@@ -71,38 +80,35 @@ public:
 
   // ----- public methods -------
   
-  virtual void Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        asPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
 
  
   virtual nsresult AttributeChanged(int32_t         aNameSpaceID,
                                     nsIAtom*        aAttribute,
                                     int32_t         aModType) MOZ_OVERRIDE;
 
-  virtual void MarkIntrinsicWidthsDirty() MOZ_OVERRIDE;
-  virtual nscoord GetMinWidth(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
-  virtual nscoord GetPrefWidth(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
+  virtual void MarkIntrinsicISizesDirty() MOZ_OVERRIDE;
+  virtual nscoord GetMinISize(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
+  virtual nscoord GetPrefISize(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
 
-  virtual nsresult Reflow(nsPresContext*          aPresContext,
-                          nsHTMLReflowMetrics&     aDesiredSize,
-                          const nsHTMLReflowState& aReflowState,
-                          nsReflowStatus&          aStatus) MOZ_OVERRIDE;
+  virtual void Reflow(nsPresContext*           aPresContext,
+                      nsHTMLReflowMetrics&     aDesiredSize,
+                      const nsHTMLReflowState& aReflowState,
+                      nsReflowStatus&          aStatus) MOZ_OVERRIDE;
 
-  virtual nsresult  AppendFrames(ChildListID     aListID,
-                                 nsFrameList&    aFrameList) MOZ_OVERRIDE;
+  virtual void SetInitialChildList(ChildListID  aListID,
+                                   nsFrameList& aChildList) MOZ_OVERRIDE;
+  virtual void AppendFrames(ChildListID     aListID,
+                            nsFrameList&    aFrameList) MOZ_OVERRIDE;
+  virtual void InsertFrames(ChildListID     aListID,
+                            nsIFrame*       aPrevFrame,
+                            nsFrameList&    aFrameList) MOZ_OVERRIDE;
+  virtual void RemoveFrame(ChildListID     aListID,
+                           nsIFrame*       aOldFrame) MOZ_OVERRIDE;
 
-  virtual nsresult  InsertFrames(ChildListID     aListID,
-                                 nsIFrame*       aPrevFrame,
-                                 nsFrameList&    aFrameList) MOZ_OVERRIDE;
-
-  virtual nsresult  RemoveFrame(ChildListID     aListID,
-                                nsIFrame*       aOldFrame) MOZ_OVERRIDE;
-
-  virtual nsIFrame* GetContentInsertionFrame() MOZ_OVERRIDE;
-
-  virtual nsresult  SetInitialChildList(ChildListID  aListID,
-                                        nsFrameList& aChildList) MOZ_OVERRIDE;
+  virtual nsContainerFrame* GetContentInsertionFrame() MOZ_OVERRIDE;
 
   virtual void DidSetStyleContext(nsStyleContext* aOldStyleContext) MOZ_OVERRIDE;
 
@@ -129,15 +135,15 @@ public:
   virtual nsresult GetFrameName(nsAString& aResult) const MOZ_OVERRIDE;
 #endif
 
-  virtual nsresult DidReflow(nsPresContext*           aPresContext,
-                             const nsHTMLReflowState*  aReflowState,
-                             nsDidReflowStatus         aStatus) MOZ_OVERRIDE;
+  virtual void DidReflow(nsPresContext*           aPresContext,
+                         const nsHTMLReflowState* aReflowState,
+                         nsDidReflowStatus        aStatus) MOZ_OVERRIDE;
 
   virtual bool HonorPrintBackgroundSettings() MOZ_OVERRIDE;
 
   virtual ~nsBoxFrame();
   
-  nsBoxFrame(nsIPresShell* aPresShell, nsStyleContext* aContext, bool aIsRoot = false, nsBoxLayout* aLayoutManager = nullptr);
+  explicit nsBoxFrame(nsStyleContext* aContext, bool aIsRoot = false, nsBoxLayout* aLayoutManager = nullptr);
 
   // virtual so nsStackFrame, nsButtonBoxFrame, nsSliderFrame and nsMenuFrame
   // can override it
@@ -177,7 +183,7 @@ protected:
     virtual void GetBoxName(nsAutoString& aName) MOZ_OVERRIDE;
     void PaintXULDebugBackground(nsRenderingContext& aRenderingContext,
                                  nsPoint aPt);
-    void PaintXULDebugOverlay(nsRenderingContext& aRenderingContext,
+    void PaintXULDebugOverlay(DrawTarget& aRenderingContext,
                               nsPoint aPt);
 #endif
 
@@ -208,7 +214,7 @@ protected:
 protected:
     void RegUnregAccessKey(bool aDoReg);
 
-  NS_HIDDEN_(void) CheckBoxOrder();
+  void CheckBoxOrder();
 
 private: 
 
@@ -227,9 +233,9 @@ private:
 
     void GetValue(nsPresContext* aPresContext, const nsSize& a, const nsSize& b, char* value);
     void GetValue(nsPresContext* aPresContext, int32_t a, int32_t b, char* value);
-    void DrawSpacer(nsPresContext* aPresContext, nsRenderingContext& aRenderingContext, bool aHorizontal, int32_t flex, nscoord x, nscoord y, nscoord size, nscoord spacerSize);
-    void DrawLine(nsRenderingContext& aRenderingContext,  bool aHorizontal, nscoord x1, nscoord y1, nscoord x2, nscoord y2);
-    void FillRect(nsRenderingContext& aRenderingContext,  bool aHorizontal, nscoord x, nscoord y, nscoord width, nscoord height);
+    void DrawSpacer(nsPresContext* aPresContext, DrawTarget& aDrawTarget, bool aHorizontal, int32_t flex, nscoord x, nscoord y, nscoord size, nscoord spacerSize);
+    void DrawLine(DrawTarget& aDrawTarget,  bool aHorizontal, nscoord x1, nscoord y1, nscoord x2, nscoord y2);
+    void FillRect(DrawTarget& aDrawTarget,  bool aHorizontal, nscoord x, nscoord y, nscoord width, nscoord height);
 #endif
     virtual void UpdateMouseThrough();
 

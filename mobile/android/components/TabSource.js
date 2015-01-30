@@ -1,10 +1,18 @@
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+"use strict"
+
 const { classes: Cc, interfaces: Ci, manager: Cm, utils: Cu, results: Cr } = Components;
 
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
-Cu.import("resource://gre/modules/Prompt.jsm");
 
-XPCOMUtils.defineLazyModuleGetter(this, "sendMessageToJava",
+XPCOMUtils.defineLazyModuleGetter(this, "Prompt",
+                                  "resource://gre/modules/Prompt.jsm");
+
+XPCOMUtils.defineLazyModuleGetter(this, "Messaging",
                                   "resource://gre/modules/Messaging.jsm");
 
 function TabSource() {
@@ -31,7 +39,15 @@ TabSource.prototype = {
       title: title,
       window: null
     }).setSingleChoiceItems(tabs.map(function(tab) {
-      return { label: tab.browser.contentTitle || tab.browser.contentURI.spec }
+      let label;
+      if (tab.browser.contentTitle)
+        label = tab.browser.contentTitle;
+      else if (tab.browser.contentURI)
+        label = tab.browser.contentURI.spec;
+      else
+        label = tab.originalURI.spec;
+      return { label: label,
+               icon: "thumbnail:" + tab.id }
     }));
 
     let result = null;
@@ -56,7 +72,7 @@ TabSource.prototype = {
     let tabs = app.tabs;
     for (var i in tabs) {
       if (tabs[i].browser.contentWindow == window) {
-        sendMessageToJava({ type: "Tab:Streaming", tabID: tabs[i].id });
+        Messaging.sendRequest({ type: "Tab:StreamStart", tabID: tabs[i].id });
       }
     }
   },
@@ -66,7 +82,7 @@ TabSource.prototype = {
     let tabs = app.tabs;
     for (let i in tabs) {
       if (tabs[i].browser.contentWindow == window) {
-        sendMessageToJava({ type: "Tab:NotStreaming", tabID: tabs[i].id });
+        Messaging.sendRequest({ type: "Tab:StreamStop", tabID: tabs[i].id });
       }
     }
   }

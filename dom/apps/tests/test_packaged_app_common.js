@@ -5,7 +5,6 @@
 var PackagedTestHelper = (function PackagedTestHelper() {
   "use strict";
 
-  var launchableValue;
   var steps;
   var index = -1;
   var gSJSPath = "tests/dom/apps/tests/file_packaged_app.sjs";
@@ -13,31 +12,18 @@ var PackagedTestHelper = (function PackagedTestHelper() {
   var gAppName = "appname";
   var gApp = null;
   var gInstallOrigin = "http://mochi.test:8888";
-  var timeoutID;
-
-  function timeoutError() {
-    ok(false, "Timeout! Probably waiting on a app installation event");
-    info("Finishing this test suite!");
-    finish();
-  }
 
   function debug(aMsg) {
     //dump("== PackageTestHelper debug == " + aMsg + "\n");
   }
 
   function next() {
-    if (timeoutID) {
-      clearTimeout(timeoutID);
-    }
     index += 1;
     if (index >= steps.length) {
       ok(false, "Shouldn't get here!");
       return;
     }
     try {
-      // There's nothing here that should take more than 30 seconds, even on
-      // heavy loads. So there's no need to stop further tests for five minutes.
-      timeoutID = setTimeout(timeoutError, 30000);
       steps[index]();
     } catch(ex) {
       ok(false, "Caught exception", ex);
@@ -49,11 +35,8 @@ var PackagedTestHelper = (function PackagedTestHelper() {
   }
 
   function finish() {
-    if (timeoutID) {
-      clearTimeout(timeoutID);
-    }
-    SpecialPowers.setAllAppsLaunchable(launchableValue);
     SpecialPowers.removePermission("webapps-manage", document);
+    SpecialPowers.removePermission("browser", document);
     SimpleTest.finish();
   }
 
@@ -74,13 +57,25 @@ var PackagedTestHelper = (function PackagedTestHelper() {
     finish();
   }
 
-  function setAppVersion(aVersion, aCb, aDontUpdatePackage) {
+  function setAppVersion(aVersion, aCb, aDontUpdatePackage, aAllowCancel, aRole, aFailOnce) {
     var xhr = new XMLHttpRequest();
     var dontUpdate = "";
+    var allowCancel = "";
+    var failOnce = "";
     if (aDontUpdatePackage) {
       dontUpdate = "&dontUpdatePackage=1";
     }
-    var url = gSJS + "?setVersion=" + aVersion + dontUpdate;
+    if (aAllowCancel) {
+      allowCancel= "&allowCancel=1";
+    }
+    if (aFailOnce) {
+      failOnce = "&failPackageDownloadOnce=1";
+    }
+    var url = gSJS + "?setVersion=" + aVersion + dontUpdate + allowCancel +
+                failOnce;
+    if (aRole) {
+      url += "&role=" + aRole;
+    }
     xhr.addEventListener("load", function() {
                            is(xhr.responseText, "OK", "setAppVersion OK");
                            aCb();
@@ -115,6 +110,7 @@ var PackagedTestHelper = (function PackagedTestHelper() {
       var aApp = evt.application;
       aApp.ondownloaderror = function(evt) {
         var error = aApp.downloadError.name;
+        ok(true, "Got downloaderror " + error);
         if (error == aExpectedError) {
           ok(true, "Got expected " + aExpectedError);
           var expected = {
@@ -167,7 +163,7 @@ var PackagedTestHelper = (function PackagedTestHelper() {
       is(aApp.manifest.size, aExpectedApp.size, "Check size");
     }
     if (aApp.manifest) {
-      is(aApp.manifest.launch_path, gSJSPath, "Check launch path");
+      is(aApp.manifest.launch_path, aExpectedApp.launch_path || gSJSPath, "Check launch path");
     }
     if (aExpectedApp.manifestURL) {
       is(aApp.manifestURL, aExpectedApp.manifestURL, "Check manifestURL");
@@ -242,8 +238,7 @@ var PackagedTestHelper = (function PackagedTestHelper() {
     get gAppName() { return gAppName;},
     get gApp() { return gApp; },
     set gApp(aValue) { gApp = aValue; },
-    gInstallOrigin: gInstallOrigin,
-    launchableValue: launchableValue
+    gInstallOrigin: gInstallOrigin
   };
 
 })();

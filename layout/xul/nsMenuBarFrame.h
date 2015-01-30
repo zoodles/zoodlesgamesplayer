@@ -22,14 +22,14 @@ class nsIContent;
 
 nsIFrame* NS_NewMenuBarFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
 
-class nsMenuBarFrame : public nsBoxFrame, public nsMenuParent
+class nsMenuBarFrame MOZ_FINAL : public nsBoxFrame, public nsMenuParent
 {
 public:
   NS_DECL_QUERYFRAME_TARGET(nsMenuBarFrame)
   NS_DECL_QUERYFRAME
   NS_DECL_FRAMEARENA_HELPERS
 
-  nsMenuBarFrame(nsIPresShell* aShell, nsStyleContext* aContext);
+  explicit nsMenuBarFrame(nsStyleContext* aContext);
 
   // nsMenuParent interface
   virtual nsMenuFrame* GetCurrentMenuItem() MOZ_OVERRIDE;
@@ -50,9 +50,9 @@ public:
   void InstallKeyboardNavigator();
   void RemoveKeyboardNavigator();
 
-  virtual void Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
 
   virtual void DestroyFrom(nsIFrame* aDestructRoot) MOZ_OVERRIDE;
 

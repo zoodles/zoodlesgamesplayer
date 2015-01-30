@@ -1,4 +1,4 @@
-/* -*- Mode: javascript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -8,6 +8,7 @@
 const { Cc, Ci, Cu, Cr } = require("chrome");
 const { Promise: promise } = Cu.import("resource://gre/modules/Promise.jsm", {});
 const EventEmitter = require("devtools/toolkit/event-emitter");
+const { DevToolsUtils } = Cu.import("resource://gre/modules/devtools/DevToolsUtils.jsm", {});
 
 function NetMonitorPanel(iframeWindow, toolbox) {
   this.panelWin = iframeWindow;
@@ -49,8 +50,7 @@ NetMonitorPanel.prototype = {
         return this;
       })
       .then(null, function onError(aReason) {
-        Cu.reportError("NetMonitorPanel open failed. " +
-                       aReason.error + ": " + aReason.message);
+        DevToolsUtils.reportException("NetMonitorPanel.prototype.open", aReason);
       });
   },
 

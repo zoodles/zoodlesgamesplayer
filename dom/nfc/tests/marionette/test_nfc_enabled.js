@@ -6,18 +6,46 @@ MARIONETTE_HEAD_JS = 'head.js';
 
 function testEnableNFC() {
   log('Running \'testEnableNFC\'');
-  toggleNFC(true, runNextTest);
+  let promise = nfc.startPoll();
+  promise.then(() => {
+    ok(true);
+    runNextTest();
+  }).catch(() => {
+    ok(false, "startPoll failed");
+    runNextTest();
+  });
 }
 
 function testDisableNFC() {
   log('Running \'testDisableNFC\'');
-  toggleNFC(false, runNextTest);
+  let promise = nfc.powerOff();
+  promise.then(() => {
+    ok(true);
+    runNextTest();
+  }).catch(() => {
+    ok(false, "powerOff failed");
+    runNextTest();
+  });
+}
+
+function testStopPollNFC() {
+  log('Running \'testStopPollNFC\'');
+  let promise = nfc.stopPoll();
+  promise.then(() => {
+    ok(true);
+    runNextTest();
+  }).catch(() => {
+    ok(false, "stopPoll failed");
+    runNextTest();
+  });
 }
 
 let tests = [
   testEnableNFC,
+  testStopPollNFC,
   testDisableNFC
 ];
 
 SpecialPowers.pushPermissions(
-  [{'type': 'settings', 'allow': true, 'context': document}], runTests);
+  [{'type': 'nfc-manager', 'allow': true, 'context': document}],
+  runTests);

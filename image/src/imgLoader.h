@@ -8,6 +8,7 @@
 #define imgLoader_h__
 
 #include "mozilla/Attributes.h"
+#include "mozilla/Mutex.h"
 
 #include "imgILoader.h"
 #include "imgICache.h"
@@ -21,6 +22,7 @@
 #include "nsIChannel.h"
 #include "nsIThreadRetargetableStreamListener.h"
 #include "imgIRequest.h"
+#include "mozilla/net/ReferrerPolicy.h"
 
 class imgLoader;
 class imgRequestProxy;
@@ -28,7 +30,6 @@ class imgINotificationObserver;
 class nsILoadGroup;
 class imgCacheExpirationTracker;
 class imgMemoryReporter;
-class nsIChannelPolicy;
 
 namespace mozilla {
 namespace image {
@@ -149,7 +150,7 @@ private: // methods
   void SetHasNoProxies(bool hasNoProxies);
 
   // Private, unimplemented copy constructor.
-  imgCacheEntry(const imgCacheEntry &);
+  imgCacheEntry(const imgCacheEntry&);
 
 private: // data
   nsAutoRefCnt mRefCnt;
@@ -170,11 +171,11 @@ private: // data
 #include <vector>
 
 #define NS_IMGLOADER_CID \
-{ /* 9f6a0d2e-1dd1-11b2-a5b8-951f13c846f7 */         \
-     0x9f6a0d2e,                                     \
-     0x1dd1,                                         \
-     0x11b2,                                         \
-    {0xa5, 0xb8, 0x95, 0x1f, 0x13, 0xc8, 0x46, 0xf7} \
+{ /* c1354898-e3fe-4602-88a7-c4520c21cb4e */         \
+     0xc1354898,                                     \
+     0xe3fe,                                         \
+     0x4602,                                         \
+    {0x88, 0xa7, 0xc4, 0x52, 0x0c, 0x21, 0xcb, 0x4e} \
 }
 
 class imgCacheQueue
@@ -205,15 +206,25 @@ private:
   uint32_t mSize;
 };
 
-class imgLoader : public imgILoader,
-                  public nsIContentSniffer,
-                  public imgICache,
-                  public nsSupportsWeakReference,
-                  public nsIObserver
+enum class AcceptedMimeTypes : uint8_t {
+  IMAGES,
+  IMAGES_AND_DOCUMENTS,
+};
+
+class imgLoader MOZ_FINAL : public imgILoader,
+                            public nsIContentSniffer,
+                            public imgICache,
+                            public nsSupportsWeakReference,
+                            public nsIObserver
 {
+  virtual ~imgLoader();
+
 public:
   typedef mozilla::image::ImageURL ImageURL;
   typedef nsRefPtrHashtable<nsCStringHashKey, imgCacheEntry> imgCacheTable;
+  typedef nsTHashtable<nsPtrHashKey<imgRequest>> imgSet;
+  typedef mozilla::net::ReferrerPolicy ReferrerPolicy;
+  typedef mozilla::Mutex Mutex;
 
   NS_DECL_ISUPPORTS
   NS_DECL_IMGILOADER
@@ -221,8 +232,10 @@ public:
   NS_DECL_IMGICACHE
   NS_DECL_NSIOBSERVER
 
+  static imgLoader* Singleton();
+  static imgLoader* PBSingleton();
+
   imgLoader();
-  virtual ~imgLoader();
 
   nsresult Init();
 
@@ -245,14 +258,17 @@ public:
   nsresult LoadImage(nsIURI *aURI,
                      nsIURI *aInitialDocumentURI,
                      nsIURI *aReferrerURI,
+                     ReferrerPolicy aReferrerPolicy,
                      nsIPrincipal* aLoadingPrincipal,
                      nsILoadGroup *aLoadGroup,
                      imgINotificationObserver *aObserver,
                      nsISupports *aCX,
                      nsLoadFlags aLoadFlags,
                      nsISupports *aCacheKey,
-                     nsIChannelPolicy *aPolicy,
+                     nsContentPolicyType aContentPolicyType,
+                     const nsAString& initiatorType,
                      imgRequestProxy **_retval);
+
   nsresult LoadImageWithChannel(nsIChannel *channel,
                                 imgINotificationObserver *aObserver,
                                 nsISupports *aCX,
@@ -260,8 +276,22 @@ public:
                                 imgRequestProxy **_retval);
 
   static nsresult GetMimeTypeFromContent(const char* aContents, uint32_t aLength, nsACString& aContentType);
-  // exported for use by mimei.cpp in libxul sdk builds
-  static NS_EXPORT_(bool) SupportImageWithMimeType(const char* aMimeType);
+
+  /**
+   * Returns true if the given mime type may be interpreted as an image.
+   *
+   * Some MIME types may be interpreted as both images and documents. (At the
+   * moment only "image/svg+xml" falls into this category, but there may be more
+   * in the future.) Callers which want this function to return true for such
+   * MIME types should pass AcceptedMimeTypes::IMAGES_AND_DOCUMENTS for @aAccept.
+   *
+   * @param aMimeType The MIME type to evaluate.
+   * @param aAcceptedMimeTypes Which kinds of MIME types to treat as images.
+   */
+  static NS_EXPORT_(bool)
+  SupportImageWithMimeType(const char* aMimeType,
+                           AcceptedMimeTypes aAccept =
+                             AcceptedMimeTypes::IMAGES);
 
   static void GlobalInit(); // for use by the factory
   static void Shutdown(); // for use by the factory
@@ -280,6 +310,9 @@ public:
   bool RemoveFromCache(imgCacheEntry *entry);
 
   bool PutIntoCache(nsIURI *key, imgCacheEntry *entry);
+
+  void AddToUncachedImages(imgRequest* aRequest);
+  void RemoveFromUncachedImages(imgRequest* aRequest);
 
   // Returns true if we should prefer evicting cache entry |two| over cache
   // entry |one|.
@@ -318,29 +351,32 @@ public:
   // HasObservers(). The request's cache entry will be re-set before this
   // happens, by calling imgRequest::SetCacheEntry() when an entry with no
   // observers is re-requested.
-  bool SetHasNoProxies(ImageURL *key, imgCacheEntry *entry);
-  bool SetHasProxies(ImageURL *key);
+  bool SetHasNoProxies(imgRequest *aRequest, imgCacheEntry *aEntry);
+  bool SetHasProxies(imgRequest *aRequest);
 
 private: // methods
 
   bool ValidateEntry(imgCacheEntry *aEntry, nsIURI *aKey,
                        nsIURI *aInitialDocumentURI, nsIURI *aReferrerURI,
+                       ReferrerPolicy aReferrerPolicy,
                        nsILoadGroup *aLoadGroup,
                        imgINotificationObserver *aObserver, nsISupports *aCX,
-                       nsLoadFlags aLoadFlags, bool aCanMakeNewChannel,
+                       nsLoadFlags aLoadFlags,
+                       nsContentPolicyType aContentPolicyType,
+                       bool aCanMakeNewChannel,
                        imgRequestProxy **aProxyRequest,
-                       nsIChannelPolicy *aPolicy,
                        nsIPrincipal* aLoadingPrincipal,
                        int32_t aCORSMode);
 
   bool ValidateRequestWithNewChannel(imgRequest *request, nsIURI *aURI,
                                        nsIURI *aInitialDocumentURI,
                                        nsIURI *aReferrerURI,
+                                       ReferrerPolicy aReferrerPolicy,
                                        nsILoadGroup *aLoadGroup,
                                        imgINotificationObserver *aObserver,
                                        nsISupports *aCX, nsLoadFlags aLoadFlags,
+                                       nsContentPolicyType aContentPolicyType,
                                        imgRequestProxy **aProxyRequest,
-                                       nsIChannelPolicy *aPolicy,
                                        nsIPrincipal* aLoadingPrincipal,
                                        int32_t aCORSMode);
 
@@ -370,6 +406,16 @@ private: // data
   imgCacheTable mChromeCache;
   imgCacheQueue mChromeCacheQueue;
 
+  // Hash set of every imgRequest for this loader that isn't in mCache or
+  // mChromeCache. The union over all imgLoader's of mCache, mChromeCache, and
+  // mUncachedImages should be every imgRequest that is alive. These are weak
+  // pointers so we rely on the imgRequest destructor to remove itself.
+  imgSet mUncachedImages;
+  // The imgRequest can have refs to them held on non-main thread, so we need
+  // a mutex because we modify the uncached images set from the imgRequest
+  // destructor.
+  Mutex mUncachedImagesMutex;
+
   static double sCacheTimeWeight;
   static uint32_t sCacheMaxSize;
   static imgMemoryReporter* sMemReporter;
@@ -394,8 +440,7 @@ class ProxyListener : public nsIStreamListener
                     , public nsIThreadRetargetableStreamListener
 {
 public:
-  ProxyListener(nsIStreamListener *dest);
-  virtual ~ProxyListener();
+  explicit ProxyListener(nsIStreamListener *dest);
 
   /* additional members */
   NS_DECL_ISUPPORTS
@@ -404,6 +449,8 @@ public:
   NS_DECL_NSIREQUESTOBSERVER
 
 private:
+  virtual ~ProxyListener();
+
   nsCOMPtr<nsIStreamListener> mDestListener;
 };
 
@@ -451,7 +498,6 @@ class imgCacheValidator : public nsIStreamListener,
 public:
   imgCacheValidator(nsProgressNotificationProxy* progress, imgLoader* loader,
                     imgRequest *request, void *aContext, bool forcePrincipalCheckForCacheEntry);
-  virtual ~imgCacheValidator();
 
   void AddProxy(imgRequestProxy *aProxy);
 
@@ -464,6 +510,8 @@ public:
   NS_DECL_NSIASYNCVERIFYREDIRECTCALLBACK
 
 private:
+  virtual ~imgCacheValidator();
+
   nsCOMPtr<nsIStreamListener> mDestListener;
   nsRefPtr<nsProgressNotificationProxy> mProgressProxy;
   nsCOMPtr<nsIAsyncVerifyRedirectCallback> mRedirectCallback;

@@ -252,6 +252,18 @@ nsPartChannel::SetOwner(nsISupports* aOwner)
 }
 
 NS_IMETHODIMP
+nsPartChannel::GetLoadInfo(nsILoadInfo* *aLoadInfo)
+{
+    return mMultipartChannel->GetLoadInfo(aLoadInfo);
+}
+
+NS_IMETHODIMP
+nsPartChannel::SetLoadInfo(nsILoadInfo* aLoadInfo)
+{
+    return mMultipartChannel->SetLoadInfo(aLoadInfo);
+}
+
+NS_IMETHODIMP
 nsPartChannel::GetNotificationCallbacks(nsIInterfaceRequestor* *aCallbacks)
 {
     return mMultipartChannel->GetNotificationCallbacks(aCallbacks);
@@ -409,10 +421,10 @@ nsPartChannel::GetBaseChannel(nsIChannel ** aReturn)
 
 
 // nsISupports implementation
-NS_IMPL_ISUPPORTS3(nsMultiMixedConv,
-                   nsIStreamConverter,
-                   nsIStreamListener,
-                   nsIRequestObserver)
+NS_IMPL_ISUPPORTS(nsMultiMixedConv,
+                  nsIStreamConverter,
+                  nsIStreamListener,
+                  nsIRequestObserver)
 
 
 // nsIStreamConverter implementation
@@ -448,7 +460,7 @@ class AutoFree
 public:
   AutoFree() : mBuffer(nullptr) {}
 
-  AutoFree(char *buffer) : mBuffer(buffer) {}
+  explicit AutoFree(char *buffer) : mBuffer(buffer) {}
 
   ~AutoFree() {
     free(mBuffer);
@@ -476,7 +488,7 @@ nsMultiMixedConv::OnDataAvailable(nsIRequest *request, nsISupports *context,
         return NS_ERROR_FAILURE;
 
     nsresult rv = NS_OK;
-    AutoFree buffer = nullptr;
+    AutoFree buffer(nullptr);
     uint32_t bufLen = 0, read = 0;
 
     NS_ASSERTION(request, "multimixed converter needs a request");
@@ -527,9 +539,10 @@ nsMultiMixedConv::OnDataAvailable(nsIRequest *request, nsISupports *context,
             mFirstOnData = true;
         }
         else if (!PL_strnstr(cursor, token, mTokenLen+2)) {
-            buffer = (char *) realloc(buffer, bufLen + mTokenLen + 1);
-            if (!buffer)
+            char *newBuffer = (char *) realloc(buffer, bufLen + mTokenLen + 1);
+            if (!newBuffer)
                 return NS_ERROR_OUT_OF_MEMORY;
+            buffer = newBuffer;
 
             memmove(buffer + mTokenLen + 1, buffer, bufLen);
             memcpy(buffer, token, mTokenLen);

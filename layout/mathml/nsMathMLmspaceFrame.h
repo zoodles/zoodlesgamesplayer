@@ -29,14 +29,14 @@ public:
 
   virtual bool IsLeaf() const MOZ_OVERRIDE;
 
-  virtual nsresult
+  virtual void
   Reflow(nsPresContext*          aPresContext,
          nsHTMLReflowMetrics&     aDesiredSize,
          const nsHTMLReflowState& aReflowState,
          nsReflowStatus&          aStatus) MOZ_OVERRIDE;
   
 protected:
-  nsMathMLmspaceFrame(nsStyleContext* aContext) : nsMathMLContainerFrame(aContext) {}
+  explicit nsMathMLmspaceFrame(nsStyleContext* aContext) : nsMathMLContainerFrame(aContext) {}
   virtual ~nsMathMLmspaceFrame();
 
   virtual nsresult

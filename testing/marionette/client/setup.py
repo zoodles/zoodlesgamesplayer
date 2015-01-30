@@ -1,14 +1,8 @@
 import os
 from setuptools import setup, find_packages
+import sys
 
-version = '0.7.6'
-
-# get documentation from the README
-try:
-    here = os.path.dirname(os.path.abspath(__file__))
-    description = file(os.path.join(here, 'README.md')).read()
-except (OSError, IOError):
-    description = ''
+version = '0.8.7'
 
 # dependencies
 with open('requirements.txt') as f:
@@ -17,7 +11,7 @@ with open('requirements.txt') as f:
 setup(name='marionette_client',
       version=version,
       description="Marionette test automation client",
-      long_description=description,
+      long_description='See http://marionette-client.readthedocs.org/',
       classifiers=[], # Get strings from http://pypi.python.org/pypi?%3Aaction=list_classifiers
       keywords='mozilla',
       author='Jonathan Griffin',

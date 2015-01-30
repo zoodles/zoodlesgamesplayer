@@ -20,6 +20,7 @@
 
 #ifdef MOZ_WIDGET_GONK
 #include "nsINetworkManager.h"
+#include "nsProxyRelease.h"
 #endif
 
 // ftp server types
@@ -56,7 +57,9 @@ typedef enum _FTP_STATE {
     FTP_S_STOR, FTP_R_STOR,
     FTP_S_LIST, FTP_R_LIST,
     FTP_S_PASV, FTP_R_PASV,
-    FTP_S_PWD,  FTP_R_PWD
+    FTP_S_PWD,  FTP_R_PWD,
+    FTP_S_FEAT, FTP_R_FEAT,
+    FTP_S_OPTS, FTP_R_OPTS
 } FTP_STATE;
 
 // higher level ftp actions
@@ -73,13 +76,13 @@ class nsIStreamListener;
 // implements nsITransportEventSink so it can mix status events from both the
 // control connection and the data connection.
 
-class nsFtpState : public nsBaseContentStream,
-                   public nsIInputStreamCallback,
-                   public nsITransportEventSink,
-                   public nsICacheListener,
-                   public nsIRequestObserver,
-                   public nsFtpControlConnectionListener,
-                   public nsIProtocolProxyCallback
+class nsFtpState MOZ_FINAL : public nsBaseContentStream,
+                             public nsIInputStreamCallback,
+                             public nsITransportEventSink,
+                             public nsICacheListener,
+                             public nsIRequestObserver,
+                             public nsFtpControlConnectionListener,
+                             public nsIProtocolProxyCallback
 {
 public:
     NS_DECL_ISUPPORTS_INHERITED
@@ -90,21 +93,21 @@ public:
     NS_DECL_NSIPROTOCOLPROXYCALLBACK
 
     // Override input stream methods:
-    NS_IMETHOD CloseWithStatus(nsresult status);
-    NS_IMETHOD Available(uint64_t *result);
+    NS_IMETHOD CloseWithStatus(nsresult status) MOZ_OVERRIDE;
+    NS_IMETHOD Available(uint64_t *result) MOZ_OVERRIDE;
     NS_IMETHOD ReadSegments(nsWriteSegmentFun fun, void *closure,
-                            uint32_t count, uint32_t *result);
+                            uint32_t count, uint32_t *result) MOZ_OVERRIDE;
 
     // nsFtpControlConnectionListener methods:
-    virtual void OnControlDataAvailable(const char *data, uint32_t dataLen);
-    virtual void OnControlError(nsresult status);
+    virtual void OnControlDataAvailable(const char *data, uint32_t dataLen) MOZ_OVERRIDE;
+    virtual void OnControlError(nsresult status) MOZ_OVERRIDE;
 
     nsFtpState();
     nsresult Init(nsFtpChannel *channel);
 
 protected:
     // Notification from nsBaseContentStream::AsyncWait
-    virtual void OnCallbackPending();
+    virtual void OnCallbackPending() MOZ_OVERRIDE;
 
 private:
     virtual ~nsFtpState();
@@ -128,6 +131,8 @@ private:
     nsresult        S_stor(); FTP_STATE       R_stor();
     nsresult        S_pasv(); FTP_STATE       R_pasv();
     nsresult        S_pwd();  FTP_STATE       R_pwd();
+    nsresult        S_feat(); FTP_STATE       R_feat();
+    nsresult        S_opts(); FTP_STATE       R_opts();
     // END: STATE METHODS
     ///////////////////////////////////
 
@@ -242,6 +247,7 @@ private:
     nsCOMPtr<nsIRequest>    mUploadRequest;
     bool                    mAddressChecked;
     bool                    mServerIsIPv6;
+    bool                    mUseUTF8;
 
     static uint32_t         mSessionStartTime;
 
@@ -263,7 +269,7 @@ private:
 // Currently, they are only available on gonk.
     uint64_t                           mCountRecv;
 #ifdef MOZ_WIDGET_GONK
-    nsCOMPtr<nsINetworkInterface>      mActiveNetwork;
+    nsMainThreadPtrHandle<nsINetworkInterface> mActiveNetwork;
 #endif
     nsresult                           SaveNetworkStats(bool);
     void                               CountRecvBytes(uint64_t recvBytes)

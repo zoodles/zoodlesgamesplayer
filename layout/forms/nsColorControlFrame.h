@@ -37,7 +37,7 @@ public:
 
   // nsIAnonymousContentCreator
   virtual nsresult CreateAnonymousContent(nsTArray<ContentInfo>& aElements) MOZ_OVERRIDE;
-  virtual void AppendAnonymousContentTo(nsBaseContentList& aElements,
+  virtual void AppendAnonymousContentTo(nsTArray<nsIContent*>& aElements,
                                         uint32_t aFilter) MOZ_OVERRIDE;
 
   // nsIFrame
@@ -45,7 +45,7 @@ public:
                                     nsIAtom* aAttribute,
                                     int32_t  aModType) MOZ_OVERRIDE;
   virtual bool IsLeaf() const MOZ_OVERRIDE { return true; }
-  virtual nsIFrame* GetContentInsertionFrame() MOZ_OVERRIDE;
+  virtual nsContainerFrame* GetContentInsertionFrame() MOZ_OVERRIDE;
 
   virtual Element* GetPseudoElement(nsCSSPseudoElements::Type aType) MOZ_OVERRIDE;
 
@@ -53,7 +53,7 @@ public:
   nsresult UpdateColor();
 
 private:
-  nsColorControlFrame(nsStyleContext* aContext);
+  explicit nsColorControlFrame(nsStyleContext* aContext);
 
   nsCOMPtr<Element> mColorContent;
 };

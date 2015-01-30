@@ -83,11 +83,11 @@ public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIGSETTINGSCOLLECTION
 
-  nsGSettingsCollection(GSettings* aSettings) : mSettings(aSettings),
-                                                mKeys(nullptr) {}
+  explicit nsGSettingsCollection(GSettings* aSettings) : mSettings(aSettings),
+                                                         mKeys(nullptr) {}
+private:
   ~nsGSettingsCollection();
 
-private:
   bool KeyExists(const nsACString& aKey);
   bool SetValue(const nsACString& aKey,
                   GVariant *aValue);
@@ -133,7 +133,7 @@ nsGSettingsCollection::SetValue(const nsACString& aKey,
                               aValue);
 }
 
-NS_IMPL_ISUPPORTS1(nsGSettingsCollection, nsIGSettingsCollection)
+NS_IMPL_ISUPPORTS(nsGSettingsCollection, nsIGSettingsCollection)
 
 NS_IMETHODIMP
 nsGSettingsCollection::SetString(const nsACString& aKey,
@@ -319,7 +319,7 @@ nsGSettingsService::Init()
   return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS1(nsGSettingsService, nsIGSettingsService)
+NS_IMPL_ISUPPORTS(nsGSettingsService, nsIGSettingsService)
 
 nsGSettingsService::~nsGSettingsService()
 {

@@ -26,10 +26,6 @@
 #include "UnwinderThread2.h"
 #include "TableTicker.h"
 
-// JSON
-#include "JSObjectBuilder.h"
-#include "nsIJSRuntimeService.h"
-
 // Meta
 #include "nsXPCOM.h"
 #include "nsXPCOMCID.h"
@@ -43,7 +39,7 @@
 #include "mozilla/Services.h"
 
 // JS
-#include "js/OldDebugAPI.h"
+#include "jsfriendapi.h"
 
 // This file's exports are listed in GeckoProfilerImpl.h.
 
@@ -57,7 +53,7 @@ int     sProfileEntries  = 0;
 using std::string;
 using namespace mozilla;
 
-#if _MSC_VER
+#if defined(_MSC_VER) && _MSC_VER < 1900
  #define snprintf _snprintf
 #endif
 
@@ -77,7 +73,7 @@ void genProfileEntry(/*MODIFIED*/UnwinderThreadBuffer* utb,
   // Add a pseudostack-entry start label
   utb__addEntry( utb, ProfileEntry('h', 'P') );
   // And the SP value, if it is non-zero
-  if (entry.stackAddress() != 0) {
+  if (entry.isCpp() && entry.stackAddress() != 0) {
     utb__addEntry( utb, ProfileEntry('S', entry.stackAddress()) );
   }
 
@@ -101,7 +97,7 @@ void genProfileEntry(/*MODIFIED*/UnwinderThreadBuffer* utb,
       // Cast to *((void**) to pass the text data to a void*
       utb__addEntry( utb, ProfileEntry('d', *((void**)(&text[0]))) );
     }
-    if (entry.js()) {
+    if (entry.isJs()) {
       if (!entry.pc()) {
         // The JIT only allows the top-most entry to have a nullptr pc
         MOZ_ASSERT(&entry == &stack->mStack[stack->stackSize() - 1]);
@@ -110,18 +106,20 @@ void genProfileEntry(/*MODIFIED*/UnwinderThreadBuffer* utb,
           jsbytecode *jspc = js::ProfilingGetPC(stack->mRuntime, entry.script(),
                                                 lastpc);
           if (jspc) {
-            lineno = JS_PCToLineNumber(nullptr, entry.script(), jspc);
+            lineno = JS_PCToLineNumber(entry.script(), jspc);
           }
         }
       } else {
-        lineno = JS_PCToLineNumber(nullptr, entry.script(), entry.pc());
+        lineno = JS_PCToLineNumber(entry.script(), entry.pc());
       }
     } else {
       lineno = entry.line();
     }
   } else {
     utb__addEntry( utb, ProfileEntry('c', sampleLabel) );
-    lineno = entry.line();
+    if (entry.isCpp()) {
+      lineno = entry.line();
+    }
   }
   if (lineno != -1) {
     utb__addEntry( utb, ProfileEntry('n', lineno) );
@@ -161,6 +159,7 @@ void populateBuffer(UnwinderThreadBuffer* utb, TickSample* sample,
 {
   ThreadProfile& sampledThreadProfile = *sample->threadProfile;
   PseudoStack* stack = sampledThreadProfile.GetPseudoStack();
+  stack->updateGeneration(sampledThreadProfile.GetGenerationID());
 
   /* Manufacture the ProfileEntries that we will give to the unwinder
      thread, and park them in |utb|. */
@@ -182,7 +181,6 @@ void populateBuffer(UnwinderThreadBuffer* utb, TickSample* sample,
       stack->addStoredMarker(marker);
       utb__addEntry( utb, ProfileEntry('m', marker) );
     }
-    stack->updateGeneration(sampledThreadProfile.GetGenerationID());
     if (jankOnly) {
       // if we are on a different event we can discard any temporary samples
       // we've kept around
@@ -198,7 +196,7 @@ void populateBuffer(UnwinderThreadBuffer* utb, TickSample* sample,
       // only record the events when we have a we haven't seen a tracer
       // event for 100ms
       if (!sLastTracerEvent.IsNull()) {
-        TimeDuration delta = sample->timestamp - sLastTracerEvent;
+        mozilla::TimeDuration delta = sample->timestamp - sLastTracerEvent;
         if (delta.ToMilliseconds() > 100.0) {
             recordSample = true;
         }
@@ -231,20 +229,20 @@ void populateBuffer(UnwinderThreadBuffer* utb, TickSample* sample,
       MOZ_CRASH();
   }
 
-  if (recordSample) {    
+  if (recordSample) {
     // add a "flush now" hint
     utb__addEntry( utb, ProfileEntry('h'/*hint*/, 'F'/*flush*/) );
   }
 
   // Add any extras
   if (!sLastTracerEvent.IsNull() && sample) {
-    TimeDuration delta = sample->timestamp - sLastTracerEvent;
-    utb__addEntry( utb, ProfileEntry('r', delta.ToMilliseconds()) );
+    mozilla::TimeDuration delta = sample->timestamp - sLastTracerEvent;
+    utb__addEntry( utb, ProfileEntry('r', static_cast<float>(delta.ToMilliseconds())) );
   }
 
   if (sample) {
-    TimeDuration delta = sample->timestamp - sStartTime;
-    utb__addEntry( utb, ProfileEntry('t', delta.ToMilliseconds()) );
+    mozilla::TimeDuration delta = sample->timestamp - sStartTime;
+    utb__addEntry( utb, ProfileEntry('t', static_cast<float>(delta.ToMilliseconds())) );
   }
 
   if (sLastFrameNumber != sFrameNumber) {

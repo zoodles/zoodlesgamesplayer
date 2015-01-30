@@ -143,7 +143,7 @@ partial interface HTMLInputElement {
   [Throws]
   void setSelectionRange(long start, long end, optional DOMString direction);
 
-  [GetterThrows]
+  [GetterThrows, ChromeOnly]
   readonly attribute nsIControllers        controllers;
   [GetterThrows]
   readonly attribute long                  textLength;
@@ -153,6 +153,9 @@ partial interface HTMLInputElement {
 
   [ChromeOnly]
   void mozSetFileNameArray(sequence<DOMString> fileNames);
+
+  [ChromeOnly]
+  void mozSetFileArray(sequence<File> files);
 
   // Number controls (<input type=number>) have an anonymous text control
   // (<input type=text>) in the anonymous shadow tree that they contain. On
@@ -167,6 +170,11 @@ partial interface HTMLInputElement {
   readonly attribute HTMLInputElement? ownerNumberControl;
 
   boolean mozIsTextField(boolean aExcludePassword);
+
+  [ChromeOnly]
+  // This function will return null if @autocomplete is not defined for the
+  // current @type
+  AutocompleteInfo? getAutocompleteInfo();
 };
 
 partial interface HTMLInputElement {

@@ -15,14 +15,16 @@ const Cu = Components.utils;
 const Cc = Components.classes;
 const Ci = Components.interfaces;
 
+Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/IndexedDBHelper.jsm");
-Cu.import("resource://gre/modules/PhoneNumberUtils.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "PhoneNumberUtils",
+                                  "resource://gre/modules/PhoneNumberUtils.jsm");
 Cu.importGlobalProperties(["indexedDB"]);
 
 /* all exported symbols need to be bound to this on B2G - Bug 961777 */
 this.DB_NAME = "contacts";
-this.DB_VERSION = 19;
+this.DB_VERSION = 20;
 this.STORE_NAME = "contacts";
 this.SAVED_GETALL_STORE_NAME = "getallcache";
 const CHUNK_SIZE = 20;
@@ -169,6 +171,10 @@ ContactDB.prototype = {
       objectStore.createIndex("category", "properties.category", { multiEntry: true });
       objectStore.createIndex("email", "search.email", { multiEntry: true });
       objectStore.createIndex("telMatch", "search.parsedTel", {multiEntry: true});
+      objectStore.createIndex("phoneticFamilyName", "properties.phoneticFamilyName", { multiEntry: true });
+      objectStore.createIndex("phoneticGivenName", "properties.phoneticGivenName", { multiEntry: true });
+      objectStore.createIndex("phoneticFamilyNameLowerCase", "search.phoneticFamilyName", { multiEntry: true });
+      objectStore.createIndex("phoneticGivenNameLowerCase",  "search.phoneticGivenName",  { multiEntry: true });
       aDb.createObjectStore(SAVED_GETALL_STORE_NAME);
       aDb.createObjectStore(REVISION_STORE).put(0, REVISION_KEY);
     }
@@ -705,6 +711,17 @@ ContactDB.prototype = {
 
         next();
       },
+      function upgrade19to20() {
+        if (DEBUG) debug("upgrade19to20 create schema(phonetic)");
+        if (!objectStore) {
+          objectStore = aTransaction.objectStore(STORE_NAME);
+        }
+        objectStore.createIndex("phoneticFamilyName", "properties.phoneticFamilyName", { multiEntry: true });
+        objectStore.createIndex("phoneticGivenName", "properties.phoneticGivenName", { multiEntry: true });
+        objectStore.createIndex("phoneticFamilyNameLowerCase", "search.phoneticFamilyName", { multiEntry: true });
+        objectStore.createIndex("phoneticGivenNameLowerCase",  "search.phoneticGivenName",  { multiEntry: true });
+        next();
+      },
     ];
 
     let index = aOldVersion;
@@ -824,6 +841,8 @@ ContactDB.prototype = {
       tel:             [],
       exactTel:        [],
       parsedTel:       [],
+      phoneticFamilyName:   [],
+      phoneticGivenName:    [],
     };
 
     for (let field in aContact.properties) {
@@ -939,22 +958,13 @@ ContactDB.prototype = {
           }
           cursor.continue();
         } else {
-          aCallback();
+          aCallback(txn);
         }
       }.bind(this);
     }.bind(this), null,
     function(errorMsg) {
       aFailureCb(errorMsg);
     });
-  },
-
-  // Invalidate the entire cache. It will be incrementally regenerated on demand
-  // See getCacheForQuery
-  invalidateCache: function CDB_invalidateCache(aErrorCb) {
-    if (DEBUG) debug("invalidate cache");
-    this.newTxn("readwrite", SAVED_GETALL_STORE_NAME, function (txn, store) {
-      store.clear();
-    }, aErrorCb);
   },
 
   incrementRevision: function CDB_incrementRevision(txn) {
@@ -966,8 +976,9 @@ ContactDB.prototype = {
 
   saveContact: function CDB_saveContact(aContact, successCb, errorCb) {
     let contact = this.makeImport(aContact);
-    this.newTxn("readwrite", STORE_NAME, function (txn, store) {
+    this.newTxn("readwrite", this.dbStoreNames, function (txn, stores) {
       if (DEBUG) debug("Going to update" + JSON.stringify(contact));
+      let store = txn.objectStore(STORE_NAME);
 
       // Look up the existing record and compare the update timestamp.
       // If no record exists, just add the new entry.
@@ -990,7 +1001,10 @@ ContactDB.prototype = {
             store.put(contact);
           }
         }
-        this.invalidateCache(errorCb);
+        // Invalidate the entire cache. It will be incrementally regenerated on demand
+        // See getCacheForQuery
+        let getAllStore = txn.objectStore(SAVED_GETALL_STORE_NAME);
+        getAllStore.clear().onerror = errorCb;
       }.bind(this);
 
       this.incrementRevision(txn);
@@ -999,13 +1013,12 @@ ContactDB.prototype = {
 
   removeContact: function removeContact(aId, aSuccessCb, aErrorCb) {
     if (DEBUG) debug("removeContact: " + aId);
-    this.removeObjectFromCache(aId, function() {
-      this.newTxn("readwrite", STORE_NAME, function(txn, store) {
-        store.delete(aId).onsuccess = function() {
-          aSuccessCb();
-        };
-        this.incrementRevision(txn);
-      }.bind(this), null, aErrorCb);
+    this.removeObjectFromCache(aId, function(txn) {
+      let store = txn.objectStore(STORE_NAME)
+      store.delete(aId).onsuccess = function() {
+        aSuccessCb();
+      };
+      this.incrementRevision(txn);
     }.bind(this), aErrorCb);
   },
 
@@ -1025,9 +1038,11 @@ ContactDB.prototype = {
           contactsArray.push(aContacts[i]);
         }
 
+        let contactIdsArray = contactsArray.map(function(el) el.id);
+
         // save contact ids in cache
         this.newTxn("readwrite", SAVED_GETALL_STORE_NAME, function(txn, store) {
-          store.put(contactsArray.map(function(el) el.id), aQuery);
+          store.put(contactIdsArray, aQuery);
         }, null, aFailureCb);
 
         // send full contacts
@@ -1115,6 +1130,21 @@ ContactDB.prototype = {
     }, null, aErrorCb);
   },
 
+  getSortByParam: function CDB_getSortByParam(aFindOptions) {
+    switch (aFindOptions.sortBy) {
+      case "familyName":
+        return [ "familyName", "givenName" ];
+      case "givenName":
+        return [ "givenName" , "familyName" ];
+      case "phoneticFamilyName":
+        return [ "phoneticFamilyName" , "phoneticGivenName" ];
+      case "phoneticGivenName":
+        return [ "phoneticGivenName" , "phoneticFamilyName" ];
+      default:
+        return [ "givenName" , "familyName" ];
+    }
+  },
+
   /*
    * Sorting the contacts by sortBy field. aSortBy can either be familyName or givenName.
    * If 2 entries have the same sortyBy field or no sortBy field is present, we continue
@@ -1125,7 +1155,7 @@ ContactDB.prototype = {
       return;
     if (aFindOptions.sortBy != "undefined") {
       const sortOrder = aFindOptions.sortOrder;
-      const sortBy = aFindOptions.sortBy == "familyName" ? [ "familyName", "givenName" ] : [ "givenName" , "familyName" ];
+      const sortBy = this.getSortByParam(aFindOptions);
 
       aResults.sort(function (a, b) {
         let x, y;

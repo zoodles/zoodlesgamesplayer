@@ -9,10 +9,11 @@ import sys, os
 import subprocess
 import runxpcshelltests as xpcshell
 import tempfile
-from automationutils import replaceBackSlashes
-from mozdevice import devicemanagerADB, devicemanagerSUT, devicemanager
 from zipfile import ZipFile
+from mozlog import structured
+from mozlog.structured import commandline
 import shutil
+import mozdevice
 import mozfile
 import mozinfo
 
@@ -37,7 +38,7 @@ class RemoteXPCShellTestThread(xpcshell.XPCShellTestThread):
         else:
             remoteName = remoteJoin(remoteDir, os.path.basename(name))
         return ['-e', 'const _TEST_FILE = ["%s"];' %
-                 replaceBackSlashes(remoteName)]
+                 remoteName.replace('\\', '/')]
 
     def remoteForLocal(self, local):
         for mapping in self.pathMapping:
@@ -63,20 +64,20 @@ class RemoteXPCShellTestThread(xpcshell.XPCShellTestThread):
         pluginsDir = remoteJoin(self.remoteTmpDir, "plugins")
         self.device.pushDir(self.pluginsPath, pluginsDir)
         if self.interactive:
-            self.log.info("TEST-INFO | plugins dir is %s" % pluginsDir)
+            self.log.info("plugins dir is %s" % pluginsDir)
         return pluginsDir
 
     def setupProfileDir(self):
         self.device.removeDir(self.profileDir)
         self.device.mkDir(self.profileDir)
         if self.interactive or self.singleFile:
-            self.log.info("TEST-INFO | profile dir is %s" % self.profileDir)
+            self.log.info("profile dir is %s" % self.profileDir)
         return self.profileDir
 
     def logCommand(self, name, completeCmd, testdir):
-        self.log.info("TEST-INFO | %s | full command: %r" % (name, completeCmd))
-        self.log.info("TEST-INFO | %s | current directory: %r" % (name, self.remoteHere))
-        self.log.info("TEST-INFO | %s | environment: %s" % (name, self.env))
+        self.log.info("%s | full command: %r" % (name, completeCmd))
+        self.log.info("%s | current directory: %r" % (name, self.remoteHere))
+        self.log.info("%s | environment: %s" % (name, self.env))
 
     def getHeadAndTailFiles(self, test):
         """Override parent method to find files on remote device."""
@@ -120,20 +121,17 @@ class RemoteXPCShellTestThread(xpcshell.XPCShellTestThread):
               self.remoteDebuggerArgs,
               self.xpcsCmd]
 
-    def testTimeout(self, test_file, proc):
-        self.timedout = True
-        if not self.retry:
-            self.log.error("TEST-UNEXPECTED-FAIL | %s | Test timed out" % test_file)
+    def killTimeout(self, proc):
         self.kill(proc)
 
-    def launchProcess(self, cmd, stdout, stderr, env, cwd):
+    def launchProcess(self, cmd, stdout, stderr, env, cwd, timeout=None):
         self.timedout = False
         cmd.insert(1, self.remoteHere)
         outputFile = "xpcshelloutput"
         with open(outputFile, 'w+') as f:
             try:
-                self.shellReturnCode = self.device.shell(cmd, f)
-            except devicemanager.DMError as e:
+                self.shellReturnCode = self.device.shell(cmd, f, timeout=timeout+10)
+            except mozdevice.DMError as e:
                 if self.timedout:
                     # If the test timed out, there is a good chance the SUTagent also
                     # timed out and failed to return a return code, generating a
@@ -211,7 +209,7 @@ class RemoteXPCShellTestThread(xpcshell.XPCShellTestThread):
 # via devicemanager.
 class XPCShellRemote(xpcshell.XPCShellTests, object):
 
-    def __init__(self, devmgr, options, args, log=None):
+    def __init__(self, devmgr, options, args, log):
         xpcshell.XPCShellTests.__init__(self, log)
 
         # Add Android version (SDK level) to mozinfo so that manifest entries
@@ -224,7 +222,7 @@ class XPCShellRemote(xpcshell.XPCShellTests, object):
         self.options = options
         self.device = devmgr
         self.pathMapping = []
-        self.remoteTestRoot = self.device.getTestRoot("xpcshell")
+        self.remoteTestRoot = "%s/xpcshell" % self.device.deviceRoot
         # remoteBinDir contains xpcshell and its wrapper script, both of which must
         # be executable. Since +x permissions cannot usually be set on /mnt/sdcard,
         # and the test root may be on /mnt/sdcard, remoteBinDir is set to be on
@@ -343,7 +341,7 @@ class XPCShellRemote(xpcshell.XPCShellTests, object):
             # device.mkDir may fail here where shellCheckOutput may succeed -- see bug 817235
             try:
                 self.device.shellCheckOutput(["mkdir", self.remoteBinDir]);
-            except devicemanager.DMError:
+            except mozdevice.DMError:
                 # Might get a permission error; try again as root, if available
                 self.device.shellCheckOutput(["mkdir", self.remoteBinDir], root=True);
                 self.device.shellCheckOutput(["chmod", "777", self.remoteBinDir], root=True);
@@ -363,9 +361,25 @@ class XPCShellRemote(xpcshell.XPCShellTests, object):
         remoteFile = remoteJoin(self.remoteScriptsDir, "head.js")
         self.device.pushFile(local, remoteFile)
 
-        local = os.path.join(self.localBin, "xpcshell")
-        remoteFile = remoteJoin(self.remoteBinDir, "xpcshell")
-        self.device.pushFile(local, remoteFile)
+        # The xpcshell binary is required for all tests. Additional binaries
+        # are required for some tests. This list should be similar to
+        # TEST_HARNESS_BINS in testing/mochitest/Makefile.in.
+        binaries = ["xpcshell",
+                    "ssltunnel",
+                    "certutil",
+                    "pk12util",
+                    "BadCertServer",
+                    "ClientAuthServer",
+                    "OCSPStaplingServer",
+                    "GenerateOCSPResponse"]
+        for fname in binaries:
+            local = os.path.join(self.localBin, fname)
+            if os.path.isfile(local):
+                print >> sys.stderr, "Pushing %s.." % fname
+                remoteFile = remoteJoin(self.remoteBinDir, fname)
+                self.device.pushFile(local, remoteFile)
+            else:
+                print >> sys.stderr, "*** Expected binary %s not found in %s!" % (fname, self.localBin)
 
         local = os.path.join(self.localBin, "components/httpd.js")
         remoteFile = remoteJoin(self.remoteComponentsDir, "httpd.js")
@@ -559,6 +573,7 @@ def main():
         sys.exit(1)
 
     parser = RemoteXPCShellOptions()
+    structured.commandline.add_logging_group(parser)
     options, args = parser.parse_args()
     if not options.localAPK:
         for file in os.listdir(os.path.join(options.objdir, "dist")):
@@ -572,28 +587,31 @@ def main():
             sys.exit(1)
 
     options = parser.verifyRemoteOptions(options)
+    log = commandline.setup_logging("Remote XPCShell",
+                                    options,
+                                    {"tbpl": sys.stdout})
 
     if len(args) < 1 and options.manifest is None:
         print >>sys.stderr, """Usage: %s <test dirs>
              or: %s --manifest=test.manifest """ % (sys.argv[0], sys.argv[0])
         sys.exit(1)
 
-    if (options.dm_trans == "adb"):
-        if (options.deviceIP):
-            dm = devicemanagerADB.DeviceManagerADB(options.deviceIP, options.devicePort, packageName=None, deviceRoot=options.remoteTestRoot)
+    if options.dm_trans == "adb":
+        if options.deviceIP:
+            dm = mozdevice.DroidADB(options.deviceIP, options.devicePort, packageName=None, deviceRoot=options.remoteTestRoot)
         else:
-            dm = devicemanagerADB.DeviceManagerADB(packageName=None, deviceRoot=options.remoteTestRoot)
+            dm = mozdevice.DroidADB(packageName=None, deviceRoot=options.remoteTestRoot)
     else:
-        dm = devicemanagerSUT.DeviceManagerSUT(options.deviceIP, options.devicePort, deviceRoot=options.remoteTestRoot)
-        if (options.deviceIP == None):
+        if not options.deviceIP:
             print "Error: you must provide a device IP to connect to via the --device option"
             sys.exit(1)
+        dm = mozdevice.DroidSUT(options.deviceIP, options.devicePort, deviceRoot=options.remoteTestRoot)
 
     if options.interactive and not options.testPath:
         print >>sys.stderr, "Error: You must specify a test filename in interactive mode!"
         sys.exit(1)
 
-    xpcsh = XPCShellRemote(dm, options, args)
+    xpcsh = XPCShellRemote(dm, options, args, log)
 
     # we don't run concurrent tests on mobile
     options.sequential = True

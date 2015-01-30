@@ -10,12 +10,20 @@
 #include "nsFrame.h"
 #include "nsSplittableFrame.h"
 #include "nsLineBox.h"
-#include "gfxFont.h"
 #include "gfxSkipChars.h"
+#include "gfxTextRun.h"
 #include "nsDisplayList.h"
+#include "JustificationUtils.h"
+
+// Undo the windows.h damage
+#if defined(XP_WIN) && defined(DrawText)
+#undef DrawText
+#endif
 
 class nsTextPaintStyle;
 class PropertyProvider;
+struct SelectionDetails;
+class nsTextFragment;
 
 typedef nsFrame nsTextFrameBase;
 
@@ -37,7 +45,7 @@ public:
   friend class nsDisplayTextGeometry;
   friend class nsDisplayText;
 
-  nsTextFrame(nsStyleContext* aContext)
+  explicit nsTextFrame(nsStyleContext* aContext)
     : nsTextFrameBase(aContext)
   {
     NS_ASSERTION(mContentOffset == 0, "Bogus content offset");
@@ -51,9 +59,9 @@ public:
                                 const nsRect&           aDirtyRect,
                                 const nsDisplayListSet& aLists) MOZ_OVERRIDE;
 
-  virtual void Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
 
   virtual void DestroyFrom(nsIFrame* aDestructRoot) MOZ_OVERRIDE;
   
@@ -171,7 +179,7 @@ public:
   
   virtual bool IsEmpty() MOZ_OVERRIDE;
   virtual bool IsSelfEmpty() MOZ_OVERRIDE { return IsEmpty(); }
-  virtual nscoord GetBaseline() const MOZ_OVERRIDE;
+  virtual nscoord GetLogicalBaseline(mozilla::WritingMode aWritingMode) const MOZ_OVERRIDE;
   
   virtual bool HasSignificantTerminalNewline() const MOZ_OVERRIDE;
 
@@ -200,25 +208,30 @@ public:
   }
   void SetFontSizeInflation(float aInflation);
 
-  virtual void MarkIntrinsicWidthsDirty() MOZ_OVERRIDE;
-  virtual nscoord GetMinWidth(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
-  virtual nscoord GetPrefWidth(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
-  virtual void AddInlineMinWidth(nsRenderingContext *aRenderingContext,
-                                 InlineMinWidthData *aData) MOZ_OVERRIDE;
-  virtual void AddInlinePrefWidth(nsRenderingContext *aRenderingContext,
-                                  InlinePrefWidthData *aData) MOZ_OVERRIDE;
-  virtual nsSize ComputeSize(nsRenderingContext *aRenderingContext,
-                             nsSize aCBSize, nscoord aAvailableWidth,
-                             nsSize aMargin, nsSize aBorder, nsSize aPadding,
-                             uint32_t aFlags) MOZ_OVERRIDE;
+  virtual void MarkIntrinsicISizesDirty() MOZ_OVERRIDE;
+  virtual nscoord GetMinISize(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
+  virtual nscoord GetPrefISize(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
+  virtual void AddInlineMinISize(nsRenderingContext *aRenderingContext,
+                                 InlineMinISizeData *aData) MOZ_OVERRIDE;
+  virtual void AddInlinePrefISize(nsRenderingContext *aRenderingContext,
+                                  InlinePrefISizeData *aData) MOZ_OVERRIDE;
+  virtual mozilla::LogicalSize
+  ComputeSize(nsRenderingContext *aRenderingContext,
+              mozilla::WritingMode aWritingMode,
+              const mozilla::LogicalSize& aCBSize,
+              nscoord aAvailableISize,
+              const mozilla::LogicalSize& aMargin,
+              const mozilla::LogicalSize& aBorder,
+              const mozilla::LogicalSize& aPadding,
+              ComputeSizeFlags aFlags) MOZ_OVERRIDE;
   virtual nsRect ComputeTightBounds(gfxContext* aContext) const MOZ_OVERRIDE;
   virtual nsresult GetPrefWidthTightBounds(nsRenderingContext* aContext,
                                            nscoord* aX,
                                            nscoord* aXMost) MOZ_OVERRIDE;
-  virtual nsresult Reflow(nsPresContext* aPresContext,
-                          nsHTMLReflowMetrics& aMetrics,
-                          const nsHTMLReflowState& aReflowState,
-                          nsReflowStatus& aStatus) MOZ_OVERRIDE;
+  virtual void Reflow(nsPresContext* aPresContext,
+                      nsHTMLReflowMetrics& aMetrics,
+                      const nsHTMLReflowState& aReflowState,
+                      nsReflowStatus& aStatus) MOZ_OVERRIDE;
   virtual bool CanContinueTextRun() const MOZ_OVERRIDE;
   // Method that is called for a text frame that is logically
   // adjacent to the end of the line (i.e. followed only by empty text frames,
@@ -227,10 +240,6 @@ public:
     // true if we trimmed some space or changed metrics in some other way.
     // In this case, we should call RecomputeOverflow on this frame.
     bool mChanged;
-    // true if the last character is not justifiable so should be subtracted
-    // from the count of justifiable characters in the frame, since the last
-    // character in a line is not justifiable.
-    bool mLastCharIsJustifiable;
     // an amount to *subtract* from the frame's width (zero if !mChanged)
     nscoord      mDeltaWidth;
   };
@@ -254,11 +263,11 @@ public:
     eNotInflated
   };
 
-  void AddInlineMinWidthForFlow(nsRenderingContext *aRenderingContext,
-                                nsIFrame::InlineMinWidthData *aData,
+  void AddInlineMinISizeForFlow(nsRenderingContext *aRenderingContext,
+                                nsIFrame::InlineMinISizeData *aData,
                                 TextRunType aTextRunType);
-  void AddInlinePrefWidthForFlow(nsRenderingContext *aRenderingContext,
-                                 InlinePrefWidthData *aData,
+  void AddInlinePrefISizeForFlow(nsRenderingContext *aRenderingContext,
+                                 InlinePrefISizeData *aData,
                                  TextRunType aTextRunType);
 
   /**
@@ -311,7 +320,7 @@ public:
     /**
      * @param aShouldPaintSVGGlyphs Whether SVG glyphs should be painted.
      */
-    DrawPathCallbacks(bool aShouldPaintSVGGlyphs = false)
+    explicit DrawPathCallbacks(bool aShouldPaintSVGGlyphs = false)
       : gfxTextRunDrawCallbacks(aShouldPaintSVGGlyphs)
     {
     }
@@ -468,6 +477,10 @@ public:
   gfxTextRun* GetUninflatedTextRun();
   void SetTextRun(gfxTextRun* aTextRun, TextRunType aWhichTextRun,
                   float aInflation);
+  bool IsInTextRunUserData() const {
+    return GetStateBits() &
+      (TEXT_IN_TEXTRUN_USER_DATA | TEXT_IN_UNINFLATED_TEXTRUN_USER_DATA);
+  }
   /**
    * Notify the frame that it should drop its pointer to a text run.
    * Returns whether the text run was removed (i.e., whether it was
@@ -492,6 +505,11 @@ public:
     }
   }
 
+  /**
+   * Wipe out references to textrun(s) without deleting the textruns.
+   */
+  void DisconnectTextRuns();
+
   // Get the DOM content range mapped by this frame after excluding
   // whitespace subject to start-of-line and end-of-line trimming.
   // The textrun must have been created before calling this.
@@ -509,6 +527,11 @@ public:
                   nsHTMLReflowMetrics& aMetrics, nsReflowStatus& aStatus);
 
   bool IsFloatingFirstLetterChild() const;
+
+  virtual bool UpdateOverflow() MOZ_OVERRIDE;
+
+  void AssignJustificationGaps(const mozilla::JustificationAssignment& aAssign);
+  mozilla::JustificationAssignment GetJustificationAssignment() const;
 
 protected:
   virtual ~nsTextFrame();
@@ -543,7 +566,7 @@ protected:
   SelectionDetails* GetSelectionDetails();
 
   void UnionAdditionalOverflow(nsPresContext* aPresContext,
-                               const nsHTMLReflowState& aBlockReflowState,
+                               nsIFrame* aBlock,
                                PropertyProvider& aProvider,
                                nsRect* aVisualOverflowRect,
                                bool aIncludeTextDecorations);
@@ -560,6 +583,17 @@ protected:
                       const nsCharClipDisplayItem::ClipEdges& aClipEdges,
                       nscoord aLeftSideOffset,
                       gfxRect& aBoundingBox);
+
+  void PaintShadows(nsCSSShadowArray* aShadow,
+                    uint32_t aOffset, uint32_t aLength,
+                    const nsRect& aDirtyRect,
+                    const gfxPoint& aFramePt,
+                    const gfxPoint& aTextBaselinePt,
+                    nscoord aLeftEdgeOffset,
+                    PropertyProvider& aProvider,
+                    nscolor aForegroundColor,
+                    const nsCharClipDisplayItem::ClipEdges& aClipEdges,
+                    gfxContext* aCtx);
 
   struct LineDecoration {
     nsIFrame* mFrame;
@@ -692,6 +726,8 @@ protected:
   virtual bool HasAnyNoncollapsedCharacters() MOZ_OVERRIDE;
 
   void ClearMetrics(nsHTMLReflowMetrics& aMetrics);
+
+  NS_DECLARE_FRAME_PROPERTY(JustificationAssignment, nullptr)
 };
 
 #endif

@@ -87,7 +87,7 @@ var NewPrefDialog = {
     }
 
     // If item already in list, it's being changed, else added
-    let item = document.querySelector(".pref-item[name=" + aPrefName.quote() + "]");
+    let item = document.querySelector(".pref-item[name=\"" + CSS.escape(aPrefName) + "\"]");
     if (item) {
       this._positiveButton.textContent = gStringBundle.GetStringFromName("newPref.changeButton");
     } else {
@@ -156,6 +156,9 @@ var NewPrefDialog = {
         Services.prefs.setIntPref(this._prefNameInputElt.value, this._intValue.value);
         break;
     }
+
+    // Ensure pref adds flushed to disk immediately
+    Services.prefs.savePrefFile(null);
 
     this.hide();
   },
@@ -420,6 +423,9 @@ var AboutConfig = {
     // Reset will handle any locked condition
     let pref = this._getPrefForNode(node);
     pref.reset();
+
+    // Ensure pref reset flushed to disk immediately
+    Services.prefs.savePrefFile(null);
   },
 
   // When we want to toggle a bool pref
@@ -466,7 +472,7 @@ var AboutConfig = {
     }
 
     // If pref not already in list, refresh display as it's being added
-    let item = document.querySelector(".pref-item[name=" + pref.name.quote() + "]");
+    let item = document.querySelector(".pref-item[name=\"" + CSS.escape(pref.name) + "\"]");
     if (!item) {
       document.location.reload();
       return;
@@ -536,6 +542,9 @@ Pref.prototype = {
       default:
         Services.prefs.setCharPref(this.name, aPrefValue);
     }
+
+    // Ensure pref change flushed to disk immediately
+    Services.prefs.savePrefFile(null);
   },
 
   get default() {

@@ -11,26 +11,29 @@ const TEST_IMG = "http://example.com/browser/browser/devtools/webconsole/test/te
 const TEST_DATA_JSON_CONTENT =
   '{ id: "test JSON data", myArray: [ "foo", "bar", "baz", "biff" ] }';
 
+const TEST_URI = "data:text/html;charset=utf-8,Web Console network logging tests";
+
 let lastRequest = null;
 let requestCallback = null;
+let hud, browser;
 
 function test()
 {
   const PREF = "devtools.webconsole.persistlog";
   let original = Services.prefs.getBoolPref("devtools.webconsole.filter.networkinfo");
+  let originalXhr = Services.prefs.getBoolPref("devtools.webconsole.filter.netxhr");
   Services.prefs.setBoolPref("devtools.webconsole.filter.networkinfo", true);
+  Services.prefs.setBoolPref("devtools.webconsole.filter.netxhr", true);
   Services.prefs.setBoolPref(PREF, true);
   registerCleanupFunction(() => {
     Services.prefs.setBoolPref("devtools.webconsole.filter.networkinfo", original);
+    Services.prefs.setBoolPref("devtools.webconsole.filter.netxhr", originalXhr);
     Services.prefs.clearUserPref(PREF);
   });
 
-  addTab("data:text/html;charset=utf-8,Web Console network logging tests");
-
-  browser.addEventListener("load", function onLoad() {
-    browser.removeEventListener("load", onLoad, true);
-
-    openConsole(null, function(aHud) {
+  loadTab(TEST_URI).then((tab) => {
+    browser = tab.browser;
+    openConsole().then((aHud) => {
       hud = aHud;
 
       HUDService.lastFinishedRequest.callback = function(aRequest) {
@@ -41,8 +44,8 @@ function test()
       };
 
       executeSoon(testPageLoad);
-    });
-  }, true);
+    })
+  });
 }
 
 function testPageLoad()
@@ -139,7 +142,7 @@ function testFormSubmission()
         {
           text: "test-data.json",
           category: CATEGORY_NETWORK,
-          severity: SEVERITY_LOG,
+          severity: SEVERITY_INFO,
           count: 2,
         },
       ],
@@ -186,6 +189,7 @@ function testLiveFilteringOnSearchStrings() {
   HUDService.lastFinishedRequest.callback = null;
   lastRequest = null;
   requestCallback = null;
+  hud = browser = null;
   finishTest();
 }
 

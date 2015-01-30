@@ -1,4 +1,4 @@
-/* -*- Mode: Java; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
  * vim: sw=2 ts=8 et :
  */
 /* This Source Code Form is subject to the terms of the Mozilla Public
@@ -60,6 +60,9 @@ function useSettings() {
   }
   return useSettings.result;
 }
+
+XPCOMUtils.defineLazyModuleGetter(this, "SystemAppProxy",
+                                  "resource://gre/modules/SystemAppProxy.jsm");
 
 function UpdateCheckListener(updatePrompt) {
   this._updatePrompt = updatePrompt;
@@ -133,7 +136,6 @@ UpdatePrompt.prototype = {
   _applyPromptTimer: null,
   _waitingForIdle: false,
   _updateCheckListner: null,
-  _pendingEvents: [],
 
   get applyPromptTimeout() {
     return Services.prefs.getIntPref(PREF_APPLY_PROMPT_TIMEOUT);
@@ -143,14 +145,8 @@ UpdatePrompt.prototype = {
     return Services.prefs.getIntPref(PREF_APPLY_IDLE_TIMEOUT);
   },
 
-  handleContentStart: function UP_handleContentStart(shell) {
-    let content = shell.contentBrowser.contentWindow;
-    content.addEventListener("mozContentEvent", this);
-
-    for (let i = 0; i < this._pendingEvents.length; i++) {
-      shell.sendChromeEvent(this._pendingEvents[i]);
-    }
-    this._pendingEvents.length = 0;
+  handleContentStart: function UP_handleContentStart() {
+    SystemAppProxy.addEventListener("mozContentEvent", this);
   },
 
   // nsIUpdatePrompt
@@ -290,15 +286,12 @@ UpdatePrompt.prototype = {
     let detail = aDetail || {};
     detail.type = aType;
 
-    let browser = Services.wm.getMostRecentWindow("navigator:browser");
-    if (!browser) {
-      this._pendingEvents.push(detail);
+    let sent = SystemAppProxy.dispatchEvent(detail);
+    if (!sent) {
       log("Warning: Couldn't send update event " + aType +
           ": no content browser. Will send again when content becomes available.");
       return false;
     }
-
-    browser.shell.sendChromeEvent(detail);
     return true;
   },
 
@@ -319,6 +312,9 @@ UpdatePrompt.prototype = {
     }
 
     switch (aDetail.result) {
+      // Battery not okay, do not wait for idle to re-prompt
+      case "low-battery":
+        break;
       case "wait":
         // Wait until the user is idle before prompting to apply the update
         this.waitForIdle();

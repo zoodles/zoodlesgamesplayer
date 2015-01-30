@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 // Keep in (case-insensitive) order:
+#include "nsContainerFrame.h"
 #include "nsContentUtils.h"
 #include "nsFrame.h"
 #include "nsGkAtoms.h"
@@ -22,7 +23,7 @@ class SVGFEImageFrame : public SVGFEImageFrameBase
   friend nsIFrame*
   NS_NewSVGFEImageFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
 protected:
-  SVGFEImageFrame(nsStyleContext* aContext)
+  explicit SVGFEImageFrame(nsStyleContext* aContext)
     : SVGFEImageFrameBase(aContext)
   {
     AddStateBits(NS_FRAME_SVG_LAYOUT | NS_FRAME_IS_NONDISPLAY);
@@ -31,9 +32,9 @@ protected:
 public:
   NS_DECL_FRAMEARENA_HELPERS
 
-  virtual void Init(nsIContent* aContent,
-                    nsIFrame*   aParent,
-                    nsIFrame*   aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
   virtual void DestroyFrom(nsIFrame* aDestructRoot) MOZ_OVERRIDE;
 
   virtual bool IsFrameOfType(uint32_t aFlags) const MOZ_OVERRIDE
@@ -88,9 +89,9 @@ SVGFEImageFrame::DestroyFrom(nsIFrame* aDestructRoot)
 }
 
 void
-SVGFEImageFrame::Init(nsIContent* aContent,
-                        nsIFrame* aParent,
-                        nsIFrame* aPrevInFlow)
+SVGFEImageFrame::Init(nsIContent*       aContent,
+                      nsContainerFrame* aParent,
+                      nsIFrame*         aPrevInFlow)
 {
   NS_ASSERTION(aContent->IsSVG(nsGkAtoms::feImage),
                "Trying to construct an SVGFEImageFrame for a "
@@ -122,7 +123,9 @@ SVGFEImageFrame::AttributeChanged(int32_t  aNameSpaceID,
 {
   SVGFEImageElement *element = static_cast<SVGFEImageElement*>(mContent);
   if (element->AttributeAffectsRendering(aNameSpaceID, aAttribute)) {
-    nsSVGEffects::InvalidateRenderingObservers(this);
+    MOZ_ASSERT(GetParent()->GetType() == nsGkAtoms::svgFilterFrame,
+               "Observers observe the filter, so that's what we must invalidate");
+    nsSVGEffects::InvalidateDirectRenderingObservers(GetParent());
   }
   if (aNameSpaceID == kNameSpaceID_XLink &&
       aAttribute == nsGkAtoms::href) {
@@ -140,5 +143,5 @@ SVGFEImageFrame::AttributeChanged(int32_t  aNameSpaceID,
   }
 
   return SVGFEImageFrameBase::AttributeChanged(aNameSpaceID,
-                                                 aAttribute, aModType);
+                                               aAttribute, aModType);
 }

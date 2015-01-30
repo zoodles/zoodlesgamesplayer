@@ -8,7 +8,6 @@
 
 #include "nsAutoPtr.h"
 #include "nsCOMPtr.h"
-#include "nsIStreamListener.h"
 #include "nsICharsetDetectionObserver.h"
 #include "nsHtml5MetaScanner.h"
 #include "nsIUnicodeDecoder.h"
@@ -20,7 +19,6 @@
 #include "nsHtml5Speculation.h"
 #include "nsITimer.h"
 #include "nsICharsetDetector.h"
-#include "nsIThreadRetargetableStreamListener.h"
 
 class nsHtml5Parser;
 
@@ -101,9 +99,7 @@ enum eHtml5StreamState {
   STREAM_ENDED = 2
 };
 
-class nsHtml5StreamParser : public nsIStreamListener,
-                            public nsIThreadRetargetableStreamListener,
-                            public nsICharsetDetectionObserver {
+class nsHtml5StreamParser : public nsICharsetDetectionObserver {
 
   friend class nsHtml5RequestStopper;
   friend class nsHtml5DataAvailable;
@@ -113,28 +109,35 @@ class nsHtml5StreamParser : public nsIStreamListener,
   public:
     NS_DECL_AND_IMPL_ZEROING_OPERATOR_NEW
     NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-    NS_DECL_CYCLE_COLLECTION_CLASS_AMBIGUOUS(nsHtml5StreamParser, nsIStreamListener)
+    NS_DECL_CYCLE_COLLECTION_CLASS_AMBIGUOUS(nsHtml5StreamParser,
+                                             nsICharsetDetectionObserver)
 
     static void InitializeStatics();
 
     nsHtml5StreamParser(nsHtml5TreeOpExecutor* aExecutor,
                         nsHtml5Parser* aOwner,
                         eParserMode aMode);
-                        
-    virtual ~nsHtml5StreamParser();
 
-    // nsIRequestObserver methods:
-    NS_DECL_NSIREQUESTOBSERVER
-    // nsIStreamListener methods:
-    NS_DECL_NSISTREAMLISTENER
-    // nsIThreadRetargetableStreamListener methods:
-    NS_DECL_NSITHREADRETARGETABLESTREAMLISTENER
-    
+    // Methods that nsHtml5StreamListener calls
+    nsresult CheckListenerChain();
+
+    nsresult OnStartRequest(nsIRequest* aRequest, nsISupports* aContext);
+
+    nsresult OnDataAvailable(nsIRequest* aRequest,
+                             nsISupports* aContext,
+                             nsIInputStream* aInStream,
+                             uint64_t aSourceOffset,
+                             uint32_t aLength);
+
+    nsresult OnStopRequest(nsIRequest* aRequest,
+                           nsISupports* aContext,
+                           nsresult status);
+
     // nsICharsetDetectionObserver
     /**
      * Chardet calls this to report the detection result
      */
-    NS_IMETHOD Notify(const char* aCharset, nsDetectionConfident aConf);
+    NS_IMETHOD Notify(const char* aCharset, nsDetectionConfident aConf) MOZ_OVERRIDE;
 
     // EncodingDeclarationHandler
     // http://hg.mozilla.org/projects/htmlparser/file/tip/src/nu/validator/htmlparser/common/EncodingDeclarationHandler.java
@@ -204,6 +207,7 @@ class nsHtml5StreamParser : public nsIStreamListener,
     void SetViewSourceTitle(nsIURI* aURL);
 
   private:
+    virtual ~nsHtml5StreamParser();
 
 #ifdef DEBUG
     bool IsParserThread() {
@@ -213,7 +217,7 @@ class nsHtml5StreamParser : public nsIStreamListener,
     }
 #endif
 
-    void MarkAsBroken();
+    void MarkAsBroken(nsresult aRv);
 
     /**
      * Marks the stream parser as interrupted. If you ever add calls to this

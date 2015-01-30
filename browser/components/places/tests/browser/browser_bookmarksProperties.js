@@ -34,9 +34,8 @@ const TEST_URL = "http://www.example.com/";
 const DIALOG_URL = "chrome://browser/content/places/bookmarkProperties.xul";
 const DIALOG_URL_MINIMAL_UI = "chrome://browser/content/places/bookmarkProperties2.xul";
 
-var wm = Cc["@mozilla.org/appshell/window-mediator;1"].
-         getService(Ci.nsIWindowMediator);
-var win = wm.getMostRecentWindow("navigator:browser");
+Cu.import("resource:///modules/RecentWindow.jsm");
+let win = RecentWindow.getMostRecentBrowserWindow();
 var ww = Cc["@mozilla.org/embedcomp/window-watcher;1"].
          getService(Ci.nsIWindowWatcher);
 
@@ -127,7 +126,7 @@ gTests.push({
        PlacesUtils.bookmarks.getItemTitle(PlacesUtils.unfiledBookmarksFolderId),
        "Node title is correct");
     // Blur the field and ensure root's name has not been changed.
-    this.window.gEditItemOverlay.onNamePickerChange();
+    this.window.gEditItemOverlay.onNamePickerBlur();
     is(namepicker.value,
        PlacesUtils.bookmarks.getItemTitle(PlacesUtils.unfiledBookmarksFolderId),
        "Root title is correct");
@@ -475,8 +474,7 @@ gTests.push({
   },
 
   cleanup: function() {
-    var bh = PlacesUtils.history.QueryInterface(Ci.nsIBrowserHistory);
-    bh.removeAllPages();
+    return PlacesTestUtils.clearHistory();
   }
 });
 
@@ -499,10 +497,11 @@ function test() {
 function runNextTest() {
   // Cleanup from previous test.
   if (gCurrentTest) {
-    gCurrentTest.cleanup();
-    info("End of test: " + gCurrentTest.desc);
-    gCurrentTest = null;
-    waitForAsyncUpdates(runNextTest);
+    Promise.resolve(gCurrentTest.cleanup()).then(() => {
+      info("End of test: " + gCurrentTest.desc);
+      gCurrentTest = null;
+      waitForAsyncUpdates(runNextTest);
+    });
     return;
   }
 

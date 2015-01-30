@@ -132,6 +132,9 @@ public:
 #endif
 
 private:
+  void ParseAtCommand(const nsACString& aAtCommand, const int aStart,
+                      nsTArray<nsCString>& aRetValues);
+
   class CloseScoTask;
   class GetVolumeTask;
 #ifdef MOZ_B2G_RIL
@@ -149,7 +152,7 @@ private:
 
   BluetoothHfpManager();
   void HandleShutdown();
-  void HandleVolumeChanged(const nsAString& aData);
+  void HandleVolumeChanged(nsISupports* aSubject);
 
   bool Init();
   void Notify(const hal::BatteryInformation& aBatteryInfo);
@@ -157,6 +160,8 @@ private:
   void ResetCallArray();
   uint32_t FindFirstCall(uint16_t aState);
   uint32_t GetNumberOfCalls(uint16_t aState);
+  uint32_t GetNumberOfConCalls();
+  uint32_t GetNumberOfConCalls(uint16_t aState);
   PhoneType GetPhoneType(const nsAString& aType);
 #endif
 

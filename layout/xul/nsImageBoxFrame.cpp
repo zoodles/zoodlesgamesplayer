@@ -12,6 +12,7 @@
 
 #include "nsImageBoxFrame.h"
 #include "nsGkAtoms.h"
+#include "nsRenderingContext.h"
 #include "nsStyleContext.h"
 #include "nsStyleConsts.h"
 #include "nsCOMPtr.h"
@@ -44,6 +45,7 @@
 #include "nsDisplayList.h"
 #include "ImageLayers.h"
 #include "ImageContainer.h"
+#include "nsIContent.h"
 
 #include "nsContentUtils.h"
 
@@ -53,6 +55,7 @@
 #define ONLOAD_CALLED_TOO_EARLY 1
 
 using namespace mozilla;
+using namespace mozilla::gfx;
 using namespace mozilla::layers;
 
 class nsImageBoxFrameEvent : public nsRunnable
@@ -116,7 +119,7 @@ FireImageDOMEvent(nsIContent* aContent, uint32_t aMessage)
 nsIFrame*
 NS_NewImageBoxFrame (nsIPresShell* aPresShell, nsStyleContext* aContext)
 {
-  return new (aPresShell) nsImageBoxFrame (aPresShell, aContext);
+  return new (aPresShell) nsImageBoxFrame(aContext);
 }
 
 NS_IMPL_FRAMEARENA_HELPERS(nsImageBoxFrame)
@@ -140,8 +143,8 @@ nsImageBoxFrame::AttributeChanged(int32_t aNameSpaceID,
   return rv;
 }
 
-nsImageBoxFrame::nsImageBoxFrame(nsIPresShell* aShell, nsStyleContext* aContext):
-  nsLeafBoxFrame(aShell, aContext),
+nsImageBoxFrame::nsImageBoxFrame(nsStyleContext* aContext):
+  nsLeafBoxFrame(aContext),
   mIntrinsicSize(0,0),
   mRequestRegistered(false),
   mLoadFlags(nsIRequest::LOAD_NORMAL),
@@ -149,7 +152,7 @@ nsImageBoxFrame::nsImageBoxFrame(nsIPresShell* aShell, nsStyleContext* aContext)
   mSuppressStyleCheck(false),
   mFireEventOnDecode(false)
 {
-  MarkIntrinsicWidthsDirty();
+  MarkIntrinsicISizesDirty();
 }
 
 nsImageBoxFrame::~nsImageBoxFrame()
@@ -158,10 +161,10 @@ nsImageBoxFrame::~nsImageBoxFrame()
 
 
 /* virtual */ void
-nsImageBoxFrame::MarkIntrinsicWidthsDirty()
+nsImageBoxFrame::MarkIntrinsicISizesDirty()
 {
   SizeNeedsRecalc(mImageSize);
-  nsLeafBoxFrame::MarkIntrinsicWidthsDirty();
+  nsLeafBoxFrame::MarkIntrinsicISizesDirty();
 }
 
 void
@@ -183,9 +186,9 @@ nsImageBoxFrame::DestroyFrom(nsIFrame* aDestructRoot)
 
 
 void
-nsImageBoxFrame::Init(nsIContent*      aContent,
-                      nsIFrame*        aParent,
-                      nsIFrame*        aPrevInFlow)
+nsImageBoxFrame::Init(nsIContent*       aContent,
+                      nsContainerFrame* aParent,
+                      nsIFrame*         aPrevInFlow)
 {
   if (!mListener) {
     nsImageBoxListener *listener = new nsImageBoxListener();
@@ -220,7 +223,7 @@ nsImageBoxFrame::UpdateImage()
   mContent->GetAttr(kNameSpaceID_None, nsGkAtoms::src, src);
   mUseSrcAttr = !src.IsEmpty();
   if (mUseSrcAttr) {
-    nsIDocument* doc = mContent->GetDocument();
+    nsIDocument* doc = mContent->GetComposedDoc();
     if (!doc) {
       // No need to do anything here...
       return;
@@ -235,8 +238,9 @@ nsImageBoxFrame::UpdateImage()
     if (uri && nsContentUtils::CanLoadImage(uri, mContent, doc,
                                             mContent->NodePrincipal())) {
       nsContentUtils::LoadImage(uri, doc, mContent->NodePrincipal(),
-                                doc->GetDocumentURI(), mListener, mLoadFlags,
-                                getter_AddRefs(mImageRequest));
+                                doc->GetDocumentURI(), doc->GetReferrerPolicy(),
+                                mListener, mLoadFlags,
+                                EmptyString(), getter_AddRefs(mImageRequest));
 
       if (mImageRequest) {
         nsLayoutUtils::RegisterImageRequestIfAnimated(presContext,
@@ -336,9 +340,11 @@ nsImageBoxFrame::PaintImage(nsRenderingContext& aRenderingContext,
 
   if (imgCon) {
     bool hasSubRect = !mUseSrcAttr && (mSubRect.width > 0 || mSubRect.height > 0);
-    nsLayoutUtils::DrawSingleImage(&aRenderingContext, imgCon,
+    nsLayoutUtils::DrawSingleImage(*aRenderingContext.ThebesContext(),
+        PresContext(), imgCon,
         nsLayoutUtils::GetGraphicsFilterForFrame(this),
-        rect, dirty, nullptr, aFlags, hasSubRect ? &mSubRect : nullptr);
+        rect, dirty, nullptr, aFlags, nullptr,
+        hasSubRect ? &mSubRect : nullptr);
   }
 }
 
@@ -401,13 +407,10 @@ nsDisplayXULImage::ConfigureLayer(ImageLayer* aLayer, const nsIntPoint& aOffset)
   NS_ASSERTION(imageWidth != 0 && imageHeight != 0, "Invalid image size!");
 
   gfxPoint p = destRect.TopLeft() + aOffset;
-  gfx::Matrix transform;
-  transform.Translate(p.x, p.y);
-  transform.Scale(destRect.Width()/imageWidth,
-                  destRect.Height()/imageHeight);
+  Matrix transform = Matrix::Translation(p.x, p.y);
+  transform.PreScale(destRect.Width() / imageWidth,
+                     destRect.Height() / imageHeight);
   aLayer->SetBaseTransform(gfx::Matrix4x4::From2D(transform));
-
-  aLayer->SetVisibleRegion(nsIntRect(0, 0, imageWidth, imageHeight));
 }
 
 already_AddRefed<ImageContainer>
@@ -431,8 +434,7 @@ nsImageBoxFrame::GetContainer(LayerManager* aManager)
   }
   
   nsRefPtr<ImageContainer> container;
-  nsresult rv = imgCon->GetImageContainer(aManager, getter_AddRefs(container));
-  NS_ENSURE_SUCCESS(rv, nullptr);
+  imgCon->GetImageContainer(aManager, getter_AddRefs(container));
   return container.forget();
 }
 
@@ -601,16 +603,18 @@ nsImageBoxFrame::GetFrameName(nsAString& aResult) const
 #endif
 
 nsresult
-nsImageBoxFrame::Notify(imgIRequest *aRequest, int32_t aType, const nsIntRect* aData)
+nsImageBoxFrame::Notify(imgIRequest* aRequest,
+                        int32_t aType,
+                        const nsIntRect* aData)
 {
   if (aType == imgINotificationObserver::SIZE_AVAILABLE) {
     nsCOMPtr<imgIContainer> image;
     aRequest->GetImage(getter_AddRefs(image));
-    return OnStartContainer(aRequest, image);
+    return OnSizeAvailable(aRequest, image);
   }
 
   if (aType == imgINotificationObserver::DECODE_COMPLETE) {
-    return OnStopDecode(aRequest);
+    return OnDecodeComplete(aRequest);
   }
 
   if (aType == imgINotificationObserver::LOAD_COMPLETE) {
@@ -618,7 +622,7 @@ nsImageBoxFrame::Notify(imgIRequest *aRequest, int32_t aType, const nsIntRect* a
     aRequest->GetImageStatus(&imgStatus);
     nsresult status =
         imgStatus & imgIRequest::STATUS_ERROR ? NS_ERROR_FAILURE : NS_OK;
-    return OnStopRequest(aRequest, status);
+    return OnLoadComplete(aRequest, status);
   }
 
   if (aType == imgINotificationObserver::IS_ANIMATED) {
@@ -626,25 +630,25 @@ nsImageBoxFrame::Notify(imgIRequest *aRequest, int32_t aType, const nsIntRect* a
   }
 
   if (aType == imgINotificationObserver::FRAME_UPDATE) {
-    return FrameChanged(aRequest);
+    return OnFrameUpdate(aRequest);
   }
 
   return NS_OK;
 }
 
-nsresult nsImageBoxFrame::OnStartContainer(imgIRequest *request,
-                                           imgIContainer *image)
+nsresult
+nsImageBoxFrame::OnSizeAvailable(imgIRequest* aRequest, imgIContainer* aImage)
 {
-  NS_ENSURE_ARG_POINTER(image);
+  NS_ENSURE_ARG_POINTER(aImage);
 
   // Ensure the animation (if any) is started. Note: There is no
   // corresponding call to Decrement for this. This Increment will be
   // 'cleaned up' by the Request when it is destroyed, but only then.
-  request->IncrementAnimationConsumers();
+  aRequest->IncrementAnimationConsumers();
 
   nscoord w, h;
-  image->GetWidth(&w);
-  image->GetHeight(&h);
+  aImage->GetWidth(&w);
+  aImage->GetHeight(&h);
 
   mIntrinsicSize.SizeTo(nsPresContext::CSSPixelsToAppUnits(w),
                         nsPresContext::CSSPixelsToAppUnits(h));
@@ -657,13 +661,14 @@ nsresult nsImageBoxFrame::OnStartContainer(imgIRequest *request,
   return NS_OK;
 }
 
-nsresult nsImageBoxFrame::OnStopDecode(imgIRequest *request)
+nsresult
+nsImageBoxFrame::OnDecodeComplete(imgIRequest* aRequest)
 {
   if (mFireEventOnDecode) {
     mFireEventOnDecode = false;
 
     uint32_t reqStatus;
-    request->GetImageStatus(&reqStatus);
+    aRequest->GetImageStatus(&reqStatus);
     if (!(reqStatus & imgIRequest::STATUS_ERROR)) {
       FireImageDOMEvent(mContent, NS_LOAD);
     } else {
@@ -681,17 +686,18 @@ nsresult nsImageBoxFrame::OnStopDecode(imgIRequest *request)
   return NS_OK;
 }
 
-nsresult nsImageBoxFrame::OnStopRequest(imgIRequest *request,
-                                        nsresult aStatus)
+nsresult
+nsImageBoxFrame::OnLoadComplete(imgIRequest* aRequest, nsresult aStatus)
 {
   uint32_t reqStatus;
-  request->GetImageStatus(&reqStatus);
+  aRequest->GetImageStatus(&reqStatus);
 
   // We want to give the decoder a chance to find errors. If we haven't found
   // an error yet and we've already started decoding, we must only fire these
   // events after we finish decoding.
   if (NS_SUCCEEDED(aStatus) && !(reqStatus & imgIRequest::STATUS_ERROR) &&
-      reqStatus & imgIRequest::STATUS_DECODE_STARTED) {
+      (reqStatus & imgIRequest::STATUS_DECODE_STARTED) &&
+      !(reqStatus & imgIRequest::STATUS_DECODE_COMPLETE)) {
     mFireEventOnDecode = true;
   } else {
     if (NS_SUCCEEDED(aStatus)) {
@@ -709,7 +715,8 @@ nsresult nsImageBoxFrame::OnStopRequest(imgIRequest *request,
   return NS_OK;
 }
 
-nsresult nsImageBoxFrame::OnImageIsAnimated(imgIRequest *aRequest)
+nsresult
+nsImageBoxFrame::OnImageIsAnimated(imgIRequest* aRequest)
 {
   // Register with our refresh driver, if we're animated.
   nsLayoutUtils::RegisterImageRequest(PresContext(), aRequest,
@@ -718,7 +725,8 @@ nsresult nsImageBoxFrame::OnImageIsAnimated(imgIRequest *aRequest)
   return NS_OK;
 }
 
-nsresult nsImageBoxFrame::FrameChanged(imgIRequest *aRequest)
+nsresult
+nsImageBoxFrame::OnFrameUpdate(imgIRequest* aRequest)
 {
   if ((0 == mRect.width) || (0 == mRect.height)) {
     return NS_OK;
@@ -729,7 +737,7 @@ nsresult nsImageBoxFrame::FrameChanged(imgIRequest *aRequest)
   return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS2(nsImageBoxListener, imgINotificationObserver, imgIOnloadBlocker)
+NS_IMPL_ISUPPORTS(nsImageBoxListener, imgINotificationObserver, imgIOnloadBlocker)
 
 nsImageBoxListener::nsImageBoxListener()
 {

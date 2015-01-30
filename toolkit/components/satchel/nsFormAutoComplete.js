@@ -438,7 +438,7 @@ FormAutoCompleteResult.prototype = {
     searchString : null,
     errorDescription : "",
     get defaultIndex() {
-        if (entries.length == 0)
+        if (this.entries.length == 0)
             return -1;
         else
             return 0;
@@ -476,6 +476,10 @@ FormAutoCompleteResult.prototype = {
         return "";
     },
 
+    getFinalCompleteValueAt : function (index) {
+        return this.getValueAt(index);
+    },
+
     removeValueAt : function (index, removeFromDB) {
         this._checkIndexBounds(index);
 
@@ -490,8 +494,8 @@ FormAutoCompleteResult.prototype = {
 };
 
 
-let remote = Services.appinfo.browserTabsRemote;
-if (Services.appinfo.processType == Services.appinfo.PROCESS_TYPE_CONTENT && remote) {
+if (Services.appinfo.processType == Services.appinfo.PROCESS_TYPE_CONTENT &&
+    Services.prefs.getBoolPref("browser.tabs.remote.desktopbehavior", false)) {
   // Register the stub FormAutoComplete module in the child which will
   // forward messages to the parent through the process message manager.
   let component = [FormAutoCompleteChild];

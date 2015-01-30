@@ -19,8 +19,9 @@
 #include "mozilla/gfx/Types.h"          // for SurfaceFormat
 
 namespace mozilla {
-namespace gfx {
+namespace gl {
 class SharedSurface;
+class ShSurfHandle;
 }
 }
 
@@ -44,6 +45,7 @@ public:
   enum CanvasClientType {
     CanvasClientSurface,
     CanvasClientGLContext,
+    CanvasClientTypeShSurf,
   };
   static TemporaryRef<CanvasClient> CreateCanvasClient(CanvasClientType aType,
                                                        CompositableForwarder* aFwd,
@@ -52,7 +54,7 @@ public:
   CanvasClient(CompositableForwarder* aFwd, TextureFlags aFlags)
     : CompositableClient(aFwd, aFlags)
   {
-    mTextureInfo.mTextureFlags = aFlags;
+    mTextureFlags = aFlags;
   }
 
   virtual ~CanvasClient() {}
@@ -62,9 +64,6 @@ public:
   virtual void Update(gfx::IntSize aSize, ClientCanvasLayer* aLayer) = 0;
 
   virtual void Updated() { }
-
-protected:
-  TextureInfo mTextureInfo;
 };
 
 // Used for 2D canvases and WebGL canvas on non-GL systems where readback is requried.
@@ -77,9 +76,9 @@ public:
   {
   }
 
-  TextureInfo GetTextureInfo() const
+  TextureInfo GetTextureInfo() const MOZ_OVERRIDE
   {
-    return TextureInfo(COMPOSITABLE_IMAGE);
+    return TextureInfo(CompositableType::IMAGE, mTextureFlags);
   }
 
   virtual void Clear() MOZ_OVERRIDE
@@ -91,7 +90,7 @@ public:
 
   virtual bool AddTextureClient(TextureClient* aTexture) MOZ_OVERRIDE
   {
-    MOZ_ASSERT((mTextureInfo.mTextureFlags & aTexture->GetFlags()) == mTextureInfo.mTextureFlags);
+    MOZ_ASSERT((mTextureFlags & aTexture->GetFlags()) == mTextureFlags);
     return CompositableClient::AddTextureClient(aTexture);
   }
 
@@ -101,85 +100,50 @@ public:
   }
 
 private:
+  TemporaryRef<TextureClient>
+    CreateTextureClientForCanvas(gfx::SurfaceFormat aFormat,
+                                 gfx::IntSize aSize,
+                                 TextureFlags aFlags,
+                                 ClientCanvasLayer* aLayer);
+
   RefPtr<TextureClient> mBuffer;
 };
 
 // Used for GL canvases where we don't need to do any readback, i.e., with a
 // GL backend.
-class CanvasClientSurfaceStream : public CanvasClient
+class CanvasClientSharedSurface : public CanvasClient
 {
-public:
-  CanvasClientSurfaceStream(CompositableForwarder* aLayerForwarder, TextureFlags aFlags);
-
-  TextureInfo GetTextureInfo() const
-  {
-    return TextureInfo(COMPOSITABLE_IMAGE);
-  }
-
-  virtual void Clear() MOZ_OVERRIDE
-  {
-    mBuffer = nullptr;
-  }
-
-  virtual void Update(gfx::IntSize aSize, ClientCanvasLayer* aLayer) MOZ_OVERRIDE;
-
-  virtual void OnDetach() MOZ_OVERRIDE
-  {
-    mBuffer = nullptr;
-  }
-
 private:
-  RefPtr<TextureClient> mBuffer;
-};
+  RefPtr<gl::ShSurfHandle> mFront;
+  RefPtr<gl::ShSurfHandle> mPrevFront;
 
-class DeprecatedCanvasClient2D : public CanvasClient
-{
+  RefPtr<TextureClient> mFrontTex;
+
+  void ClearSurfaces();
+
 public:
-  DeprecatedCanvasClient2D(CompositableForwarder* aLayerForwarder,
-                           TextureFlags aFlags);
+  CanvasClientSharedSurface(CompositableForwarder* aLayerForwarder,
+                            TextureFlags aFlags);
 
-  TextureInfo GetTextureInfo() const MOZ_OVERRIDE
+  ~CanvasClientSharedSurface()
   {
-    return mTextureInfo;
+    ClearSurfaces();
   }
 
-  virtual void Update(gfx::IntSize aSize, ClientCanvasLayer* aLayer);
-  virtual void Updated() MOZ_OVERRIDE;
-
-  virtual void SetDescriptorFromReply(TextureIdentifier aTextureId,
-                                      const SurfaceDescriptor& aDescriptor) MOZ_OVERRIDE
-  {
-    mDeprecatedTextureClient->SetDescriptorFromReply(aDescriptor);
+  virtual TextureInfo GetTextureInfo() const MOZ_OVERRIDE {
+    return TextureInfo(CompositableType::IMAGE);
   }
 
-private:
-  RefPtr<DeprecatedTextureClient> mDeprecatedTextureClient;
-};
-
-// Used for GL canvases where we don't need to do any readback, i.e., with a
-// GL backend.
-class DeprecatedCanvasClientSurfaceStream : public CanvasClient
-{
-public:
-  DeprecatedCanvasClientSurfaceStream(CompositableForwarder* aFwd,
-                                      TextureFlags aFlags);
-
-  TextureInfo GetTextureInfo() const MOZ_OVERRIDE
-  {
-    return mTextureInfo;
+  virtual void Clear() MOZ_OVERRIDE {
+    ClearSurfaces();
   }
 
-  virtual void Update(gfx::IntSize aSize, ClientCanvasLayer* aLayer);
-  virtual void Updated() MOZ_OVERRIDE;
+  virtual void Update(gfx::IntSize aSize,
+                      ClientCanvasLayer* aLayer) MOZ_OVERRIDE;
 
-  virtual void SetDescriptorFromReply(TextureIdentifier aTextureId,
-                                      const SurfaceDescriptor& aDescriptor) MOZ_OVERRIDE
-  {
-    mDeprecatedTextureClient->SetDescriptorFromReply(aDescriptor);
+  virtual void OnDetach() MOZ_OVERRIDE {
+    ClearSurfaces();
   }
-
-private:
-  RefPtr<DeprecatedTextureClient> mDeprecatedTextureClient;
 };
 
 }

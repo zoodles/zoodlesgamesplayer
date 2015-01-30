@@ -29,6 +29,11 @@ window.__defineGetter__('_EU_Ci', function() {
   return c.value && !c.writable ? Components.interfaces : SpecialPowers.Ci;
 });
 
+window.__defineGetter__('_EU_Cc', function() {
+  var c = Object.getOwnPropertyDescriptor(window, 'Components');
+  return c.value && !c.writable ? Components.classes : SpecialPowers.Cc;
+});
+
 /**
  * Send a mouse event to the node aTarget (aTarget can be an id, or an
  * actual node) . The "event" passed in to aEvent is just a JavaScript
@@ -54,7 +59,7 @@ function sendMouseEvent(aEvent, aTarget, aWindow) {
     aWindow = window;
   }
 
-  if (!(aTarget instanceof aWindow.Element)) {
+  if (typeof aTarget == "string") {
     aTarget = aWindow.document.getElementById(aTarget);
   }
 
@@ -305,16 +310,17 @@ function synthesizePointerAtPoint(left, top, aEvent, aWindow)
     var pressure = ("pressure" in aEvent) ? aEvent.pressure : 0;
     var inputSource = ("inputSource" in aEvent) ? aEvent.inputSource : 0;
     var synthesized = ("isSynthesized" in aEvent) ? aEvent.isSynthesized : true;
+    var isPrimary = ("isPrimary" in aEvent) ? aEvent.isPrimary : false;
 
     if (("type" in aEvent) && aEvent.type) {
-      defaultPrevented = utils.sendPointerEvent(aEvent.type, left, top, button,
-                                                clickCount, modifiers, false,
-                                                pressure, inputSource,
-                                                synthesized);
+      defaultPrevented = utils.sendPointerEventToWindow(aEvent.type, left, top, button,
+                                                        clickCount, modifiers, false,
+                                                        pressure, inputSource,
+                                                        synthesized, 0, 0, 0, 0, isPrimary);
     }
     else {
-      utils.sendPointerEvent("pointerdown", left, top, button, clickCount, modifiers, false, pressure, inputSource);
-      utils.sendPointerEvent("pointerup", left, top, button, clickCount, modifiers, false, pressure, inputSource);
+      utils.sendPointerEventToWindow("pointerdown", left, top, button, clickCount, modifiers, false, pressure, inputSource);
+      utils.sendPointerEventToWindow("pointerup", left, top, button, clickCount, modifiers, false, pressure, inputSource);
     }
   }
 
@@ -342,8 +348,9 @@ function synthesizeTouchAtCenter(aTarget, aEvent, aWindow)
  *
  * aEvent is an object which may contain the properties:
  *   shiftKey, ctrlKey, altKey, metaKey, accessKey, deltaX, deltaY, deltaZ,
- *   deltaMode, lineOrPageDeltaX, lineOrPageDeltaY, isMomentum, isPixelOnlyDevice,
- *   isCustomizedByPrefs, expectedOverflowDeltaX, expectedOverflowDeltaY
+ *   deltaMode, lineOrPageDeltaX, lineOrPageDeltaY, isMomentum,
+ *   isNoLineOrPageDelta, isCustomizedByPrefs, expectedOverflowDeltaX,
+ *   expectedOverflowDeltaY
  *
  * deltaMode must be defined, others are ok even if undefined.
  *
@@ -361,9 +368,8 @@ function synthesizeWheel(aTarget, aOffsetX, aOffsetY, aEvent, aWindow)
 
   var modifiers = _parseModifiers(aEvent);
   var options = 0;
-  if (aEvent.isPixelOnlyDevice &&
-      (aEvent.deltaMode == WheelEvent.DOM_DELTA_PIXEL)) {
-    options |= utils.WHEEL_EVENT_CAUSED_BY_PIXEL_ONLY_DEVICE;
+  if (aEvent.isNoLineOrPageDelta) {
+    options |= utils.WHEEL_EVENT_CAUSED_BY_NO_LINE_OR_PAGE_DELTA_DEVICE;
   }
   if (aEvent.isMomentum) {
     options |= utils.WHEEL_EVENT_CAUSED_BY_MOMENTUM;
@@ -389,8 +395,7 @@ function synthesizeWheel(aTarget, aOffsetX, aOffsetY, aEvent, aWindow)
       options |= utils.WHEEL_EVENT_EXPECTED_OVERFLOW_DELTA_Y_NEGATIVE;
     }
   }
-  var isPixelOnlyDevice =
-    aEvent.isPixelOnlyDevice && aEvent.deltaMode == WheelEvent.DOM_DELTA_PIXEL;
+  var isNoLineOrPageDelta = aEvent.isNoLineOrPageDelta;
 
   // Avoid the JS warnings "reference to undefined property"
   if (!aEvent.deltaX) {
@@ -860,44 +865,80 @@ function _getDOMWindowUtils(aWindow)
                                getInterface(_EU_Ci.nsIDOMWindowUtils);
 }
 
-// Must be synchronized with nsICompositionStringSynthesizer.
-const COMPOSITION_ATTR_RAWINPUT              = 0x02;
-const COMPOSITION_ATTR_SELECTEDRAWTEXT       = 0x03;
-const COMPOSITION_ATTR_CONVERTEDTEXT         = 0x04;
-const COMPOSITION_ATTR_SELECTEDCONVERTEDTEXT = 0x05;
+const COMPOSITION_ATTR_RAW_CLAUSE =
+  _EU_Ci.nsITextInputProcessor.ATTR_RAW_CLAUSE;
+const COMPOSITION_ATTR_SELECTED_RAW_CLAUSE =
+  _EU_Ci.nsITextInputProcessor.ATTR_SELECTED_RAW_CLAUSE;
+const COMPOSITION_ATTR_CONVERTED_CLAUSE =
+  _EU_Ci.nsITextInputProcessor.ATTR_CONVERTED_CLAUSE;
+const COMPOSITION_ATTR_SELECTED_CLAUSE =
+  _EU_Ci.nsITextInputProcessor.ATTR_SELECTED_CLAUSE;
+
+var TIPMap = new WeakMap();
+
+function _getTIP(aWindow, aCallback)
+{
+  if (!aWindow) {
+    aWindow = window;
+  }
+  var tip;
+  if (TIPMap.has(aWindow)) {
+    tip = TIPMap.get(aWindow);
+  } else {
+    tip =
+      _EU_Cc["@mozilla.org/text-input-processor;1"].
+        createInstance(_EU_Ci.nsITextInputProcessor);
+    TIPMap.set(aWindow, tip);
+  }
+  if (!tip.initForTests(aWindow, aCallback)) {
+    tip = null;
+    TIPMap.delete(aWindow);
+  }
+  return tip;
+}
 
 /**
  * Synthesize a composition event.
  *
  * @param aEvent               The composition event information.  This must
  *                             have |type| member.  The value must be
- *                             "compositionstart", "compositionend" or
- *                             "compositionupdate".
+ *                             "compositionstart", "compositionend",
+ *                             "compositioncommitasis" or "compositioncommit".
  *                             And also this may have |data| and |locale| which
  *                             would be used for the value of each property of
- *                             the composition event.  Note that the data would
- *                             be ignored if the event type were
- *                             "compositionstart".
+ *                             the composition event.  Note that the |data| is
+ *                             ignored if the event type is "compositionstart"
+ *                             or "compositioncommitasis".
  * @param aWindow              Optional (If null, current |window| will be used)
+ * @param aCallback            Optional (If non-null, use the callback for
+ *                             receiving notifications to IME)
  */
-function synthesizeComposition(aEvent, aWindow)
+function synthesizeComposition(aEvent, aWindow, aCallback)
 {
-  var utils = _getDOMWindowUtils(aWindow);
-  if (!utils) {
-    return;
+  var TIP = _getTIP(aWindow, aCallback);
+  if (!TIP) {
+    return false;
   }
-
-  utils.sendCompositionEvent(aEvent.type, aEvent.data ? aEvent.data : "",
-                             aEvent.locale ? aEvent.locale : "");
+  switch (aEvent.type) {
+    case "compositionstart":
+      return TIP.startComposition();
+    case "compositioncommitasis":
+      return TIP.commitComposition();
+    case "compositioncommit":
+      return TIP.commitComposition(aEvent.data);
+    default:
+      return false;
+  }
 }
 /**
- * Synthesize a text event.
+ * Synthesize a compositionchange event which causes a DOM text event and
+ * compositionupdate event if it's necessary.
  *
- * @param aEvent   The text event's information, this has |composition|
- *                 and |caret| members.  |composition| has |string| and
- *                 |clauses| members.  |clauses| must be array object.  Each
- *                 object has |length| and |attr|.  And |caret| has |start| and
- *                 |length|.  See the following tree image.
+ * @param aEvent   The compositionchange event's information, this has
+ *                 |composition| and |caret| members.  |composition| has
+ *                 |string| and |clauses| members.  |clauses| must be array
+ *                 object.  Each object has |length| and |attr|.  And |caret|
+ *                 has |start| and |length|.  See the following tree image.
  *
  *                 aEvent
  *                   +-- composition
@@ -929,11 +970,13 @@ function synthesizeComposition(aEvent, aWindow)
  *                 caret, therefore, you should always set 0 now.
  *
  * @param aWindow  Optional (If null, current |window| will be used)
+ * @param aCallback     Optional (If non-null, use the callback for receiving
+ *                      notifications to IME)
  */
-function synthesizeText(aEvent, aWindow)
+function synthesizeCompositionChange(aEvent, aWindow, aCallback)
 {
-  var utils = _getDOMWindowUtils(aWindow);
-  if (!utils) {
+  var TIP = _getTIP(aWindow, aCallback);
+  if (!TIP) {
     return;
   }
 
@@ -942,17 +985,17 @@ function synthesizeText(aEvent, aWindow)
     return;
   }
 
-  var compositionString = utils.createCompositionStringSynthesizer();
-  compositionString.setString(aEvent.composition.string);
+  TIP.setPendingCompositionString(aEvent.composition.string);
   if (aEvent.composition.clauses[0].length) {
     for (var i = 0; i < aEvent.composition.clauses.length; i++) {
       switch (aEvent.composition.clauses[i].attr) {
-        case compositionString.ATTR_RAWINPUT:
-        case compositionString.ATTR_SELECTEDRAWTEXT:
-        case compositionString.ATTR_CONVERTEDTEXT:
-        case compositionString.ATTR_SELECTEDCONVERTEDTEXT:
-          compositionString.appendClause(aEvent.composition.clauses[i].length,
-                                         aEvent.composition.clauses[i].attr);
+        case TIP.ATTR_RAW_CLAUSE:
+        case TIP.ATTR_SELECTED_RAW_CLAUSE:
+        case TIP.ATTR_CONVERTED_CLAUSE:
+        case TIP.ATTR_SELECTED_CLAUSE:
+          TIP.appendClauseToPendingComposition(
+                aEvent.composition.clauses[i].length,
+                aEvent.composition.clauses[i].attr);
           break;
         case 0:
           // Ignore dummy clause for the argument.
@@ -965,11 +1008,19 @@ function synthesizeText(aEvent, aWindow)
   }
 
   if (aEvent.caret) {
-    compositionString.setCaret(aEvent.caret.start, aEvent.caret.length);
+    TIP.setCaretInPendingComposition(aEvent.caret.start);
   }
 
-  compositionString.dispatchEvent();
+  TIP.flushPendingComposition();
 }
+
+// Must be synchronized with nsIDOMWindowUtils.
+const QUERY_CONTENT_FLAG_USE_NATIVE_LINE_BREAK          = 0x0000;
+const QUERY_CONTENT_FLAG_USE_XP_LINE_BREAK              = 0x0001;
+
+const SELECTION_SET_FLAG_USE_NATIVE_LINE_BREAK          = 0x0000;
+const SELECTION_SET_FLAG_USE_XP_LINE_BREAK              = 0x0001;
+const SELECTION_SET_FLAG_REVERSE                        = 0x0002;
 
 /**
  * Synthesize a query selected text event.
@@ -985,7 +1036,28 @@ function synthesizeQuerySelectedText(aWindow)
     return null;
   }
 
-  return utils.sendQueryContentEvent(utils.QUERY_SELECTED_TEXT, 0, 0, 0, 0);
+  return utils.sendQueryContentEvent(utils.QUERY_SELECTED_TEXT, 0, 0, 0, 0,
+                                     QUERY_CONTENT_FLAG_USE_NATIVE_LINE_BREAK);
+}
+
+/**
+ * Synthesize a query caret rect event.
+ *
+ * @param aOffset  The caret offset.  0 means left side of the first character
+ *                 in the selection root.
+ * @param aWindow  Optional (If null, current |window| will be used)
+ * @return         An nsIQueryContentEventResult object.  If this failed,
+ *                 the result might be null.
+ */
+function synthesizeQueryCaretRect(aOffset, aWindow)
+{
+  var utils = _getDOMWindowUtils(aWindow);
+  if (!utils) {
+    return null;
+  }
+  return utils.sendQueryContentEvent(utils.QUERY_CARET_RECT,
+                                     aOffset, 0, 0, 0,
+                                     QUERY_CONTENT_FLAG_USE_NATIVE_LINE_BREAK);
 }
 
 /**
@@ -1006,5 +1078,6 @@ function synthesizeSelectionSet(aOffset, aLength, aReverse, aWindow)
   if (!utils) {
     return false;
   }
-  return utils.sendSelectionSetEvent(aOffset, aLength, aReverse);
+  var flags = aReverse ? SELECTION_SET_FLAG_REVERSE : 0;
+  return utils.sendSelectionSetEvent(aOffset, aLength, flags);
 }

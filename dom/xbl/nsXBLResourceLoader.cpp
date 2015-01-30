@@ -5,7 +5,6 @@
 
 #include "nsTArray.h"
 #include "nsString.h"
-#include "nsCSSStyleSheet.h"
 #include "nsIStyleRuleProcessor.h"
 #include "nsIDocument.h"
 #include "nsIContent.h"
@@ -17,6 +16,7 @@
 #include "nsIDocumentObserver.h"
 #include "imgILoader.h"
 #include "imgRequestProxy.h"
+#include "mozilla/CSSStyleSheet.h"
 #include "mozilla/css/Loader.h"
 #include "nsIURI.h"
 #include "nsNetUtil.h"
@@ -29,7 +29,9 @@
 #include "nsStyleSet.h"
 #include "nsIScriptSecurityManager.h"
 
-NS_IMPL_CYCLE_COLLECTION_1(nsXBLResourceLoader, mBoundElements)
+using namespace mozilla;
+
+NS_IMPL_CYCLE_COLLECTION(nsXBLResourceLoader, mBoundElements)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(nsXBLResourceLoader)
   NS_INTERFACE_MAP_ENTRY(nsICSSLoaderObserver)
@@ -118,8 +120,9 @@ nsXBLResourceLoader::LoadResources(bool* aResult)
       // Passing nullptr for pretty much everything -- cause we don't care!
       // XXX: initialDocumentURI is nullptr! 
       nsRefPtr<imgRequestProxy> req;
-      nsContentUtils::LoadImage(url, doc, docPrincipal, docURL, nullptr,
-                                nsIRequest::LOAD_BACKGROUND,
+      nsContentUtils::LoadImage(url, doc, docPrincipal, docURL,
+                                doc->GetReferrerPolicy(), nullptr,
+                                nsIRequest::LOAD_BACKGROUND, EmptyString(),
                                 getter_AddRefs(req));
     }
     else if (curr->mType == nsGkAtoms::stylesheet) {
@@ -135,7 +138,7 @@ nsXBLResourceLoader::LoadResources(bool* aResult)
           CheckLoadURIWithPrincipal(docPrincipal, url,
                                     nsIScriptSecurityManager::ALLOW_CHROME);
         if (NS_SUCCEEDED(rv)) {
-          nsRefPtr<nsCSSStyleSheet> sheet;
+          nsRefPtr<CSSStyleSheet> sheet;
           rv = cssLoader->LoadSheetSync(url, getter_AddRefs(sheet));
           NS_ASSERTION(NS_SUCCEEDED(rv), "Load failed!!!");
           if (NS_SUCCEEDED(rv))
@@ -164,7 +167,7 @@ nsXBLResourceLoader::LoadResources(bool* aResult)
 
 // nsICSSLoaderObserver
 NS_IMETHODIMP
-nsXBLResourceLoader::StyleSheetLoaded(nsCSSStyleSheet* aSheet,
+nsXBLResourceLoader::StyleSheetLoaded(CSSStyleSheet* aSheet,
                                       bool aWasAlternate,
                                       nsresult aStatus)
 {
@@ -173,17 +176,14 @@ nsXBLResourceLoader::StyleSheetLoaded(nsCSSStyleSheet* aSheet,
     return NS_OK;
   }
    
-  mResources->mStyleSheetList.AppendElement(aSheet);
+  mResources->AppendStyleSheet(aSheet);
 
   if (!mInLoadResourcesFunc)
     mPendingSheets--;
   
   if (mPendingSheets == 0) {
     // All stylesheets are loaded.  
-    mResources->mRuleProcessor =
-      new nsCSSRuleProcessor(mResources->mStyleSheetList, 
-                             nsStyleSet::eDocSheet,
-                             nullptr);
+    mResources->GatherRuleProcessor();
 
     // XXX Check for mPendingScripts when scripts also come online.
     if (!mInLoadResourcesFunc)
@@ -274,7 +274,7 @@ nsXBLResourceLoader::NotifyBoundElements()
   mBoundElements.Clear();
 
   // Delete ourselves.
-  NS_RELEASE(mResources->mLoader);
+  mResources->ClearLoader();
 }
 
 nsresult

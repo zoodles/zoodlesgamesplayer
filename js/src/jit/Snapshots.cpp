@@ -9,19 +9,49 @@
 #include "jsscript.h"
 
 #include "jit/CompileInfo.h"
-#include "jit/IonSpewer.h"
+#include "jit/JitSpewer.h"
 #ifdef TRACK_SNAPSHOTS
 # include "jit/LIR.h"
-# include "jit/MIR.h"
 #endif
+#include "jit/MIR.h"
+#include "jit/Recover.h"
 
 using namespace js;
 using namespace js::jit;
 
+// Encodings:
+//   [ptr] A fixed-size pointer.
+//   [vwu] A variable-width unsigned integer.
+//   [vws] A variable-width signed integer.
+//    [u8] An 8-bit unsigned integer.
+//   [u8'] An 8-bit unsigned integer which is potentially extended with packed
+//         data.
+//   [u8"] Packed data which is stored and packed in the previous [u8'].
+//  [vwu*] A list of variable-width unsigned integers.
+//   [pld] Payload of Recover Value Allocation:
+//         PAYLOAD_NONE:
+//           There is no payload.
+//
+//         PAYLOAD_INDEX:
+//           [vwu] Index, such as the constant pool index.
+//
+//         PAYLOAD_STACK_OFFSET:
+//           [vws] Stack offset based on the base of the Ion frame.
+//
+//         PAYLOAD_GPR:
+//            [u8] Code of the general register.
+//
+//         PAYLOAD_FPU:
+//            [u8] Code of the FPU register.
+//
+//         PAYLOAD_PACKED_TAG:
+//           [u8"] Bits 5-7: JSValueType is encoded on the low bits of the Mode
+//                           of the RValueAllocation.
+//
 // Snapshot header:
 //
-//   [vwu] bits (n-31]: frame count
-//         bits [0,n):  bailout kind (n = BAILOUT_KIND_BITS)
+//   [vwu] bits ((n+1)-31]: recover instruction offset
+//         bits [0,n): bailout kind (n = SNAPSHOT_BAILOUTKIND_BITS)
 //
 // Snapshot body, repeated "frame count" times, from oldest frame to newest frame.
 // Note that the first frame doesn't have the "parent PC" field.
@@ -74,6 +104,14 @@ using namespace js::jit;
 //           first register/stack-offset correspond to the holder of the type,
 //           and the second correspond to the payload of the JS Value.
 //
+//         RECOVER_INSTRUCTION [INDEX]
+//           Index into the list of recovered instruction results.
+//
+//         RI_WITH_DEFAULT_CST [INDEX] [INDEX]
+//           The first payload is the index into the list of recovered
+//           instruction results.  The second payload is the index in the
+//           constant pool.
+//
 //         TYPED_REG [PACKED_TAG, GPR_REG]:
 //           Value with statically known type, which payload is stored in a
 //           register.
@@ -81,35 +119,6 @@ using namespace js::jit;
 //         TYPED_STACK [PACKED_TAG, STACK_OFFSET]:
 //           Value with statically known type, which payload is stored at an
 //           offset on the stack.
-//
-// Encodings:
-//   [ptr] A fixed-size pointer.
-//   [vwu] A variable-width unsigned integer.
-//   [vws] A variable-width signed integer.
-//    [u8] An 8-bit unsigned integer.
-//   [u8'] An 8-bit unsigned integer which is potentially extended with packed
-//         data.
-//   [u8"] Packed data which is stored and packed in the previous [u8'].
-//  [vwu*] A list of variable-width unsigned integers.
-//   [pld] Payload of Recover Value Allocation:
-//         PAYLOAD_NONE:
-//           There is no payload.
-//
-//         PAYLOAD_INDEX:
-//           [vwu] Index, such as the constant pool index.
-//
-//         PAYLOAD_STACK_OFFSET:
-//           [vws] Stack offset based on the base of the Ion frame.
-//
-//         PAYLOAD_GPR:
-//            [u8] Code of the general register.
-//
-//         PAYLOAD_FPU:
-//            [u8] Code of the FPU register.
-//
-//         PAYLOAD_PACKED_TAG:
-//           [u8"] Bits 5-7: JSValueType is encoded on the low bits of the Mode
-//                           of the RValueAllocation.
 //
 
 const RValueAllocation::Layout &
@@ -187,7 +196,8 @@ RValueAllocation::layoutFromMode(Mode mode)
       case UNTYPED_STACK_REG: {
         static const RValueAllocation::Layout layout = {
             PAYLOAD_STACK_OFFSET,
-            PAYLOAD_GPR
+            PAYLOAD_GPR,
+            "value"
         };
         return layout;
       }
@@ -217,6 +227,23 @@ RValueAllocation::layoutFromMode(Mode mode)
         return layout;
       }
 #endif
+      case RECOVER_INSTRUCTION: {
+        static const RValueAllocation::Layout layout = {
+            PAYLOAD_INDEX,
+            PAYLOAD_NONE,
+            "instruction"
+        };
+        return layout;
+      }
+      case RI_WITH_DEFAULT_CST: {
+        static const RValueAllocation::Layout layout = {
+            PAYLOAD_INDEX,
+            PAYLOAD_INDEX,
+            "instruction with default"
+        };
+        return layout;
+      }
+
       default: {
         static const RValueAllocation::Layout regLayout = {
             PAYLOAD_PACKED_TAG,
@@ -237,7 +264,7 @@ RValueAllocation::layoutFromMode(Mode mode)
       }
     }
 
-    MOZ_ASSUME_UNREACHABLE("Wrong mode type?");
+    MOZ_CRASH("Wrong mode type?");
 }
 
 // Pad serialized RValueAllocations by a multiple of X bytes in the allocation
@@ -272,11 +299,11 @@ RValueAllocation::readPayload(CompactBufferReader &reader, PayloadType type,
         p->gpr = Register::FromCode(reader.readByte());
         break;
       case PAYLOAD_FPU:
-        p->fpu = FloatRegister::FromCode(reader.readByte());
+        p->fpu.data = reader.readByte();
         break;
       case PAYLOAD_PACKED_TAG:
-        p->type = JSValueType(*mode & 0x07);
-        *mode = *mode & ~0x07;
+        p->type = JSValueType(*mode & PACKED_TAG_MASK);
+        *mode = *mode & ~PACKED_TAG_MASK;
         break;
     }
 }
@@ -285,7 +312,7 @@ RValueAllocation
 RValueAllocation::read(CompactBufferReader &reader)
 {
     uint8_t mode = reader.readByte();
-    const Layout &layout = layoutFromMode(Mode(mode));
+    const Layout &layout = layoutFromMode(Mode(mode & MODE_MASK));
     Payload arg1, arg2;
 
     readPayload(reader, layout.type1, &mode, &arg1);
@@ -321,7 +348,7 @@ RValueAllocation::writePayload(CompactBufferWriter &writer, PayloadType type,
         // writeByte of the mode.
         MOZ_ASSERT(writer.length());
         uint8_t *mode = writer.buffer() + (writer.length() - 1);
-        MOZ_ASSERT((*mode & 0x07) == 0 && (p.type & ~0x07) == 0);
+        MOZ_ASSERT((*mode & PACKED_TAG_MASK) == 0 && (p.type & ~PACKED_TAG_MASK) == 0);
         *mode = *mode | p.type;
         break;
       }
@@ -378,6 +405,8 @@ ValTypeToString(JSValueType type)
         return "double";
       case JSVAL_TYPE_STRING:
         return "string";
+      case JSVAL_TYPE_SYMBOL:
+        return "symbol";
       case JSVAL_TYPE_BOOLEAN:
         return "boolean";
       case JSVAL_TYPE_OBJECT:
@@ -385,7 +414,7 @@ ValTypeToString(JSValueType type)
       case JSVAL_TYPE_MAGIC:
         return "magic";
       default:
-        MOZ_ASSUME_UNREACHABLE("no payload");
+        MOZ_CRASH("no payload");
     }
 }
 
@@ -455,82 +484,92 @@ SnapshotReader::SnapshotReader(const uint8_t *snapshots, uint32_t offset,
   : reader_(snapshots + offset, snapshots + listSize),
     allocReader_(snapshots + listSize, snapshots + listSize + RVATableSize),
     allocTable_(snapshots + listSize),
-    allocCount_(0),
-    frameCount_(0),
     allocRead_(0)
 {
     if (!snapshots)
         return;
-    IonSpew(IonSpew_Snapshots, "Creating snapshot reader");
+    JitSpew(JitSpew_IonSnapshots, "Creating snapshot reader");
     readSnapshotHeader();
-    nextFrame();
 }
 
-static const uint32_t BAILOUT_KIND_SHIFT = 0;
-static const uint32_t BAILOUT_KIND_MASK = (1 << BAILOUT_KIND_BITS) - 1;
-static const uint32_t BAILOUT_RESUME_SHIFT = BAILOUT_KIND_SHIFT + BAILOUT_KIND_BITS;
-static const uint32_t BAILOUT_FRAMECOUNT_SHIFT = BAILOUT_KIND_BITS + BAILOUT_RESUME_BITS;
-static const uint32_t BAILOUT_FRAMECOUNT_BITS = (8 * sizeof(uint32_t)) - BAILOUT_FRAMECOUNT_SHIFT;
+#define COMPUTE_SHIFT_AFTER_(name) (name ## _BITS + name ##_SHIFT)
+#define COMPUTE_MASK_(name) ((uint32_t(1 << name ## _BITS) - 1) << name ##_SHIFT)
+
+// Details of snapshot header packing.
+static const uint32_t SNAPSHOT_BAILOUTKIND_SHIFT = 0;
+static const uint32_t SNAPSHOT_BAILOUTKIND_BITS = 6;
+static const uint32_t SNAPSHOT_BAILOUTKIND_MASK = COMPUTE_MASK_(SNAPSHOT_BAILOUTKIND);
+
+static const uint32_t SNAPSHOT_ROFFSET_SHIFT = COMPUTE_SHIFT_AFTER_(SNAPSHOT_BAILOUTKIND);
+static const uint32_t SNAPSHOT_ROFFSET_BITS = 32 - SNAPSHOT_ROFFSET_SHIFT;
+static const uint32_t SNAPSHOT_ROFFSET_MASK = COMPUTE_MASK_(SNAPSHOT_ROFFSET);
+
+// Details of recover header packing.
+static const uint32_t RECOVER_RESUMEAFTER_SHIFT = 0;
+static const uint32_t RECOVER_RESUMEAFTER_BITS = 1;
+static const uint32_t RECOVER_RESUMEAFTER_MASK = COMPUTE_MASK_(RECOVER_RESUMEAFTER);
+
+static const uint32_t RECOVER_RINSCOUNT_SHIFT = COMPUTE_SHIFT_AFTER_(RECOVER_RESUMEAFTER);
+static const uint32_t RECOVER_RINSCOUNT_BITS = 32 - RECOVER_RINSCOUNT_SHIFT;
+static const uint32_t RECOVER_RINSCOUNT_MASK = COMPUTE_MASK_(RECOVER_RINSCOUNT);
+
+#undef COMPUTE_MASK_
+#undef COMPUTE_SHIFT_AFTER_
 
 void
 SnapshotReader::readSnapshotHeader()
 {
     uint32_t bits = reader_.readUnsigned();
-    frameCount_ = bits >> BAILOUT_FRAMECOUNT_SHIFT;
-    JS_ASSERT(frameCount_ > 0);
-    bailoutKind_ = BailoutKind((bits >> BAILOUT_KIND_SHIFT) & BAILOUT_KIND_MASK);
-    resumeAfter_ = !!(bits & (1 << BAILOUT_RESUME_SHIFT));
-    framesRead_ = 0;
 
-    IonSpew(IonSpew_Snapshots, "Read snapshot header with frameCount %u, bailout kind %u (ra: %d)",
-            frameCount_, bailoutKind_, resumeAfter_);
+    bailoutKind_ = BailoutKind((bits & SNAPSHOT_BAILOUTKIND_MASK) >> SNAPSHOT_BAILOUTKIND_SHIFT);
+    recoverOffset_ = (bits & SNAPSHOT_ROFFSET_MASK) >> SNAPSHOT_ROFFSET_SHIFT;
+
+    JitSpew(JitSpew_IonSnapshots, "Read snapshot header with bailout kind %u",
+            bailoutKind_);
+
+#ifdef TRACK_SNAPSHOTS
+    readTrackSnapshot();
+#endif
 }
 
-void
-SnapshotReader::readFrameHeader()
-{
-    JS_ASSERT(moreFrames());
-    JS_ASSERT(allocRead_ == allocCount_);
-
-    pcOffset_ = reader_.readUnsigned();
-    allocCount_ = reader_.readUnsigned();
 #ifdef TRACK_SNAPSHOTS
+void
+SnapshotReader::readTrackSnapshot()
+{
     pcOpcode_  = reader_.readUnsigned();
     mirOpcode_ = reader_.readUnsigned();
     mirId_     = reader_.readUnsigned();
     lirOpcode_ = reader_.readUnsigned();
     lirId_     = reader_.readUnsigned();
-#endif
-    IonSpew(IonSpew_Snapshots, "Read pc offset %u, nslots %u", pcOffset_, allocCount_);
-
-    framesRead_++;
-    allocRead_ = 0;
 }
 
-#ifdef TRACK_SNAPSHOTS
 void
 SnapshotReader::spewBailingFrom() const
 {
-    if (IonSpewEnabled(IonSpew_Bailouts)) {
-        IonSpewHeader(IonSpew_Bailouts);
-        fprintf(IonSpewFile, " bailing from bytecode: %s, MIR: ", js_CodeName[pcOpcode_]);
-        MDefinition::PrintOpcodeName(IonSpewFile, MDefinition::Opcode(mirOpcode_));
-        fprintf(IonSpewFile, " [%u], LIR: ", mirId_);
-        LInstruction::printName(IonSpewFile, LInstruction::Opcode(lirOpcode_));
-        fprintf(IonSpewFile, " [%u]", lirId_);
-        fprintf(IonSpewFile, "\n");
+    if (JitSpewEnabled(JitSpew_IonBailouts)) {
+        JitSpewHeader(JitSpew_IonBailouts);
+        fprintf(JitSpewFile, " bailing from bytecode: %s, MIR: ", js_CodeName[pcOpcode_]);
+        MDefinition::PrintOpcodeName(JitSpewFile, MDefinition::Opcode(mirOpcode_));
+        fprintf(JitSpewFile, " [%u], LIR: ", mirId_);
+        LInstruction::printName(JitSpewFile, LInstruction::Opcode(lirOpcode_));
+        fprintf(JitSpewFile, " [%u]", lirId_);
+        fprintf(JitSpewFile, "\n");
     }
 }
 #endif
 
+uint32_t
+SnapshotReader::readAllocationIndex()
+{
+    allocRead_++;
+    return reader_.readUnsigned();
+}
+
 RValueAllocation
 SnapshotReader::readAllocation()
 {
-    JS_ASSERT(allocRead_ < allocCount_);
-    IonSpew(IonSpew_Snapshots, "Reading slot %u", allocRead_);
-    allocRead_++;
-
-    uint32_t offset = reader_.readUnsigned() * ALLOCATION_TABLE_ALIGNMENT;
+    JitSpew(JitSpew_IonSnapshots, "Reading slot %u", allocRead_);
+    uint32_t offset = readAllocationIndex() * ALLOCATION_TABLE_ALIGNMENT;
     allocReader_.seek(allocTable_, offset);
     return RValueAllocation::read(allocReader_);
 }
@@ -544,56 +583,62 @@ SnapshotWriter::init()
     return allocMap_.init(32);
 }
 
-SnapshotOffset
-SnapshotWriter::startSnapshot(uint32_t frameCount, BailoutKind kind, bool resumeAfter)
+RecoverReader::RecoverReader(SnapshotReader &snapshot, const uint8_t *recovers, uint32_t size)
+  : reader_(nullptr, nullptr),
+    numInstructions_(0),
+    numInstructionsRead_(0)
 {
-    nframes_ = frameCount;
-    framesWritten_ = 0;
+    if (!recovers)
+        return;
+    reader_ = CompactBufferReader(recovers + snapshot.recoverOffset(), recovers + size);
+    readRecoverHeader();
+    readInstruction();
+}
 
+void
+RecoverReader::readRecoverHeader()
+{
+    uint32_t bits = reader_.readUnsigned();
+
+    numInstructions_ = (bits & RECOVER_RINSCOUNT_MASK) >> RECOVER_RINSCOUNT_SHIFT;
+    resumeAfter_ = (bits & RECOVER_RESUMEAFTER_MASK) >> RECOVER_RESUMEAFTER_SHIFT;
+    MOZ_ASSERT(numInstructions_);
+
+    JitSpew(JitSpew_IonSnapshots, "Read recover header with instructionCount %u (ra: %d)",
+            numInstructions_, resumeAfter_);
+}
+
+void
+RecoverReader::readInstruction()
+{
+    MOZ_ASSERT(moreInstructions());
+    RInstruction::readRecoverData(reader_, &rawData_);
+    numInstructionsRead_++;
+}
+
+SnapshotOffset
+SnapshotWriter::startSnapshot(RecoverOffset recoverOffset, BailoutKind kind)
+{
     lastStart_ = writer_.length();
+    allocWritten_ = 0;
 
-    IonSpew(IonSpew_Snapshots, "starting snapshot with frameCount %u, bailout kind %u",
-            frameCount, kind);
-    JS_ASSERT(frameCount > 0);
-    JS_ASSERT(frameCount < (1 << BAILOUT_FRAMECOUNT_BITS));
-    JS_ASSERT(uint32_t(kind) < (1 << BAILOUT_KIND_BITS));
+    JitSpew(JitSpew_IonSnapshots, "starting snapshot with recover offset %u, bailout kind %u",
+            recoverOffset, kind);
 
-    uint32_t bits = (uint32_t(kind) << BAILOUT_KIND_SHIFT) |
-                  (frameCount << BAILOUT_FRAMECOUNT_SHIFT);
-    if (resumeAfter)
-        bits |= (1 << BAILOUT_RESUME_SHIFT);
+    MOZ_ASSERT(uint32_t(kind) < (1 << SNAPSHOT_BAILOUTKIND_BITS));
+    MOZ_ASSERT(recoverOffset < (1 << SNAPSHOT_ROFFSET_BITS));
+    uint32_t bits =
+        (uint32_t(kind) << SNAPSHOT_BAILOUTKIND_SHIFT) |
+        (recoverOffset << SNAPSHOT_ROFFSET_SHIFT);
 
     writer_.writeUnsigned(bits);
     return lastStart_;
 }
 
-void
-SnapshotWriter::startFrame(JSFunction *fun, JSScript *script, jsbytecode *pc, uint32_t exprStack)
-{
-    // Test if we honor the maximum of arguments at all times.
-    // This is a sanity check and not an algorithm limit. So check might be a bit too loose.
-    // +4 to account for scope chain, return value, this value and maybe arguments_object.
-    JS_ASSERT(CountArgSlots(script, fun) < SNAPSHOT_MAX_NARGS + 4);
-
-    uint32_t implicit = StartArgSlot(script);
-    uint32_t formalArgs = CountArgSlots(script, fun);
-
-    nallocs_ = formalArgs + script->nfixed() + exprStack;
-    allocWritten_ = 0;
-
-    IonSpew(IonSpew_Snapshots, "Starting frame; implicit %u, formals %u, fixed %u, exprs %u",
-            implicit, formalArgs - implicit, script->nfixed(), exprStack);
-
-    uint32_t pcoff = script->pcToOffset(pc);
-    IonSpew(IonSpew_Snapshots, "Writing pc offset %u, nslots %u", pcoff, nallocs_);
-    writer_.writeUnsigned(pcoff);
-    writer_.writeUnsigned(nallocs_);
-}
-
 #ifdef TRACK_SNAPSHOTS
 void
-SnapshotWriter::trackFrame(uint32_t pcOpcode, uint32_t mirOpcode, uint32_t mirId,
-                                            uint32_t lirOpcode, uint32_t lirId)
+SnapshotWriter::trackSnapshot(uint32_t pcOpcode, uint32_t mirOpcode, uint32_t mirId,
+                              uint32_t lirOpcode, uint32_t lirId)
 {
     writer_.writeUnsigned(pcOpcode);
     writer_.writeUnsigned(mirOpcode);
@@ -619,38 +664,61 @@ SnapshotWriter::add(const RValueAllocation &alloc)
         offset = p->value();
     }
 
-    if (IonSpewEnabled(IonSpew_Snapshots)) {
-        IonSpewHeader(IonSpew_Snapshots);
-        fprintf(IonSpewFile, "    slot %u (%d): ", allocWritten_, offset);
-        alloc.dump(IonSpewFile);
-        fprintf(IonSpewFile, "\n");
+    if (JitSpewEnabled(JitSpew_IonSnapshots)) {
+        JitSpewHeader(JitSpew_IonSnapshots);
+        fprintf(JitSpewFile, "    slot %u (%d): ", allocWritten_, offset);
+        alloc.dump(JitSpewFile);
+        fprintf(JitSpewFile, "\n");
     }
 
     allocWritten_++;
-    JS_ASSERT(allocWritten_ <= nallocs_);
     writer_.writeUnsigned(offset / ALLOCATION_TABLE_ALIGNMENT);
     return true;
 }
 
 void
-SnapshotWriter::endFrame()
-{
-    // Check that the last write succeeded.
-    JS_ASSERT(nallocs_ == allocWritten_);
-    nallocs_ = allocWritten_ = 0;
-    framesWritten_++;
-}
-
-void
 SnapshotWriter::endSnapshot()
 {
-    JS_ASSERT(nframes_ == framesWritten_);
-
     // Place a sentinel for asserting on the other end.
 #ifdef DEBUG
     writer_.writeSigned(-1);
 #endif
-    
-    IonSpew(IonSpew_Snapshots, "ending snapshot total size: %u bytes (start %u)",
+
+    JitSpew(JitSpew_IonSnapshots, "ending snapshot total size: %u bytes (start %u)",
             uint32_t(writer_.length() - lastStart_), lastStart_);
+}
+
+RecoverOffset
+RecoverWriter::startRecover(uint32_t instructionCount, bool resumeAfter)
+{
+    MOZ_ASSERT(instructionCount);
+    instructionCount_ = instructionCount;
+    instructionsWritten_ = 0;
+
+    JitSpew(JitSpew_IonSnapshots, "starting recover with %u instruction(s)",
+            instructionCount);
+
+    MOZ_ASSERT(!(uint32_t(resumeAfter) &~ RECOVER_RESUMEAFTER_MASK));
+    MOZ_ASSERT(instructionCount < uint32_t(1 << RECOVER_RINSCOUNT_BITS));
+    uint32_t bits =
+        (uint32_t(resumeAfter) << RECOVER_RESUMEAFTER_SHIFT) |
+        (instructionCount << RECOVER_RINSCOUNT_SHIFT);
+
+    RecoverOffset recoverOffset = writer_.length();
+    writer_.writeUnsigned(bits);
+    return recoverOffset;
+}
+
+void
+RecoverWriter::writeInstruction(const MNode *rp)
+{
+    if (!rp->writeRecoverData(writer_))
+        writer_.setOOM();
+    instructionsWritten_++;
+}
+
+void
+RecoverWriter::endRecover()
+{
+    MOZ_ASSERT(instructionCount_ == instructionsWritten_);
 }

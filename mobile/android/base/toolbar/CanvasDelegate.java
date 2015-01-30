@@ -4,6 +4,8 @@
 
 package org.mozilla.gecko.toolbar;
 
+import org.mozilla.gecko.AppConstants.Versions;
+
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Paint;
@@ -11,31 +13,27 @@ import android.graphics.Path;
 import android.graphics.PorterDuff.Mode;
 import android.graphics.PorterDuffXfermode;
 import android.graphics.Shader;
-import android.os.Build;
 
-public class CanvasDelegate {
+class CanvasDelegate {
     Paint mPaint;
     PorterDuffXfermode mMode;
     DrawManager mDrawManager;
 
     // DrawManager would do a default draw of the background.
-    public static interface DrawManager {
-        public void defaultDraw(Canvas cavas);
+    static interface DrawManager {
+        public void defaultDraw(Canvas canvas);
     }
 
-    public CanvasDelegate(DrawManager drawManager, Mode mode) {
+    CanvasDelegate(DrawManager drawManager, Mode mode, Paint paint) {
         mDrawManager = drawManager;
 
         // DST_IN masks, DST_OUT clips.
         mMode = new PorterDuffXfermode(mode);
 
-        mPaint = new Paint();
-        mPaint.setAntiAlias(true);
-        mPaint.setColor(0xFFFF0000);
-        mPaint.setStrokeWidth(0.0f);
+        mPaint = paint;
     }
 
-    public void draw(Canvas canvas, Path path, int width, int height) {
+    void draw(Canvas canvas, Path path, int width, int height) {
         // Save the canvas. All PorterDuff operations should be done in a offscreen bitmap.
         int count = canvas.saveLayer(0, 0, width, height, null,
                                      Canvas.MATRIX_SAVE_FLAG |
@@ -50,7 +48,7 @@ public class CanvasDelegate {
         if (path != null && !path.isEmpty()) {
             // ICS added double-buffering, which made it easier for drawing the Path directly over the DST.
             // In pre-ICS, drawPath() doesn't seem to use ARGB_8888 mode for performance, hence transparency is not preserved.
-            if (Build.VERSION.SDK_INT >= 14) {
+            if (Versions.feature14Plus) {
                 mPaint.setXfermode(mMode);
                 canvas.drawPath(path, mPaint);
             } else {
@@ -70,7 +68,7 @@ public class CanvasDelegate {
         canvas.restoreToCount(count);
     }
 
-    public void setShader(Shader shader) {
+    void setShader(Shader shader) {
         mPaint.setShader(shader);
     }
 }

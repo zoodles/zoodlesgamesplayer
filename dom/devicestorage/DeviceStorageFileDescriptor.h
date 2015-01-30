@@ -9,13 +9,13 @@
 
 #include "mozilla/ipc/FileDescriptor.h"
 
-class DeviceStorageFileDescriptor MOZ_FINAL
-  : public mozilla::RefCounted<DeviceStorageFileDescriptor>
+struct DeviceStorageFileDescriptor MOZ_FINAL
 {
-public:
-  MOZ_DECLARE_REFCOUNTED_TYPENAME(DeviceStorageFileDescriptor)
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(DeviceStorageFileDescriptor)
   nsRefPtr<DeviceStorageFile> mDSFile;
   mozilla::ipc::FileDescriptor mFileDescriptor;
+private:
+  ~DeviceStorageFileDescriptor() {}
 };
 
 #endif

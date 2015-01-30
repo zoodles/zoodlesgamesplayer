@@ -55,14 +55,17 @@ public:
         mLoadOtherNames(aLoadOtherNames),
         mLoadFaceNames(aLoadFaceNames),
         mLoadCmaps(aLoadCmaps)
-   {
+    {
         MOZ_COUNT_CTOR(FontInfoData);
-   }
+    }
 
+protected:
+    // Protected destructor, to discourage deletion outside of Release():
     virtual ~FontInfoData() {
         MOZ_COUNT_DTOR(FontInfoData);
     }
 
+public:
     virtual void Load();
 
     // loads font data for all fonts of a given family
@@ -166,6 +169,7 @@ public:
     gfxFontInfoLoader() :
         mInterval(0), mState(stateInitial)
     {
+        MOZ_COUNT_CTOR(gfxFontInfoLoader);
     }
 
     virtual ~gfxFontInfoLoader();
@@ -188,14 +192,14 @@ protected:
         NS_DECL_ISUPPORTS
         NS_DECL_NSIOBSERVER
 
-        ShutdownObserver(gfxFontInfoLoader *aLoader)
+        explicit ShutdownObserver(gfxFontInfoLoader *aLoader)
             : mLoader(aLoader)
         { }
 
+    protected:
         virtual ~ShutdownObserver()
         { }
 
-    protected:
         gfxFontInfoLoader *mLoader;
     };
 

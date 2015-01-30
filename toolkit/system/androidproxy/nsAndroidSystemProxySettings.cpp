@@ -26,10 +26,10 @@ public:
     nsresult Init();
 
 private:
-    ~nsAndroidSystemProxySettings() {};
+    virtual ~nsAndroidSystemProxySettings() {}
 };
 
-NS_IMPL_ISUPPORTS1(nsAndroidSystemProxySettings, nsISystemProxySettings)
+NS_IMPL_ISUPPORTS(nsAndroidSystemProxySettings, nsISystemProxySettings)
 
 NS_IMETHODIMP
 nsAndroidSystemProxySettings::GetMainThreadOnly(bool *aMainThreadOnly)

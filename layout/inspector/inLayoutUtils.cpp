@@ -13,7 +13,10 @@
 #include "nsIDocShell.h"
 #include "nsIPresShell.h"
 #include "nsPresContext.h"
+#include "mozilla/EventStateManager.h"
 #include "mozilla/dom/Element.h"
+
+using namespace mozilla;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -49,7 +52,7 @@ inLayoutUtils::GetFrameFor(nsIDOMElement* aElement)
   return content->GetPrimaryFrame();
 }
 
-nsEventStateManager*
+EventStateManager*
 inLayoutUtils::GetEventStateManagerFor(nsIDOMElement *aElement)
 {
   NS_PRECONDITION(aElement, "Passing in a null element is bad");
@@ -75,7 +78,7 @@ inLayoutUtils::GetSubDocumentFor(nsIDOMNode* aNode)
 {
   nsCOMPtr<nsIContent> content = do_QueryInterface(aNode);
   if (content) {
-    nsCOMPtr<nsIDocument> doc = content->GetDocument();
+    nsCOMPtr<nsIDocument> doc = content->GetComposedDoc();
     if (doc) {
       nsCOMPtr<nsIDOMDocument> domdoc(do_QueryInterface(doc->GetSubDocumentFor(content)));
 

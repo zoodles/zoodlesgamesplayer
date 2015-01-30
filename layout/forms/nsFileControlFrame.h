@@ -14,18 +14,18 @@
 #include "nsCOMPtr.h"
 
 class nsTextControlFrame;
-class nsIDOMDragEvent;
+class nsIDOMDataTransfer;
 
 class nsFileControlFrame : public nsBlockFrame,
                            public nsIFormControlFrame,
                            public nsIAnonymousContentCreator
 {
 public:
-  nsFileControlFrame(nsStyleContext* aContext);
+  explicit nsFileControlFrame(nsStyleContext* aContext);
 
-  virtual void Init(nsIContent* aContent,
-                    nsIFrame*   aParent,
-                    nsIFrame*   aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
 
   virtual void BuildDisplayList(nsDisplayListBuilder*   aBuilder,
                                 const nsRect&           aDirtyRect,
@@ -38,7 +38,7 @@ public:
   virtual nsresult SetFormProperty(nsIAtom* aName, const nsAString& aValue) MOZ_OVERRIDE;
   virtual void SetFocus(bool aOn, bool aRepaint) MOZ_OVERRIDE;
 
-  virtual nscoord GetMinWidth(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
+  virtual nscoord GetMinISize(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
 
   virtual void DestroyFrom(nsIFrame* aDestructRoot) MOZ_OVERRIDE;
 
@@ -49,7 +49,7 @@ public:
   virtual nsresult AttributeChanged(int32_t         aNameSpaceID,
                                     nsIAtom*        aAttribute,
                                     int32_t         aModType) MOZ_OVERRIDE;
-  virtual void ContentStatesChanged(nsEventStates aStates) MOZ_OVERRIDE;
+  virtual void ContentStatesChanged(mozilla::EventStates aStates) MOZ_OVERRIDE;
   virtual bool IsLeaf() const MOZ_OVERRIDE
   {
     return true;
@@ -57,7 +57,7 @@ public:
 
   // nsIAnonymousContentCreator
   virtual nsresult CreateAnonymousContent(nsTArray<ContentInfo>& aElements) MOZ_OVERRIDE;
-  virtual void AppendAnonymousContentTo(nsBaseContentList& aElements,
+  virtual void AppendAnonymousContentTo(nsTArray<nsIContent*>& aElements,
                                         uint32_t aFilter) MOZ_OVERRIDE;
 
 #ifdef ACCESSIBILITY
@@ -74,16 +74,17 @@ protected:
   public:
     NS_DECL_ISUPPORTS
 
-    MouseListener(nsFileControlFrame* aFrame)
+    explicit MouseListener(nsFileControlFrame* aFrame)
      : mFrame(aFrame)
     {}
-    virtual ~MouseListener() {}
 
     void ForgetFrame() {
       mFrame = nullptr;
     }
 
   protected:
+    virtual ~MouseListener() {}
+
     nsFileControlFrame* mFrame;
   };
 
@@ -92,7 +93,7 @@ protected:
   class SyncDisabledStateEvent : public nsRunnable
   {
   public:
-    SyncDisabledStateEvent(nsFileControlFrame* aFrame)
+    explicit SyncDisabledStateEvent(nsFileControlFrame* aFrame)
       : mFrame(aFrame)
     {}
 
@@ -110,13 +111,14 @@ protected:
 
   class DnDListener: public MouseListener {
   public:
-    DnDListener(nsFileControlFrame* aFrame)
+    explicit DnDListener(nsFileControlFrame* aFrame)
       : MouseListener(aFrame)
     {}
 
     NS_DECL_NSIDOMEVENTLISTENER
 
-    static bool IsValidDropData(nsIDOMDragEvent* aEvent);
+    static bool IsValidDropData(nsIDOMDataTransfer* aDOMDataTransfer);
+    static bool CanDropTheseFiles(nsIDOMDataTransfer* aDOMDataTransfer, bool aSupportsMultiple);
   };
 
   virtual bool IsFrameOfType(uint32_t aFlags) const MOZ_OVERRIDE

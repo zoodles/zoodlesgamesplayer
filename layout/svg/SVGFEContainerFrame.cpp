@@ -22,7 +22,7 @@ class SVGFEContainerFrame : public SVGFEContainerFrameBase
   friend nsIFrame*
   NS_NewSVGFEContainerFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
 protected:
-  SVGFEContainerFrame(nsStyleContext* aContext)
+  explicit SVGFEContainerFrame(nsStyleContext* aContext)
     : SVGFEContainerFrameBase(aContext)
   {
     AddStateBits(NS_FRAME_SVG_LAYOUT | NS_FRAME_IS_NONDISPLAY);
@@ -45,9 +45,9 @@ public:
 #endif
 
 #ifdef DEBUG
-  virtual void Init(nsIContent* aContent,
-                    nsIFrame*   aParent,
-                    nsIFrame*   aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
 #endif
   /**
    * Get the "type" of the frame
@@ -76,9 +76,9 @@ NS_IMPL_FRAMEARENA_HELPERS(SVGFEContainerFrame)
 
 #ifdef DEBUG
 void
-SVGFEContainerFrame::Init(nsIContent* aContent,
-                          nsIFrame* aParent,
-                          nsIFrame* aPrevInFlow)
+SVGFEContainerFrame::Init(nsIContent*       aContent,
+                          nsContainerFrame* aParent,
+                          nsIFrame*         aPrevInFlow)
 {
   NS_ASSERTION(aContent->IsNodeOfType(nsINode::eFILTER),
                "Trying to construct an SVGFEContainerFrame for a "
@@ -101,7 +101,9 @@ SVGFEContainerFrame::AttributeChanged(int32_t  aNameSpaceID,
 {
   nsSVGFE *element = static_cast<nsSVGFE*>(mContent);
   if (element->AttributeAffectsRendering(aNameSpaceID, aAttribute)) {
-    nsSVGEffects::InvalidateRenderingObservers(this);
+    MOZ_ASSERT(GetParent()->GetType() == nsGkAtoms::svgFilterFrame,
+               "Observers observe the filter, so that's what we must invalidate");
+    nsSVGEffects::InvalidateDirectRenderingObservers(GetParent());
   }
 
   return SVGFEContainerFrameBase::AttributeChanged(aNameSpaceID,

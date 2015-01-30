@@ -40,10 +40,13 @@
 #endif
 
 #include <stdint.h>
+#include <math.h>
+#include "MainThreadUtils.h"
 #include "mozilla/unused.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/Mutex.h"
 #include "PlatformMacros.h"
+#include "ThreadResponsiveness.h"
 #include "v8-support.h"
 #include <vector>
 
@@ -53,18 +56,24 @@
 
 #define ASSERT(a) MOZ_ASSERT(a)
 
+bool moz_profiler_verbose();
+
 #ifdef ANDROID
 # if defined(__arm__) || defined(__thumb__)
 #  define ENABLE_SPS_LEAF_DATA
 #  define ENABLE_ARM_LR_SAVING
 # endif
 # define LOG(text) \
-    __android_log_write(ANDROID_LOG_ERROR, "Profiler", text)
+    do { if (moz_profiler_verbose()) \
+           __android_log_write(ANDROID_LOG_ERROR, "Profiler", text); \
+    } while (0)
 # define LOGF(format, ...) \
-    __android_log_print(ANDROID_LOG_ERROR, "Profiler", format, __VA_ARGS__)
+    do { if (moz_profiler_verbose()) \
+           __android_log_print(ANDROID_LOG_ERROR, "Profiler", format, \
+                               __VA_ARGS__); \
+    } while (0)
 
 #else
-  extern bool moz_profiler_verbose();
 # define LOG(text) \
     do { if (moz_profiler_verbose()) fprintf(stderr, "Profiler: %s\n", text); \
     } while (0)
@@ -240,7 +249,7 @@ void set_tls_stack_top(void* stackTop);
 // (if used for profiling) the program counter and stack pointer for
 // the thread that created it.
 
-class PseudoStack;
+struct PseudoStack;
 class ThreadProfile;
 
 // TickSample captures the information collected for each sample.
@@ -255,7 +264,10 @@ class TickSample {
         lr(NULL),
 #endif
         context(NULL),
-        isSamplingCurrentThread(false) {}
+        isSamplingCurrentThread(false),
+        threadProfile(nullptr),
+        rssMemory(0),
+        ussMemory(0) {}
 
   void PopulateContext(void* aContext);
 
@@ -270,6 +282,8 @@ class TickSample {
   bool    isSamplingCurrentThread;
   ThreadProfile* threadProfile;
   mozilla::TimeStamp timestamp;
+  int64_t rssMemory;
+  int64_t ussMemory;
 };
 
 class ThreadInfo;
@@ -346,6 +360,20 @@ class Sampler {
   static void SetActiveSampler(TableTicker* sampler) { sActiveSampler = sampler; }
 
   static mozilla::Mutex* sRegisteredThreadsMutex;
+
+  static bool CanNotifyObservers() {
+#ifdef MOZ_WIDGET_GONK
+    // We use profile.sh on b2g to manually select threads and options per process.
+    return false;
+#elif defined(SPS_OS_android) && !defined(MOZ_WIDGET_GONK)
+    // Android ANR reporter uses the profiler off the main thread
+    return NS_IsMainThread();
+#else
+    MOZ_ASSERT(NS_IsMainThread());
+    return true;
+#endif
+  }
+
  protected:
   static std::vector<ThreadInfo*>* sRegisteredThreads;
   static TableTicker* sActiveSampler;
@@ -371,14 +399,7 @@ class Sampler {
 
 class ThreadInfo {
  public:
-  ThreadInfo(const char* aName, int aThreadId, bool aIsMainThread, PseudoStack* aPseudoStack, void* aStackTop)
-    : mName(strdup(aName))
-    , mThreadId(aThreadId)
-    , mIsMainThread(aIsMainThread)
-    , mPseudoStack(aPseudoStack)
-    , mPlatformData(Sampler::AllocPlatformData(aThreadId))
-    , mProfile(NULL)
-    , mStackTop(aStackTop) {}
+  ThreadInfo(const char* aName, int aThreadId, bool aIsMainThread, PseudoStack* aPseudoStack, void* aStackTop);
 
   virtual ~ThreadInfo();
 
@@ -387,12 +408,24 @@ class ThreadInfo {
 
   bool IsMainThread() const { return mIsMainThread; }
   PseudoStack* Stack() const { return mPseudoStack; }
-  
+
   void SetProfile(ThreadProfile* aProfile) { mProfile = aProfile; }
   ThreadProfile* Profile() const { return mProfile; }
 
   PlatformData* GetPlatformData() const { return mPlatformData; }
   void* StackTop() const { return mStackTop; }
+
+  virtual void SetPendingDelete();
+  bool IsPendingDelete() const { return mPendingDelete; }
+
+#ifdef MOZ_NUWA_PROCESS
+  void SetThreadId(int aThreadId) { mThreadId = aThreadId; }
+#endif
+
+  /**
+   * May be null for the main thread if the profiler was started during startup
+   */
+  nsIThread* GetThread() const { return mThread.get(); }
  private:
   char* mName;
   int mThreadId;
@@ -401,6 +434,17 @@ class ThreadInfo {
   PlatformData* mPlatformData;
   ThreadProfile* mProfile;
   void* const mStackTop;
+  nsCOMPtr<nsIThread> mThread;
+  bool mPendingDelete;
+};
+
+// Just like ThreadInfo, but owns a reference to the PseudoStack.
+class StackOwningThreadInfo : public ThreadInfo {
+ public:
+  StackOwningThreadInfo(const char* aName, int aThreadId, bool aIsMainThread, PseudoStack* aPseudoStack, void* aStackTop);
+  virtual ~StackOwningThreadInfo();
+
+  virtual void SetPendingDelete();
 };
 
 #endif /* ndef TOOLS_PLATFORM_H_ */

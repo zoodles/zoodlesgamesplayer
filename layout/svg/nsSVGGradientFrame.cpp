@@ -27,8 +27,8 @@ using namespace mozilla::dom;
 class MOZ_STACK_CLASS nsSVGGradientFrame::AutoGradientReferencer
 {
 public:
-  AutoGradientReferencer(nsSVGGradientFrame *aFrame
-                         MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
+  explicit AutoGradientReferencer(nsSVGGradientFrame *aFrame
+                                  MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
     : mFrame(aFrame)
   {
     MOZ_GUARD_OBJECT_NOTIFIER_INIT;
@@ -209,11 +209,12 @@ static void GetStopInformation(nsIFrame* aStopFrame,
 }
 
 already_AddRefed<gfxPattern>
-nsSVGGradientFrame::GetPaintServerPattern(nsIFrame *aSource,
+nsSVGGradientFrame::GetPaintServerPattern(nsIFrame* aSource,
+                                          const DrawTarget* aDrawTarget,
                                           const gfxMatrix& aContextMatrix,
                                           nsStyleSVGPaint nsStyleSVG::*aFillOrStroke,
                                           float aGraphicOpacity,
-                                          const gfxRect *aOverrideBounds)
+                                          const gfxRect* aOverrideBounds)
 {
   uint16_t gradientUnits = GetGradientUnits();
   MOZ_ASSERT(gradientUnits == SVG_UNIT_TYPE_OBJECTBOUNDINGBOX ||
@@ -262,12 +263,17 @@ nsSVGGradientFrame::GetPaintServerPattern(nsIFrame *aSource,
     return nullptr;
   }
 
-  // revert the vector effect transform so that the gradient appears unchanged
+  // revert any vector effect transform so that the gradient appears unchanged
   if (aFillOrStroke == &nsStyleSVG::mStroke) {
-    patternMatrix.Multiply(nsSVGUtils::GetStrokeTransform(aSource).Invert());
+    gfxMatrix userToOuterSVG;
+    if (nsSVGUtils::GetNonScalingStrokeTransform(aSource, &userToOuterSVG)) {
+      patternMatrix *= userToOuterSVG;
+    }
   }
 
-  patternMatrix.Invert();
+  if (!patternMatrix.Invert()) {
+    return nullptr;
+  }
 
   nsRefPtr<gfxPattern> gradient = CreateGradient();
   if (!gradient || gradient->CairoStatus())
@@ -400,9 +406,9 @@ nsSVGGradientFrame::GetStopFrames(nsTArray<nsIFrame*>* aStopFrames)
 
 #ifdef DEBUG
 void
-nsSVGLinearGradientFrame::Init(nsIContent* aContent,
-                               nsIFrame* aParent,
-                               nsIFrame* aPrevInFlow)
+nsSVGLinearGradientFrame::Init(nsIContent*       aContent,
+                               nsContainerFrame* aParent,
+                               nsIFrame*         aPrevInFlow)
 {
   NS_ASSERTION(aContent->IsSVG(nsGkAtoms::linearGradient),
                "Content is not an SVG linearGradient");
@@ -509,9 +515,9 @@ nsSVGLinearGradientFrame::CreateGradient()
 
 #ifdef DEBUG
 void
-nsSVGRadialGradientFrame::Init(nsIContent* aContent,
-                               nsIFrame* aParent,
-                               nsIFrame* aPrevInFlow)
+nsSVGRadialGradientFrame::Init(nsIContent*       aContent,
+                               nsContainerFrame* aParent,
+                               nsIFrame*         aPrevInFlow)
 {
   NS_ASSERTION(aContent->IsSVG(nsGkAtoms::radialGradient),
                "Content is not an SVG radialGradient");

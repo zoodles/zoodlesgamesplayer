@@ -53,13 +53,14 @@ IdpChannel.prototype = {
 
   _sandboxReady: function(aCallback, aSandbox) {
     // Inject a message channel into the subframe.
-    this.messagechannel = new aSandbox._frame.contentWindow.MessageChannel();
     try {
+      this.messagechannel = new aSandbox._frame.contentWindow.MessageChannel();
       Object.defineProperty(
         aSandbox._frame.contentWindow.wrappedJSObject,
         "rtcwebIdentityPort",
         {
-          value: this.messagechannel.port2
+          value: this.messagechannel.port2,
+          configurable: true
         }
       );
     } catch (e) {
@@ -254,13 +255,13 @@ IdpProxy.prototype = {
 
     // dump a message of type "ERROR" in response to all outstanding
     // messages to the IdP
-    let error = { type: "ERROR", message: "IdP closed" };
+    let error = { type: "ERROR", error: "IdP closed" };
     Object.keys(trackingCopy).forEach(function(k) {
-      this.trackingCopy[k](error);
-    }, this);
+      trackingCopy[k](error);
+    });
     pendingCopy.forEach(function(p) {
       p.callback(error);
-    }, this);
+    });
   },
 
   toString: function() {

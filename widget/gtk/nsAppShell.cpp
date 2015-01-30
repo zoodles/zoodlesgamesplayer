@@ -16,6 +16,11 @@
 #include "prenv.h"
 #include "mozilla/HangMonitor.h"
 #include "mozilla/unused.h"
+#include "GeckoProfiler.h"
+#include "nsIPowerManagerService.h"
+#ifdef MOZ_ENABLE_DBUS
+#include "WakeLockListener.h"
+#endif
 
 using mozilla::unused;
 
@@ -35,7 +40,9 @@ static gint
 PollWrapper(GPollFD *ufds, guint nfsd, gint timeout_)
 {
     mozilla::HangMonitor::Suspend();
+    profiler_sleep_start();
     gint result = (*sPollFunc)(ufds, nfsd, timeout_);
+    profiler_sleep_end();
     mozilla::HangMonitor::NotifyActivity();
     return result;
 }
@@ -77,6 +84,17 @@ nsAppShell::Init()
         gWidgetDragLog = PR_NewLogModule("WidgetDrag");
     if (!gWidgetDrawLog)
         gWidgetDrawLog = PR_NewLogModule("WidgetDraw");
+#endif
+
+#ifdef MOZ_ENABLE_DBUS
+    nsCOMPtr<nsIPowerManagerService> powerManagerService =
+      do_GetService(POWERMANAGERSERVICE_CONTRACTID);
+
+    if (powerManagerService) {
+        powerManagerService->AddWakeLockListener(WakeLockListener::GetSingleton());
+    } else {
+        NS_WARNING("Failed to retrieve PowerManagerService, wakelocks will be broken!");
+    }
 #endif
 
     if (!sPollFunc) {

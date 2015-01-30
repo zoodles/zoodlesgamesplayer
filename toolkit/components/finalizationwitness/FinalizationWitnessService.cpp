@@ -12,7 +12,6 @@
 
 #include "mozilla/Scoped.h"
 #include "mozilla/Services.h"
-#include "mozilla/NullPtr.h"
 #include "nsIObserverService.h"
 #include "nsThreadUtils.h"
 
@@ -35,7 +34,7 @@ class FinalizationEvent MOZ_FINAL: public nsRunnable
 {
 public:
   FinalizationEvent(const char* aTopic,
-                  const jschar* aValue)
+                  const char16_t* aValue)
     : mTopic(aTopic)
     , mValue(aValue)
   { }
@@ -115,13 +114,13 @@ void Finalize(JSFreeOp *fop, JSObject *objSelf)
 static const JSClass sWitnessClass = {
   "FinalizationWitness",
   JSCLASS_HAS_RESERVED_SLOTS(WITNESS_INSTANCES_SLOTS),
-  JS_PropertyStub /* addProperty */,
-  JS_DeletePropertyStub /* delProperty */,
-  JS_PropertyStub /* getProperty */,
-  JS_StrictPropertyStub /* setProperty */,
-  JS_EnumerateStub /* enumerate */,
-  JS_ResolveStub /* resolve */,
-  JS_ConvertStub /* convert */,
+  nullptr /* addProperty */,
+  nullptr /* delProperty */,
+  nullptr /* getProperty */,
+  nullptr /* setProperty */,
+  nullptr /* enumerate */,
+  nullptr /* resolve */,
+  nullptr /* convert */,
   Finalize /* finalize */
 };
 
@@ -171,7 +170,7 @@ static const JSFunctionSpec sWitnessClassFunctions[] = {
 
 }
 
-NS_IMPL_ISUPPORTS1(FinalizationWitnessService, nsIFinalizationWitnessService)
+NS_IMPL_ISUPPORTS(FinalizationWitnessService, nsIFinalizationWitnessService)
 
 /**
  * Create a new Finalization Witness.

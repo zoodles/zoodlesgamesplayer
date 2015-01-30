@@ -22,6 +22,7 @@
 #include "nsWrapperCache.h"
 #include "xpcexception.h"
 #include "nsString.h"
+#include "mozilla/dom/BindingDeclarations.h"
 
 class nsIStackFrame;
 class nsString;
@@ -32,7 +33,11 @@ NS_GetNameAndMessageForDOMNSResult(nsresult aNSResult, nsACString& aName,
                                    uint16_t* aCode = nullptr);
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
+
+class GlobalObject;
 
 #define MOZILLA_EXCEPTION_IID \
 { 0x55eda557, 0xeba0, 0x4fe3, \
@@ -58,7 +63,7 @@ public:
   void StowJSVal(JS::Value& aVp);
 
   // WebIDL API
-  virtual JSObject* WrapObject(JSContext* cx, JS::Handle<JSObject*> scope)
+  virtual JSObject* WrapObject(JSContext* cx)
     MOZ_OVERRIDE;
 
   nsISupports* GetParentObject() const { return nullptr; }
@@ -69,7 +74,8 @@ public:
 
   void GetName(nsString& retval);
 
-  void GetFilename(nsString& retval);
+  // The XPCOM GetFilename does the right thing.  It might throw, but we want to
+  // return an empty filename in that case anyway, instead of throwing.
 
   uint32_t LineNumber() const;
 
@@ -80,6 +86,8 @@ public:
   already_AddRefed<nsISupports> GetInner() const;
 
   already_AddRefed<nsISupports> GetData() const;
+
+  void GetStack(nsAString& aStack, ErrorResult& aRv) const;
 
   void Stringify(nsString& retval);
 
@@ -100,7 +108,7 @@ protected:
   nsCString       mName;
   nsCOMPtr<nsIStackFrame> mLocation;
   nsCOMPtr<nsISupports> mData;
-  nsCString       mFilename;
+  nsString        mFilename;
   int             mLineNumber;
   nsCOMPtr<nsIException> mInner;
   bool            mInitialized;
@@ -128,8 +136,14 @@ public:
   NS_IMETHOD ToString(nsACString& aReturn) MOZ_OVERRIDE;
 
   // nsWrapperCache overrides
-  virtual JSObject* WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+  virtual JSObject* WrapObject(JSContext* aCx)
     MOZ_OVERRIDE;
+
+  static already_AddRefed<DOMException>
+  Constructor(GlobalObject& /* unused */,
+              const nsAString& aMessage,
+              const Optional<nsAString>& aName,
+              ErrorResult& aError);
 
   uint16_t Code() const {
     return mCode;
@@ -141,6 +155,15 @@ public:
 
   static already_AddRefed<DOMException>
   Create(nsresult aRv);
+
+  // Sanitize() is a workaround for the fact that DOMExceptions can leak stack
+  // information for the first stackframe to callers that should not have access
+  // to it.  To prevent this, we check whether aCx subsumes our first stackframe
+  // and if not hand out a JS::Value for a clone of ourselves.  Otherwise we
+  // hand out a JS::Value for ourselves.
+  //
+  // If the return value is false, an exception was thrown on aCx.
+  bool Sanitize(JSContext* aCx, JS::MutableHandle<JS::Value> aSanitizedValue);
 
 protected:
 

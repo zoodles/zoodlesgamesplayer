@@ -1,4 +1,4 @@
-/* -*- tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -6,78 +6,19 @@
 
 "use strict";
 
+const { Cc, Ci, Cu } = require("chrome");
+const Services = require("Services");
+const { ActorPool, appendExtraActors, createExtraActors } = require("devtools/server/actors/common");
+const { DebuggerServer } = require("devtools/server/main");
+const makeDebugger = require("./utils/make-debugger");
+
+loader.lazyRequireGetter(this, "StyleSheetActor", "devtools/server/actors/stylesheets", true);
+
+loader.lazyGetter(this, "ppmm", () => {
+  return Cc["@mozilla.org/parentprocessmessagemanager;1"].getService(Ci.nsIMessageBroadcaster);
+});
+
 /* Root actor for the remote debugging protocol. */
-
-/**
- * Methods shared between RootActor and BrowserTabActor.
- */
-
-/**
- * Populate |this._extraActors| as specified by |aFactories|, reusing whatever
- * actors are already there. Add all actors in the final extra actors table to
- * |aPool|.
- *
- * The root actor and the tab actor use this to instantiate actors that other
- * parts of the browser have specified with DebuggerServer.addTabActor antd
- * DebuggerServer.addGlobalActor.
- *
- * @param aFactories
- *     An object whose own property names are the names of properties to add to
- *     some reply packet (say, a tab actor grip or the "listTabs" response
- *     form), and whose own property values are actor constructor functions, as
- *     documented for addTabActor and addGlobalActor.
- *
- * @param this
- *     The BrowserRootActor or BrowserTabActor with which the new actors will
- *     be associated. It should support whatever API the |aFactories|
- *     constructor functions might be interested in, as it is passed to them.
- *     For the sake of CommonCreateExtraActors itself, it should have at least
- *     the following properties:
- *
- *     - _extraActors
- *        An object whose own property names are factory table (and packet)
- *        property names, and whose values are no-argument actor constructors,
- *        of the sort that one can add to an ActorPool.
- *
- *     - conn
- *        The DebuggerServerConnection in which the new actors will participate.
- *
- *     - actorID
- *        The actor's name, for use as the new actors' parentID.
- */
-function CommonCreateExtraActors(aFactories, aPool) {
-  // Walk over global actors added by extensions.
-  for (let name in aFactories) {
-    let actor = this._extraActors[name];
-    if (!actor) {
-      actor = aFactories[name].bind(null, this.conn, this);
-      actor.prototype = aFactories[name].prototype;
-      actor.parentID = this.actorID;
-      this._extraActors[name] = actor;
-    }
-    aPool.addActor(actor);
-  }
-}
-
-/**
- * Append the extra actors in |this._extraActors|, constructed by a prior call
- * to CommonCreateExtraActors, to |aObject|.
- *
- * @param aObject
- *     The object to which the extra actors should be added, under the
- *     property names given in the |aFactories| table passed to
- *     CommonCreateExtraActors.
- *
- * @param this
- *     The BrowserRootActor or BrowserTabActor whose |_extraActors| table we
- *     should use; see above.
- */
-function CommonAppendExtraActors(aObject) {
-  for (let name in this._extraActors) {
-    let actor = this._extraActors[name];
-    aObject[name] = actor.actorID;
-  }
-}
 
 /**
  * Create a remote debugging protocol root actor.
@@ -157,11 +98,70 @@ function RootActor(aConnection, aParameters) {
   this._onTabListChanged = this.onTabListChanged.bind(this);
   this._onAddonListChanged = this.onAddonListChanged.bind(this);
   this._extraActors = {};
+
+  // Map of DOM stylesheets to StyleSheetActors
+  this._styleSheetActors = new Map();
+
+  // This creates a Debugger instance for chrome debugging all globals.
+  this.makeDebugger = makeDebugger.bind(null, {
+    findDebuggees: dbg => dbg.findAllGlobals(),
+    shouldAddNewGlobalAsDebuggee: () => true
+  });
 }
 
 RootActor.prototype = {
   constructor: RootActor,
   applicationType: "browser",
+
+  traits: {
+    sources: true,
+    // Whether the inspector actor allows modifying outer HTML.
+    editOuterHTML: true,
+    // Whether the inspector actor allows modifying innerHTML and inserting
+    // adjacent HTML.
+    pasteHTML: true,
+    // Whether the server-side highlighter actor exists and can be used to
+    // remotely highlight nodes (see server/actors/highlighter.js)
+    highlightable: true,
+    // Which custom highlighter does the server-side highlighter actor supports?
+    // (see server/actors/highlighter.js)
+    customHighlighters: [
+      "BoxModelHighlighter",
+      "CssTransformHighlighter",
+      "SelectorHighlighter",
+      "RectHighlighter"
+    ],
+    // Whether the inspector actor implements the getImageDataFromURL
+    // method that returns data-uris for image URLs. This is used for image
+    // tooltips for instance
+    urlToImageDataResolver: true,
+    networkMonitor: true,
+    // Whether the storage inspector actor to inspect cookies, etc.
+    storageInspector: true,
+    // Whether storage inspector is read only
+    storageInspectorReadOnly: true,
+    // Whether conditional breakpoints are supported
+    conditionalBreakpoints: true,
+    // Whether the server supports full source actors (breakpoints on
+    // eval scripts, etc)
+    debuggerSourceActors: true,
+    bulk: true,
+    // Whether the style rule actor implements the modifySelector method
+    // that modifies the rule's selector
+    selectorEditable: true,
+    // Whether the page style actor implements the addNewRule method that
+    // adds new rules to the page
+    addNewRule: true,
+    // Whether the dom node actor implements the getUniqueSelector method
+    getUniqueSelector: true,
+    // Whether the debugger server supports
+    // blackboxing/pretty-printing (not supported in Fever Dream yet)
+    noBlackBoxing: false,
+    noPrettyPrinting: false,
+    // Whether the page style actor implements the getUsedFontFaces method
+    // that returns the font faces used on a node
+    getUsedFontFaces: true
+  },
 
   /**
    * Return a 'hello' packet as specified by the Remote Debugging Protocol.
@@ -172,24 +172,7 @@ RootActor.prototype = {
       applicationType: this.applicationType,
       /* This is not in the spec, but it's used by tests. */
       testConnectionPrefix: this.conn.prefix,
-      traits: {
-        sources: true,
-        editOuterHTML: true,
-        // Wether the server-side highlighter actor exists and can be used to
-        // remotely highlight nodes (see server/actors/highlighter.js)
-        highlightable: true,
-        // Wether the inspector actor implements the getImageDataFromURL
-        // method that returns data-uris for image URLs. This is used for image
-        // tooltips for instance
-        urlToImageDataResolver: true,
-        networkMonitor: true,
-        // Wether the storage inspector actor to inspect cookies, etc.
-        storageInspector: true,
-        // Wether storage inspector is read only
-        storageInspectorReadOnly: true,
-        // Wether conditional breakpoints are supported
-        conditionalBreakpoints: true
-      }
+      traits: this.traits
     };
   },
 
@@ -201,7 +184,17 @@ RootActor.prototype = {
   /**
    * The (chrome) window, for use by child actors
    */
-  get window() Services.wm.getMostRecentWindow(DebuggerServer.chromeWindowType),
+  get window() isWorker ? null : Services.wm.getMostRecentWindow(DebuggerServer.chromeWindowType),
+
+  /**
+   * The list of all windows
+   */
+  get windows() {
+    return this.docShells.map(docShell => {
+      return docShell.QueryInterface(Ci.nsIInterfaceRequestor)
+                     .getInterface(Ci.nsIDOMWindow);
+    });
+  },
 
   /**
    * URL of the chrome window.
@@ -209,12 +202,36 @@ RootActor.prototype = {
   get url() { return this.window ? this.window.document.location.href : null; },
 
   /**
+   * The top level window's docshell
+   */
+  get docShell() {
+    return this.window
+      .QueryInterface(Ci.nsIInterfaceRequestor)
+      .getInterface(Ci.nsIDocShell);
+  },
+
+  /**
+   * The list of all docshells
+   */
+  get docShells() {
+    let docShellsEnum = this.docShell.getDocShellEnumerator(
+      Ci.nsIDocShellTreeItem.typeAll,
+      Ci.nsIDocShell.ENUMERATE_FORWARDS
+    );
+
+    let docShells = [];
+    while (docShellsEnum.hasMoreElements()) {
+      docShells.push(docShellsEnum.getNext());
+    }
+
+    return docShells;
+  },
+
+  /**
    * Getter for the best nsIWebProgress for to watching this window.
    */
   get webProgress() {
-    return this.window
-      .QueryInterface(Ci.nsIInterfaceRequestor)
-      .getInterface(Ci.nsIDocShell)
+    return this.docShell
       .QueryInterface(Ci.nsIInterfaceRequestor)
       .getInterface(Ci.nsIWebProgress);
   },
@@ -234,6 +251,8 @@ RootActor.prototype = {
       this._parameters.onShutdown();
     }
     this._extraActors = null;
+    this._styleSheetActors.clear();
+    this._styleSheetActors = null;
   },
 
   /* The 'listTabs' request and the 'tabListChanged' notification. */
@@ -268,14 +287,12 @@ RootActor.prototype = {
         newActorPool.addActor(tabActor);
         tabActorList.push(tabActor);
       }
-
       /* DebuggerServer.addGlobalActor support: create actors. */
       if (!this._globalActorPool) {
         this._globalActorPool = new ActorPool(this.conn);
-        this._createExtraActors(this._parameters.globalActorFactories, this._globalActorPool);
         this.conn.addActorPool(this._globalActorPool);
       }
-
+      this._createExtraActors(this._parameters.globalActorFactories, this._globalActorPool);
       /*
        * Drop the old actorID -> actor map. Actors that still mattered were
        * added to the new map; others will go away.
@@ -350,18 +367,44 @@ RootActor.prototype = {
     this._parameters.addonList.onListChanged = null;
   },
 
+  onListProcesses: function () {
+    let processes = [];
+    for (let i = 0; i < ppmm.childCount; i++) {
+      processes.push({
+        id: i, // XXX: may not be a perfect id, but process message manager doesn't expose anything...
+        parent: i == 0, // XXX Weak, but appear to be stable
+        tabCount: undefined, // TODO: exposes process message manager on frameloaders in order to compute this
+      });
+    }
+    return { processes: processes };
+  },
+
+  onAttachProcess: function (aRequest) {
+    let mm = ppmm.getChildAt(aRequest.id);
+    if (!mm) {
+      return { error: "noProcess",
+               message: "There is no process with id '" + aRequest.id + "'." };
+    }
+    return DebuggerServer.connectToContent(this.conn, mm)
+                         .then(form => ({ form: form }));
+  },
+
   /* This is not in the spec, but it's used by tests. */
   onEcho: function (aRequest) {
     /*
      * Request packets are frozen. Copy aRequest, so that
      * DebuggerServerConnection.onPacket can attach a 'from' property.
      */
-    return JSON.parse(JSON.stringify(aRequest));
+    return Cu.cloneInto(aRequest, {});
+  },
+
+  onProtocolDescription: function () {
+    return require("devtools/server/protocol").dumpProtocolSpec();
   },
 
   /* Support for DebuggerServer.addGlobalActor. */
-  _createExtraActors: CommonCreateExtraActors,
-  _appendExtraActors: CommonAppendExtraActors,
+  _createExtraActors: createExtraActors,
+  _appendExtraActors: appendExtraActors,
 
   /* ThreadActor hooks. */
 
@@ -393,11 +436,59 @@ RootActor.prototype = {
       windowUtils.resumeTimeouts();
       windowUtils.suppressEventHandling(false);
     }
-  }
+  },
+
+  /**
+   * Create or return the StyleSheetActor for a style sheet. This method
+   * is here because the Style Editor and Inspector share style sheet actors.
+   *
+   * @param DOMStyleSheet styleSheet
+   *        The style sheet to create an actor for.
+   * @return StyleSheetActor actor
+   *         The actor for this style sheet.
+   *
+   */
+  createStyleSheetActor: function(styleSheet) {
+    if (this._styleSheetActors.has(styleSheet)) {
+      return this._styleSheetActors.get(styleSheet);
+    }
+    let actor = new StyleSheetActor(styleSheet, this);
+    this._styleSheetActors.set(styleSheet, actor);
+
+    this._globalActorPool.addActor(actor);
+
+    return actor;
+  },
+
+  /**
+   * Remove the extra actor (added by DebuggerServer.addGlobalActor or
+   * DebuggerServer.addTabActor) name |aName|.
+   */
+  removeActorByName: function(aName) {
+    if (aName in this._extraActors) {
+      const actor = this._extraActors[aName];
+      if (this._globalActorPool.has(actor)) {
+        this._globalActorPool.removeActor(actor);
+      }
+      if (this._tabActorPool) {
+        // Iterate over TabActor instances to also remove tab actors
+        // created during listTabs for each document.
+        this._tabActorPool.forEach(tab => {
+          tab.removeActorByName(aName);
+        });
+      }
+      delete this._extraActors[aName];
+    }
+   }
 };
 
 RootActor.prototype.requestTypes = {
   "listTabs": RootActor.prototype.onListTabs,
   "listAddons": RootActor.prototype.onListAddons,
-  "echo": RootActor.prototype.onEcho
+  "listProcesses": RootActor.prototype.onListProcesses,
+  "attachProcess": RootActor.prototype.onAttachProcess,
+  "echo": RootActor.prototype.onEcho,
+  "protocolDescription": RootActor.prototype.onProtocolDescription
 };
+
+exports.RootActor = RootActor;

@@ -17,6 +17,7 @@
 #include "mozilla/dom/Element.h"
 #include "nsAttrValue.h"
 #include "nsAttrValueInlines.h"
+#include "RestyleManager.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -49,34 +50,43 @@ nsHTMLCSSStyleSheet::~nsHTMLCSSStyleSheet()
   mCachedStyleAttrs.Enumerate(ClearAttrCache, nullptr);
 }
 
-NS_IMPL_ISUPPORTS1(nsHTMLCSSStyleSheet, nsIStyleRuleProcessor)
+NS_IMPL_ISUPPORTS(nsHTMLCSSStyleSheet, nsIStyleRuleProcessor)
 
 /* virtual */ void
 nsHTMLCSSStyleSheet::RulesMatching(ElementRuleProcessorData* aData)
 {
-  Element* element = aData->mElement;
+  ElementRulesMatching(aData->mPresContext, aData->mElement,
+                       aData->mRuleWalker);
+}
 
+void
+nsHTMLCSSStyleSheet::ElementRulesMatching(nsPresContext* aPresContext,
+                                          Element* aElement,
+                                          nsRuleWalker* aRuleWalker)
+{
   // just get the one and only style rule from the content's STYLE attribute
-  css::StyleRule* rule = element->GetInlineStyleRule();
+  css::StyleRule* rule = aElement->GetInlineStyleRule();
   if (rule) {
     rule->RuleMatched();
-    aData->mRuleWalker->Forward(rule);
+    aRuleWalker->Forward(rule);
   }
 
-  rule = element->GetSMILOverrideStyleRule();
+  rule = aElement->GetSMILOverrideStyleRule();
   if (rule) {
-    if (aData->mPresContext->IsProcessingRestyles() &&
-        !aData->mPresContext->IsProcessingAnimationStyleChange()) {
+    RestyleManager* restyleManager = aPresContext->RestyleManager();
+    if (restyleManager->SkipAnimationRules()) {
       // Non-animation restyle -- don't process SMIL override style, because we
       // don't want SMIL animation to trigger new CSS transitions. Instead,
       // request an Animation restyle, so we still get noticed.
-      aData->mPresContext->PresShell()->RestyleForAnimation(element,
-                                                            eRestyle_Self);
+      if (restyleManager->PostAnimationRestyles()) {
+        aPresContext->PresShell()->RestyleForAnimation(aElement,
+          eRestyle_StyleAttribute | eRestyle_ChangeAnimationPhase);
+      }
     } else {
       // Animation restyle (or non-restyle traversal of rules)
       // Now we can walk SMIL overrride style, without triggering transitions.
       rule->RuleMatched();
-      aData->mRuleWalker->Forward(rule);
+      aRuleWalker->Forward(rule);
     }
   }
 }
@@ -136,7 +146,7 @@ nsHTMLCSSStyleSheet::HasAttributeDependentStyle(AttributeRuleProcessorData* aDat
   // Perhaps should check that it's XUL, SVG, (or HTML) namespace, but
   // it doesn't really matter.
   if (aData->mAttrHasChanged && aData->mAttribute == nsGkAtoms::style) {
-    return eRestyle_Self;
+    return eRestyle_StyleAttribute | eRestyle_ChangeAnimationPhase;
   }
 
   return nsRestyleHint(0);
@@ -148,10 +158,26 @@ nsHTMLCSSStyleSheet::MediumFeaturesChanged(nsPresContext* aPresContext)
   return false;
 }
 
+size_t
+SizeOfCachedStyleAttrsEntryExcludingThis(nsStringHashKey::KeyType& aKey,
+                                         MiscContainer* const& aData,
+                                         mozilla::MallocSizeOf aMallocSizeOf,
+                                         void* userArg)
+{
+  // We don't own the MiscContainers so we don't count them. We do care about
+  // the size of the nsString members in the keys though.
+  return aKey.SizeOfExcludingThisIfUnshared(aMallocSizeOf);
+}
+
 /* virtual */ size_t
 nsHTMLCSSStyleSheet::SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const
 {
-  return 0;
+  // The size of mCachedStyleAttrs's mTable member (a PLDHashTable) is
+  // significant in itself, but more significant is the size of the nsString
+  // members of the nsStringHashKeys.
+  return mCachedStyleAttrs.SizeOfExcludingThis(SizeOfCachedStyleAttrsEntryExcludingThis,
+                                               aMallocSizeOf,
+                                               nullptr);
 }
 
 /* virtual */ size_t

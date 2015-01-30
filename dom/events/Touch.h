@@ -45,8 +45,6 @@ public:
         float aRotationAngle,
         float aForce);
 
-  ~Touch();
-
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(Touch)
 
@@ -56,14 +54,13 @@ public:
 
   bool Equals(Touch* aTouch);
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   EventTarget* GetParentObject();
 
   // WebIDL
   int32_t Identifier() const { return mIdentifier; }
-  EventTarget* Target() const;
+  EventTarget* GetTarget() const;
   int32_t ScreenX() const { return mScreenPoint.x; }
   int32_t ScreenY() const { return mScreenPoint.y; }
   int32_t ClientX() const { return mClientPoint.x; }
@@ -87,6 +84,8 @@ public:
   float mRotationAngle;
   float mForce;
 protected:
+  ~Touch();
+
   bool mPointsInitialized;
 };
 

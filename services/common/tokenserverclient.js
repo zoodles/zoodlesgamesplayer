@@ -13,13 +13,13 @@ this.EXPORTED_SYMBOLS = [
 
 const {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
 
-Cu.import("resource://gre/modules/Preferences.jsm");
+Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/Log.jsm");
 Cu.import("resource://services-common/rest.js");
 Cu.import("resource://services-common/utils.js");
 Cu.import("resource://services-common/observers.js");
 
-const Prefs = new Preferences("services.common.tokenserverclient.");
+const PREF_LOG_LEVEL = "services.common.log.logger.tokenserverclient";
 
 /**
  * Represents a TokenServerClient error that occurred on the client.
@@ -140,7 +140,11 @@ TokenServerClientServerError.prototype._toStringFields = function() {
  */
 this.TokenServerClient = function TokenServerClient() {
   this._log = Log.repository.getLogger("Common.TokenServerClient");
-  this._log.level = Log.Level[Prefs.get("logger.level")];
+  let level = "Debug";
+  try {
+    level = Services.prefs.getCharPref(PREF_LOG_LEVEL);
+  } catch (ex) {}
+  this._log.level = Log.Level[level];
 }
 TokenServerClient.prototype = {
   /**
@@ -329,7 +333,8 @@ TokenServerClient.prototype = {
       return;
     }
 
-    // Any response status can have an X-Backoff header.
+    // Any response status can have X-Backoff or X-Weave-Backoff headers.
+    this._maybeNotifyBackoff(response, "x-weave-backoff");
     this._maybeNotifyBackoff(response, "x-backoff");
 
     // The service shouldn't have any 3xx, so we don't need to handle those.
@@ -403,7 +408,7 @@ TokenServerClient.prototype = {
       }
     }
 
-    this._log.debug("Successful token response: " + result.id);
+    this._log.debug("Successful token response");
     cb(null, {
       id:       result.id,
       key:      result.key,
@@ -413,8 +418,20 @@ TokenServerClient.prototype = {
     });
   },
 
+  /*
+   * The prefix used for all notifications sent by this module.  This
+   * allows the handler of notifications to be sure they are handling
+   * notifications for the service they expect.
+   *
+   * If not set, no notifications will be sent.
+   */
+  observerPrefix: null,
+
   // Given an optional header value, notify that a backoff has been requested.
   _maybeNotifyBackoff: function (response, headerName) {
+    if (!this.observerPrefix) {
+      return;
+    }
     let headerVal = response.headers[headerName];
     if (!headerVal) {
       return;
@@ -427,7 +444,7 @@ TokenServerClient.prototype = {
                       headerName + "' header: " + headerVal);
       return;
     }
-    Observers.notify("tokenserver:backoff:interval", backoffInterval);
+    Observers.notify(this.observerPrefix + ":backoff:interval", backoffInterval);
   },
 
   // override points for testing.

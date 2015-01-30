@@ -4,10 +4,17 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsMathMLChar.h"
+
+#include "gfxTextRun.h"
+#include "gfxUtils.h"
+#include "mozilla/gfx/2D.h"
 #include "mozilla/MathAlgorithms.h"
 
 #include "nsCOMPtr.h"
+#include "nsDeviceContext.h"
+#include "nsFontMetrics.h"
 #include "nsIFrame.h"
+#include "nsLayoutUtils.h"
 #include "nsPresContext.h"
 #include "nsStyleContext.h"
 #include "nsUnicharUtils.h"
@@ -18,6 +25,7 @@
 #include "nsIObserverService.h"
 #include "nsIObserver.h"
 #include "nsNetUtil.h"
+#include "nsContentUtils.h"
 
 #include "mozilla/LookAndFeel.h"
 #include "nsCSSRendering.h"
@@ -28,29 +36,91 @@
 #include "nsMathMLOperators.h"
 #include <algorithm>
 
+#include "gfxMathTable.h"
+#include "nsUnicodeScriptCodes.h"
+
 using namespace mozilla;
+using namespace mozilla::gfx;
 
 //#define NOISY_SEARCH 1
 
+// BUG 848725 Drawing failure with stretchy horizontal parenthesis when no fonts
+// are installed. "kMaxScaleFactor" is required to limit the scale for the
+// vertical and horizontal stretchy operators.
+static const float kMaxScaleFactor = 20.0;
+static const float kLargeOpFactor = float(M_SQRT2);
+static const float kIntegralFactor = 2.0;
+
+static void
+NormalizeDefaultFont(nsFont& aFont, float aFontSizeInflation)
+{
+  if (aFont.fontlist.GetDefaultFontType() != eFamily_none) {
+    aFont.fontlist.Append(FontFamilyName(aFont.fontlist.GetDefaultFontType()));
+    aFont.fontlist.SetDefaultFontType(eFamily_none);
+  }
+  aFont.size = NSToCoordRound(aFont.size * aFontSizeInflation);
+}
+
 // -----------------------------------------------------------------------------
 static const nsGlyphCode kNullGlyph = {{{0, 0}}, 0};
-typedef enum {eExtension_base, eExtension_variants, eExtension_parts}
-  nsMathfontPrefExtension;
 
 // -----------------------------------------------------------------------------
 // nsGlyphTable is a class that provides an interface for accessing glyphs
 // of stretchy chars. It acts like a table that stores the variants of bigger
 // sizes (if any) and the partial glyphs needed to build extensible symbols.
-// An instance of nsGlyphTable is associated to one primary font. Extra glyphs
-// can be taken in other additional fonts when stretching certain characters.
-// These supplementary fonts are referred to as "external" fonts to the table.
 //
-// Bigger sizes (if any) of the char can then be retrieved with
-// BigOf(aSize). Partial glyphs can be retrieved with ElementAt()
+// Bigger sizes (if any) of the char can then be retrieved with BigOf(...).
+// Partial glyphs can be retrieved with ElementAt(...).
 //
 // A table consists of "nsGlyphCode"s which are viewed either as Unicode
-// points or as direct glyph indices, depending on the type of the table.
-// XXX The latter is not yet supported.
+// points (for nsPropertiesTable) or as direct glyph indices (for
+// nsOpenTypeTable)
+// -----------------------------------------------------------------------------
+
+class nsGlyphTable {
+public:
+  virtual ~nsGlyphTable() {}
+
+  virtual const FontFamilyName&
+  FontNameFor(const nsGlyphCode& aGlyphCode) const = 0;
+
+  // Getters for the parts
+  virtual nsGlyphCode ElementAt(gfxContext*   aThebesContext,
+                                int32_t       aAppUnitsPerDevPixel,
+                                gfxFontGroup* aFontGroup,
+                                char16_t      aChar,
+                                bool          aVertical,
+                                uint32_t      aPosition) = 0;
+  virtual nsGlyphCode BigOf(gfxContext*   aThebesContext,
+                            int32_t       aAppUnitsPerDevPixel,
+                            gfxFontGroup* aFontGroup,
+                            char16_t      aChar,
+                            bool          aVertical,
+                            uint32_t      aSize) = 0;
+
+  // True if this table contains parts to render this char
+  virtual bool HasPartsOf(gfxContext*   aThebesContext,
+                          int32_t       aAppUnitsPerDevPixel,
+                          gfxFontGroup* aFontGroup,
+                          char16_t      aChar,
+                          bool          aVertical) = 0;
+
+  virtual gfxTextRun* MakeTextRun(gfxContext*        aThebesContext,
+                                  int32_t            aAppUnitsPerDevPixel,
+                                  gfxFontGroup*      aFontGroup,
+                                  const nsGlyphCode& aGlyph) = 0;
+protected:
+  nsGlyphTable() : mCharCache(0) {}
+  // For speedy re-use, we always cache the last data used in the table.
+  // mCharCache is the Unicode point of the last char that was queried in this
+  // table.
+  char16_t mCharCache;
+};
+
+// An instance of nsPropertiesTable is associated with one primary font. Extra
+// glyphs can be taken in other additional fonts when stretching certain
+// characters.
+// These supplementary fonts are referred to as "external" fonts to the table.
 
 // General format of MathFont Property Files from which glyph data are
 // retrieved:
@@ -66,9 +136,6 @@ typedef enum {eExtension_base, eExtension_variants, eExtension_parts}
 // A position that is not relevant to a particular character is indicated there
 // with the UNICODE REPLACEMENT CHARACTER 0xFFFD.
 // -----------------------------------------------------------------------------
-
-#define NS_TABLE_TYPE_UNICODE       0
-#define NS_TABLE_TYPE_GLYPH_INDEX   1
 
 #define NS_TABLE_STATE_ERROR       -1
 #define NS_TABLE_STATE_EMPTY        0
@@ -94,63 +161,83 @@ LoadProperties(const nsString& aName,
   uriStr.Append(aName);
   uriStr.StripWhitespace(); // that may come from aName
   uriStr.AppendLiteral(".properties");
-  return NS_LoadPersistentPropertiesFromURISpec(getter_AddRefs(aProperties), 
-                                                NS_ConvertUTF16toUTF8(uriStr));
+  return NS_LoadPersistentPropertiesFromURISpec(getter_AddRefs(aProperties),
+                                                NS_ConvertUTF16toUTF8(uriStr),
+                                                nsContentUtils::GetSystemPrincipal(),
+                                                nsIContentPolicy::TYPE_OTHER);
 }
 
-// -----------------------------------------------------------------------------
-
-class nsGlyphTable {
+class nsPropertiesTable MOZ_FINAL : public nsGlyphTable {
 public:
-  explicit nsGlyphTable(const nsString& aPrimaryFontName)
-    : mFontName(1), // ensure space for primary font name.
-      mState(NS_TABLE_STATE_EMPTY),
-      mCharCache(0)
+  explicit nsPropertiesTable(const nsString& aPrimaryFontName)
+    : mState(NS_TABLE_STATE_EMPTY)
   {
-    MOZ_COUNT_CTOR(nsGlyphTable);
-    mFontName.AppendElement(aPrimaryFontName);
+    MOZ_COUNT_CTOR(nsPropertiesTable);
+    mGlyphCodeFonts.AppendElement(FontFamilyName(aPrimaryFontName, eUnquotedName));
   }
 
-  // not a virtual destructor: this class is not intended to be subclassed
-  ~nsGlyphTable()
+  ~nsPropertiesTable()
   {
-    MOZ_COUNT_DTOR(nsGlyphTable);
+    MOZ_COUNT_DTOR(nsPropertiesTable);
   }
 
-  const nsAString& PrimaryFontName() const
+  const FontFamilyName& PrimaryFontName() const
   {
-    return mFontName[0];
+    return mGlyphCodeFonts[0];
   }
 
-  const nsAString& FontNameFor(const nsGlyphCode& aGlyphCode) const
+  const FontFamilyName&
+  FontNameFor(const nsGlyphCode& aGlyphCode) const MOZ_OVERRIDE
   {
     NS_ASSERTION(!aGlyphCode.IsGlyphID(),
-                 "nsGlyphTable can only access glyphs by Unicode code point");
-    return mFontName[aGlyphCode.font];
+                 "nsPropertiesTable can only access glyphs by code point");
+    return mGlyphCodeFonts[aGlyphCode.font];
   }
 
-  // Getters for the parts
-  nsGlyphCode ElementAt(char16_t aChar, uint32_t aPosition);
-  nsGlyphCode BigOf(char16_t aChar, int32_t aSize) {
-    return ElementAt(aChar, 4 + aSize);
+  virtual nsGlyphCode ElementAt(gfxContext*   aThebesContext,
+                                int32_t       aAppUnitsPerDevPixel,
+                                gfxFontGroup* aFontGroup,
+                                char16_t      aChar,
+                                bool          aVertical,
+                                uint32_t      aPosition) MOZ_OVERRIDE;
+
+  virtual nsGlyphCode BigOf(gfxContext*   aThebesContext,
+                            int32_t       aAppUnitsPerDevPixel,
+                            gfxFontGroup* aFontGroup,
+                            char16_t      aChar,
+                            bool          aVertical,
+                            uint32_t      aSize) MOZ_OVERRIDE
+  {
+    return ElementAt(aThebesContext, aAppUnitsPerDevPixel, aFontGroup,
+                     aChar, aVertical, 4 + aSize);
   }
 
-  // True if this table contains parts to render this char
-  bool HasPartsOf(char16_t aChar) {
-    return (ElementAt(aChar, 0).Exists() || ElementAt(aChar, 1).Exists() ||
-            ElementAt(aChar, 2).Exists() || ElementAt(aChar, 3).Exists());
+  virtual bool HasPartsOf(gfxContext*   aThebesContext,
+                          int32_t       aAppUnitsPerDevPixel,
+                          gfxFontGroup* aFontGroup,
+                          char16_t      aChar,
+                          bool          aVertical) MOZ_OVERRIDE
+  {
+    return (ElementAt(aThebesContext, aAppUnitsPerDevPixel, aFontGroup,
+                      aChar, aVertical, 0).Exists() ||
+            ElementAt(aThebesContext, aAppUnitsPerDevPixel, aFontGroup,
+                      aChar, aVertical, 1).Exists() ||
+            ElementAt(aThebesContext, aAppUnitsPerDevPixel, aFontGroup,
+                      aChar, aVertical, 2).Exists() ||
+            ElementAt(aThebesContext, aAppUnitsPerDevPixel, aFontGroup,
+                      aChar, aVertical, 3).Exists());
   }
 
-  gfxTextRun* MakeTextRun(gfxContext*        aThebesContext,
-                          int32_t            aAppUnitsPerDevPixel,
-                          gfxFontGroup*      aFontGroup,
-                          const nsGlyphCode& aGlyph);
+  virtual gfxTextRun* MakeTextRun(gfxContext*        aThebesContext,
+                                  int32_t            aAppUnitsPerDevPixel,
+                                  gfxFontGroup*      aFontGroup,
+                                  const nsGlyphCode& aGlyph) MOZ_OVERRIDE;
 private:
 
-  // mFontName[0] is the primary font associated to this table. The others 
-  // are possible "external" fonts for glyphs not in the primary font
+  // mGlyphCodeFonts[0] is the primary font associated to this table. The
+  // others are possible "external" fonts for glyphs not in the primary font
   // but which are needed to stretch certain characters in the table
-  nsTArray<nsString> mFontName;
+  nsTArray<FontFamilyName> mGlyphCodeFonts;
 
   // Tri-state variable for error/empty/ready
   int32_t mState;
@@ -159,10 +246,9 @@ private:
   // File
   nsCOMPtr<nsIPersistentProperties> mGlyphProperties;
 
-  // For speedy re-use, we always cache the last data used in the table.
-  // mCharCache is the Unicode point of the last char that was queried in this
-  // table. mGlyphCache is a buffer containing the glyph data associated to
-  // that char. For a property line 'key = value' in the MathFont Property File,
+  // mGlyphCache is a buffer containing the glyph data associated with
+  // mCharCache.
+  // For a property line 'key = value' in the MathFont Property File,
   // mCharCache will retain the 'key' -- which is a Unicode point, while
   // mGlyphCache will retain the 'value', which is a consecutive list of
   // nsGlyphCodes, i.e., the pairs of 'code@font' needed by the char -- in
@@ -178,21 +264,28 @@ private:
   // table. Other digits map to the "external" fonts that may have been
   // specified in the MathFont Property File.
   nsString  mGlyphCache;
-  char16_t mCharCache;
 };
 
+/* virtual */
 nsGlyphCode
-nsGlyphTable::ElementAt(char16_t aChar, uint32_t aPosition)
+nsPropertiesTable::ElementAt(gfxContext*   /* aThebesContext */,
+                             int32_t       /* aAppUnitsPerDevPixel */,
+                             gfxFontGroup* /* aFontGroup */,
+                             char16_t      aChar,
+                             bool          /* aVertical */,
+                             uint32_t      aPosition)
 {
   if (mState == NS_TABLE_STATE_ERROR) return kNullGlyph;
   // Load glyph properties if this is the first time we have been here
   if (mState == NS_TABLE_STATE_EMPTY) {
-    nsresult rv = LoadProperties(mFontName[0], mGlyphProperties);
+    nsAutoString primaryFontName;
+    mGlyphCodeFonts[0].AppendToString(primaryFontName);
+    nsresult rv = LoadProperties(primaryFontName, mGlyphProperties);
 #ifdef DEBUG
     nsAutoCString uriStr;
     uriStr.AssignLiteral("resource://gre/res/fonts/mathfont");
-    LossyAppendUTF16toASCII(mFontName[0], uriStr);
-    uriStr.StripWhitespace(); // that may come from mFontName
+    LossyAppendUTF16toASCII(primaryFontName, uriStr);
+    uriStr.StripWhitespace(); // that may come from mGlyphCodeFonts
     uriStr.AppendLiteral(".properties");
     printf("Loading %s ... %s\n",
             uriStr.get(),
@@ -213,7 +306,7 @@ nsGlyphTable::ElementAt(char16_t aChar, uint32_t aPosition)
       rv = mGlyphProperties->GetStringProperty(key, value);
       if (NS_FAILED(rv)) break;
       Clean(value);
-      mFontName.AppendElement(value); // i.e., mFontName[i] holds this font name
+      mGlyphCodeFonts.AppendElement(FontFamilyName(value, eUnquotedName)); // i.e., mGlyphCodeFonts[i] holds this font name
     }
   }
 
@@ -233,7 +326,7 @@ nsGlyphTable::ElementAt(char16_t aChar, uint32_t aPosition)
     // This is where mGlyphCache is pre-processed to explicitly store all glyph
     // codes as combined pairs of 'code@font', excluding the '@' separator. This
     // means that mGlyphCache[3*k],mGlyphCache[3*k+1] will later be rendered
-    // with mFontName[mGlyphCache[3*k+2]]
+    // with mGlyphCodeFonts[mGlyphCache[3*k+2]]
     // Note: font identifier is internally an ASCII digit to avoid the null
     // char issue
     nsAutoString buffer;
@@ -260,12 +353,12 @@ nsGlyphTable::ElementAt(char16_t aChar, uint32_t aPosition)
         ++i;
         font = value[i] - '0';
         ++i;
-        if (font >= mFontName.Length()) {
+        if (font >= mGlyphCodeFonts.Length()) {
           NS_ERROR("Nonexistent font referenced in glyph table");
           return kNullGlyph;
         }
         // The char cannot be handled if this font is not installed
-        if (!mFontName[font].Length()) {
+        if (!mGlyphCodeFonts[font].mName.Length()) {
           return kNullGlyph;
         }
       }
@@ -286,16 +379,209 @@ nsGlyphTable::ElementAt(char16_t aChar, uint32_t aPosition)
   return ch.code[0] == char16_t(0xFFFD) ? kNullGlyph : ch;
 }
 
+/* virtual */
 gfxTextRun*
-nsGlyphTable::MakeTextRun(gfxContext*        aThebesContext,
-                          int32_t            aAppUnitsPerDevPixel,
-                          gfxFontGroup*      aFontGroup,
-                          const nsGlyphCode& aGlyph)
+nsPropertiesTable::MakeTextRun(gfxContext*        aThebesContext,
+                               int32_t            aAppUnitsPerDevPixel,
+                               gfxFontGroup*      aFontGroup,
+                               const nsGlyphCode& aGlyph)
 {
-  NS_ASSERTION(!aGlyph.IsGlyphID(), "not yet implemented");
+  NS_ASSERTION(!aGlyph.IsGlyphID(),
+               "nsPropertiesTable can only access glyphs by code point");
   return aFontGroup->
     MakeTextRun(aGlyph.code, aGlyph.Length(), aThebesContext,
-                aAppUnitsPerDevPixel, 0);
+                aAppUnitsPerDevPixel, 0, nullptr);
+}
+
+// An instance of nsOpenTypeTable is associated with one gfxFontEntry that
+// corresponds to an Open Type font with a MATH table. All the glyphs come from
+// the same font and the calls to access size variants and parts are directly
+// forwarded to the gfx code.
+class nsOpenTypeTable MOZ_FINAL : public nsGlyphTable {
+public:
+  ~nsOpenTypeTable()
+  {
+    MOZ_COUNT_DTOR(nsOpenTypeTable);
+  }
+
+  virtual nsGlyphCode ElementAt(gfxContext*   aThebesContext,
+                                int32_t       aAppUnitsPerDevPixel,
+                                gfxFontGroup* aFontGroup,
+                                char16_t      aChar,
+                                bool          aVertical,
+                                uint32_t      aPosition) MOZ_OVERRIDE;
+  virtual nsGlyphCode BigOf(gfxContext*   aThebesContext,
+                            int32_t       aAppUnitsPerDevPixel,
+                            gfxFontGroup* aFontGroup,
+                            char16_t      aChar,
+                            bool          aVertical,
+                            uint32_t      aSize) MOZ_OVERRIDE;
+  virtual bool HasPartsOf(gfxContext*   aThebesContext,
+                          int32_t       aAppUnitsPerDevPixel,
+                          gfxFontGroup* aFontGroup,
+                          char16_t      aChar,
+                          bool          aVertical) MOZ_OVERRIDE;
+
+  const FontFamilyName&
+  FontNameFor(const nsGlyphCode& aGlyphCode) const MOZ_OVERRIDE {
+    NS_ASSERTION(aGlyphCode.IsGlyphID(),
+                 "nsOpenTypeTable can only access glyphs by id");
+    return mFontFamilyName;
+  }
+
+  virtual gfxTextRun* MakeTextRun(gfxContext*        aThebesContext,
+                                  int32_t            aAppUnitsPerDevPixel,
+                                  gfxFontGroup*      aFontGroup,
+                                  const nsGlyphCode& aGlyph) MOZ_OVERRIDE;
+
+  // This returns a new OpenTypeTable instance to give access to OpenType MATH
+  // table or nullptr if the font does not have such table. Ownership is passed
+  // to the caller.
+  static nsOpenTypeTable* Create(gfxFont* aFont)
+  {
+    if (!aFont->GetFontEntry()->TryGetMathTable()) {
+      return nullptr;
+    }
+    return new nsOpenTypeTable(aFont->GetFontEntry());
+  }
+
+private:
+  nsRefPtr<gfxFontEntry> mFontEntry;
+  FontFamilyName mFontFamilyName;
+  uint32_t mGlyphID;
+
+  explicit nsOpenTypeTable(gfxFontEntry* aFontEntry)
+    : mFontEntry(aFontEntry),
+      mFontFamilyName(aFontEntry->FamilyName(), eUnquotedName) {
+    MOZ_COUNT_CTOR(nsOpenTypeTable);
+  }
+
+  void UpdateCache(gfxContext*   aThebesContext,
+                   int32_t       aAppUnitsPerDevPixel,
+                   gfxFontGroup* aFontGroup,
+                   char16_t      aChar);
+};
+
+void
+nsOpenTypeTable::UpdateCache(gfxContext*   aThebesContext,
+                             int32_t       aAppUnitsPerDevPixel,
+                             gfxFontGroup* aFontGroup,
+                             char16_t      aChar)
+{
+  if (mCharCache != aChar) {
+    nsAutoPtr<gfxTextRun> textRun;
+    textRun = aFontGroup->
+      MakeTextRun(&aChar, 1, aThebesContext, aAppUnitsPerDevPixel, 0, nullptr);
+    const gfxTextRun::CompressedGlyph& data = textRun->GetCharacterGlyphs()[0];
+    if (data.IsSimpleGlyph()) {
+      mGlyphID = data.GetSimpleGlyph();
+    } else if (data.GetGlyphCount() == 1) {
+      mGlyphID = textRun->GetDetailedGlyphs(0)->mGlyphID;
+    } else {
+      mGlyphID = 0;
+    }
+    mCharCache = aChar;
+  }
+}
+
+/* virtual */
+nsGlyphCode
+nsOpenTypeTable::ElementAt(gfxContext*   aThebesContext,
+                           int32_t       aAppUnitsPerDevPixel,
+                           gfxFontGroup* aFontGroup,
+                           char16_t      aChar,
+                           bool          aVertical,
+                           uint32_t      aPosition)
+{
+  UpdateCache(aThebesContext, aAppUnitsPerDevPixel, aFontGroup, aChar);
+
+  uint32_t parts[4];
+  if (!mFontEntry->GetMathVariantsParts(mGlyphID, aVertical, parts)) {
+    return kNullGlyph;
+  }
+
+  uint32_t glyphID = parts[aPosition];
+  if (!glyphID) {
+    return kNullGlyph;
+  }
+  nsGlyphCode glyph;
+  glyph.glyphID = glyphID;
+  glyph.font = -1;
+  return glyph;
+}
+
+/* virtual */
+nsGlyphCode
+nsOpenTypeTable::BigOf(gfxContext*   aThebesContext,
+                       int32_t       aAppUnitsPerDevPixel,
+                       gfxFontGroup* aFontGroup,
+                       char16_t      aChar,
+                       bool          aVertical,
+                       uint32_t      aSize)
+{
+  UpdateCache(aThebesContext, aAppUnitsPerDevPixel, aFontGroup, aChar);
+
+  uint32_t glyphID =
+    mFontEntry->GetMathVariantsSize(mGlyphID, aVertical, aSize);
+  if (!glyphID) {
+    return kNullGlyph;
+  }
+
+  nsGlyphCode glyph;
+  glyph.glyphID = glyphID;
+  glyph.font = -1;
+  return glyph;
+}
+
+/* virtual */
+bool
+nsOpenTypeTable::HasPartsOf(gfxContext*   aThebesContext,
+                            int32_t       aAppUnitsPerDevPixel,
+                            gfxFontGroup* aFontGroup,
+                            char16_t      aChar,
+                            bool          aVertical)
+{
+  UpdateCache(aThebesContext, aAppUnitsPerDevPixel, aFontGroup, aChar);
+
+  uint32_t parts[4];
+  if (!mFontEntry->GetMathVariantsParts(mGlyphID, aVertical, parts)) {
+    return false;
+  }
+
+  return parts[0] || parts[1] || parts[2] || parts[3];
+}
+
+/* virtual */
+gfxTextRun*
+nsOpenTypeTable::MakeTextRun(gfxContext*        aThebesContext,
+                             int32_t            aAppUnitsPerDevPixel,
+                             gfxFontGroup*      aFontGroup,
+                             const nsGlyphCode& aGlyph)
+{
+  NS_ASSERTION(aGlyph.IsGlyphID(),
+               "nsOpenTypeTable can only access glyphs by id");
+
+  gfxTextRunFactory::Parameters params = {
+    aThebesContext, nullptr, nullptr, nullptr, 0, aAppUnitsPerDevPixel
+  };
+  gfxTextRun* textRun = gfxTextRun::Create(&params, 1, aFontGroup, 0);
+  textRun->AddGlyphRun(aFontGroup->GetFirstValidFont(),
+                       gfxTextRange::kFontGroup, 0,
+                       false, gfxTextRunFactory::TEXT_ORIENT_HORIZONTAL);
+                              // We don't care about CSS writing mode here;
+                              // math runs are assumed to be horizontal.
+  gfxTextRun::DetailedGlyph detailedGlyph;
+  detailedGlyph.mGlyphID = aGlyph.glyphID;
+  detailedGlyph.mAdvance =
+    NSToCoordRound(aAppUnitsPerDevPixel *
+                   aFontGroup->GetFirstValidFont()->
+                   GetGlyphHAdvance(aThebesContext, aGlyph.glyphID));
+  detailedGlyph.mXOffset = detailedGlyph.mYOffset = 0;
+  gfxShapedText::CompressedGlyph g;
+  g.SetComplex(true, true, 1);
+  textRun->SetGlyphs(0, g, &detailedGlyph);
+
+  return textRun;
 }
 
 // -----------------------------------------------------------------------------
@@ -305,23 +591,18 @@ nsGlyphTable::MakeTextRun(gfxContext*        aThebesContext,
 // user' system. The class is an XPCOM shutdown observer to allow us to
 // free its allocated data at shutdown
 
-class nsGlyphTableList : public nsIObserver
+class nsGlyphTableList MOZ_FINAL : public nsIObserver
 {
 public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIOBSERVER
 
-  nsGlyphTable mUnicodeTable;
+  nsPropertiesTable mUnicodeTable;
 
   nsGlyphTableList()
     : mUnicodeTable(NS_LITERAL_STRING("Unicode"))
   {
     MOZ_COUNT_CTOR(nsGlyphTableList);
-  }
-
-  virtual ~nsGlyphTableList()
-  {
-    MOZ_COUNT_DTOR(nsGlyphTableList);
   }
 
   nsresult Initialize();
@@ -336,18 +617,22 @@ public:
   GetGlyphTableFor(const nsAString& aFamily);
 
 private:
-  nsGlyphTable* TableAt(int32_t aIndex) {
-    return &mTableList.ElementAt(aIndex);
-  }
-  int32_t Count() {
-    return mTableList.Length();
+  ~nsGlyphTableList()
+  {
+    MOZ_COUNT_DTOR(nsGlyphTableList);
   }
 
+  nsPropertiesTable* PropertiesTableAt(int32_t aIndex) {
+    return &mPropertiesTableList.ElementAt(aIndex);
+  }
+  int32_t PropertiesTableCount() {
+    return mPropertiesTableList.Length();
+  }
   // List of glyph tables;
-  nsTArray<nsGlyphTable> mTableList;
+  nsTArray<nsPropertiesTable> mPropertiesTableList;
 };
 
-NS_IMPL_ISUPPORTS1(nsGlyphTableList, nsIObserver)
+NS_IMPL_ISUPPORTS(nsGlyphTableList, nsIObserver)
 
 // -----------------------------------------------------------------------------
 // Here is the global list of applicable glyph tables that we will be using
@@ -393,6 +678,7 @@ nsGlyphTableList::Finalize()
 
   gGlyphTableInitialized = false;
   // our oneself will be destroyed when our |Release| is called by the observer
+  NS_IF_RELEASE(gGlyphTableList);
   return rv;
 }
 
@@ -405,18 +691,20 @@ nsGlyphTableList::AddGlyphTable(const nsString& aPrimaryFontName)
     return glyphTable;
 
   // allocate a table
-  glyphTable = mTableList.AppendElement(aPrimaryFontName);
+  glyphTable = mPropertiesTableList.AppendElement(aPrimaryFontName);
   return glyphTable;
 }
 
 nsGlyphTable*
 nsGlyphTableList::GetGlyphTableFor(const nsAString& aFamily)
 {
-  for (int32_t i = 0; i < Count(); i++) {
-    nsGlyphTable* glyphTable = TableAt(i);
-    const nsAString& fontName = glyphTable->PrimaryFontName();
+  for (int32_t i = 0; i < PropertiesTableCount(); i++) {
+    nsPropertiesTable* glyphTable = PropertiesTableAt(i);
+    const FontFamilyName& primaryFontName = glyphTable->PrimaryFontName();
+    nsAutoString primaryFontNameStr;
+    primaryFontName.AppendToString(primaryFontNameStr);
     // TODO: would be nice to consider StripWhitespace and other aliasing
-    if (fontName.Equals(aFamily, nsCaseInsensitiveStringComparator())) {
+    if (primaryFontNameStr.Equals(aFamily, nsCaseInsensitiveStringComparator())) {
       return glyphTable;
     }
   }
@@ -426,77 +714,6 @@ nsGlyphTableList::GetGlyphTableFor(const nsAString& aFamily)
 
 // -----------------------------------------------------------------------------
 
-// Lookup the preferences:
-// "font.mathfont-family.\uNNNN.base"     -- fonts for the base size
-// "font.mathfont-family.\uNNNN.variants" -- fonts for larger glyphs
-// "font.mathfont-family.\uNNNN.parts"    -- fonts for partial glyphs
-// Given the char code and mode of stretch, retrieve the preferred extension
-// font families.
-static bool
-GetFontExtensionPref(char16_t aChar,
-                     nsMathfontPrefExtension aExtension, nsString& aValue)
-{
-  // initialize OUT param
-  aValue.Truncate();
-
-  // We are going to try two keys because some users specify their pref as 
-  // user_pref("font.mathfont-family.\uNNNN.base", "...") rather than
-  // user_pref("font.mathfont-family.\\uNNNN.base", "...").
-  // The \uNNNN in the former is interpreted as an UTF16 escape sequence by
-  // JavaScript and is converted to the internal UTF8 string that JavaScript
-  // uses. 
-  // But clueless users who are not savvy of JavaScript have no idea as to what 
-  // is going on and are baffled as to why their pref setting is not working.
-  // So to save countless explanations, we are going to support both keys.
-
-  static const char* kMathFontPrefix = "font.mathfont-family.";
-
-  nsAutoCString extension;
-  switch (aExtension)
-  {
-    case eExtension_base:
-      extension.AssignLiteral(".base");
-      break;
-    case eExtension_variants:
-      extension.AssignLiteral(".variants");
-      break;
-    case eExtension_parts:
-      extension.AssignLiteral(".parts");
-      break;
-    default:
-      return false;
-  }
-
-  // .\\uNNNN key
-  nsAutoCString key;
-  key.AssignASCII(kMathFontPrefix);
-  char ustr[10];
-  PR_snprintf(ustr, sizeof(ustr), "\\u%04X", aChar);
-  key.Append(ustr);
-  key.Append(extension);
-  // .\uNNNN key
-  nsAutoCString alternateKey;
-  alternateKey.AssignASCII(kMathFontPrefix);
-  NS_ConvertUTF16toUTF8 tmp(&aChar, 1);
-  alternateKey.Append(tmp);
-  alternateKey.Append(extension);
-
-  aValue = Preferences::GetString(key.get());
-  if (aValue.IsEmpty()) {
-    aValue = Preferences::GetString(alternateKey.get());
-  }
-  return !aValue.IsEmpty();
-}
-
-
-static bool
-MathFontEnumCallback(const nsString& aFamily, bool aGeneric, void *aData)
-{
-  if (!gGlyphTableList->AddGlyphTable(aFamily))
-    return false; // stop in low-memory situations
-  return true; // don't stop
-}
-
 static nsresult
 InitGlobals(nsPresContext* aPresContext)
 {
@@ -505,47 +722,28 @@ InitGlobals(nsPresContext* aPresContext)
 
   // Allocate the placeholders for the preferred parts and variants
   nsresult rv = NS_ERROR_OUT_OF_MEMORY;
-  gGlyphTableList = new nsGlyphTableList();
-  if (gGlyphTableList) {
-    rv = gGlyphTableList->Initialize();
+  nsRefPtr<nsGlyphTableList> glyphTableList = new nsGlyphTableList();
+  if (glyphTableList) {
+    rv = glyphTableList->Initialize();
   }
   if (NS_FAILED(rv)) {
-    delete gGlyphTableList;
-    gGlyphTableList = nullptr;
     return rv;
   }
-  /*
-  else
-    The gGlyphTableList has been successfully registered as a shutdown observer.
-    It will be deleted at shutdown, even if a failure happens below.
-  */
+  // The gGlyphTableList has been successfully registered as a shutdown
+  // observer and will be deleted at shutdown. We now add some private
+  // per font-family tables for stretchy operators, in order of preference.
+  // Do not include the Unicode table in this list.
+  if (!glyphTableList->AddGlyphTable(NS_LITERAL_STRING("MathJax_Main")) ||
+      !glyphTableList->AddGlyphTable(NS_LITERAL_STRING("STIXGeneral")) ||
+      !glyphTableList->AddGlyphTable(NS_LITERAL_STRING("Standard Symbols L"))
+#ifdef XP_WIN
+      || !glyphTableList->AddGlyphTable(NS_LITERAL_STRING("Symbol"))
+#endif
+      ) {
+    rv = NS_ERROR_OUT_OF_MEMORY;
+  }
 
-  nsAutoCString key;
-  nsAutoString value;
-  nsCOMPtr<nsIPersistentProperties> mathfontProp;
-
-  // Add the math fonts in the gGlyphTableList in order of preference ...
-  // Note: we only load font-names at this stage. The actual glyph tables will
-  // be loaded lazily (see nsGlyphTable::ElementAt()).
-
-  // Load the "mathfont.properties" file
-  value.Truncate();
-  rv = LoadProperties(value, mathfontProp);
-  if (NS_FAILED(rv)) return rv;
-
-  // Get the list of mathfonts having special glyph tables to be used for
-  // stretchy characters.
-  // We just want to iterate over the font-family list using the
-  // callback mechanism that nsFont has...
-  nsFont font("", 0, 0, 0, 0, 0, 0);
-  NS_NAMED_LITERAL_CSTRING(defaultKey, "font.mathfont-glyph-tables");
-  rv = mathfontProp->GetStringProperty(defaultKey, font.name);
-  if (NS_FAILED(rv)) return rv;
-
-  // Parse the font list and append an entry for each family to gGlyphTableList
-  nsAutoString missingFamilyList;
-
-  font.EnumerateFamilies(MathFontEnumCallback, nullptr);
+  glyphTableList.forget(&gGlyphTableList);
   return rv;
 }
 
@@ -776,107 +974,46 @@ ComputeSizeFromParts(nsPresContext* aPresContext,
   return aTargetSize;
 }
 
-// Insert aFallbackFamilies before the first generic family in or at the end
-// of a CSS aFontName.
-static void
-AddFallbackFonts(nsAString& aFontName, const nsAString& aFallbackFamilies)
-{
-  if (aFallbackFamilies.IsEmpty())
-    return;
-
-  if (aFontName.IsEmpty()) {
-    return;
-  }
-
-  static const char16_t kSingleQuote  = char16_t('\'');
-  static const char16_t kDoubleQuote  = char16_t('\"');
-  static const char16_t kComma        = char16_t(',');
-
-  const char16_t *p_begin, *p_end;
-  aFontName.BeginReading(p_begin);
-  aFontName.EndReading(p_end);
-
-  const char16_t *p = p_begin;
-  const char16_t *p_name = nullptr;
-  while (p < p_end) {
-    while (nsCRT::IsAsciiSpace(*p))
-      if (++p == p_end)
-        goto insert;
-
-    p_name = p;
-    if (*p == kSingleQuote || *p == kDoubleQuote) {
-      // quoted font family
-      char16_t quoteMark = *p;
-      if (++p == p_end)
-        goto insert;
-
-      // XXX What about CSS character escapes?
-      while (*p != quoteMark)
-        if (++p == p_end)
-          goto insert;
-
-      while (++p != p_end && *p != kComma)
-        /* nothing */ ;
-
-    } else {
-      // unquoted font family
-      const char16_t *nameStart = p;
-      while (++p != p_end && *p != kComma)
-        /* nothing */ ;
-
-      nsAutoString family;
-      family = Substring(nameStart, p);
-      family.CompressWhitespace(false, true);
-
-      uint8_t generic;
-      nsFont::GetGenericID(family, &generic);
-      if (generic != kGenericFont_NONE)
-        goto insert;
-    }
-
-    ++p; // may advance past p_end
-  }
-
-  aFontName.Append(NS_LITERAL_STRING(",") + aFallbackFamilies);
-  return;
-
-insert:
-  if (p_name) {
-    aFontName.Insert(aFallbackFamilies + NS_LITERAL_STRING(","),
-                     p_name - p_begin);
-  }
-  else { // whitespace or empty
-    aFontName = aFallbackFamilies;
-  }
-}
-
 // Update the font if there is a family change and returns the font group.
 bool
 nsMathMLChar::SetFontFamily(nsPresContext*          aPresContext,
                             const nsGlyphTable*     aGlyphTable,
                             const nsGlyphCode&      aGlyphCode,
-                            const nsAString&        aDefaultFamily,
+                            const FontFamilyList&   aDefaultFamilyList,
                             nsFont&                 aFont,
                             nsRefPtr<gfxFontGroup>* aFontGroup)
 {
-  const nsAString& family =
-    aGlyphCode.font ? aGlyphTable->FontNameFor(aGlyphCode) : aDefaultFamily;
-  if (!*aFontGroup || !family.Equals(aFont.name)) {
+  FontFamilyList glyphCodeFont;
+
+  if (aGlyphCode.font) {
+    glyphCodeFont.Append(aGlyphTable->FontNameFor(aGlyphCode));
+  }
+
+  const FontFamilyList& familyList =
+    aGlyphCode.font ? glyphCodeFont : aDefaultFamilyList;
+
+  if (!*aFontGroup || !(aFont.fontlist == familyList)) {
     nsFont font = aFont;
-    font.name = family;
+    font.fontlist = familyList;
+    const nsStyleFont* styleFont = mStyleContext->StyleFont();
     nsRefPtr<nsFontMetrics> fm;
     aPresContext->DeviceContext()->
       GetMetricsFor(font,
-                    mStyleContext->StyleFont()->mLanguage,
+                    styleFont->mLanguage,
+                    styleFont->mExplicitLanguage,
+                    gfxFont::eHorizontal,
                     aPresContext->GetUserFontSet(),
                     aPresContext->GetTextPerfMetrics(),
                     *getter_AddRefs(fm));
     // Set the font if it is an unicode table
     // or if the same family name has been found
+    gfxFont *firstFont = fm->GetThebesFontGroup()->GetFirstValidFont();
+    FontFamilyList firstFontList;
+    firstFontList.Append(
+      FontFamilyName(firstFont->GetFontEntry()->FamilyName(), eUnquotedName));
     if (aGlyphTable == &gGlyphTableList->mUnicodeTable ||
-        fm->GetThebesFontGroup()->GetFontAt(0)->GetFontEntry()->
-        FamilyName() == family) {
-      aFont.name = family;
+        firstFontList == familyList) {
+      aFont.fontlist = familyList;
       *aFontGroup = fm->GetThebesFontGroup();
     } else {
       return false; // We did not set the font
@@ -908,40 +1045,47 @@ public:
   StretchEnumContext(nsMathMLChar*        aChar,
                      nsPresContext*       aPresContext,
                      gfxContext*          aThebesContext,
+                     float                aFontSizeInflation,
                      nsStretchDirection   aStretchDirection,
                      nscoord              aTargetSize,
                      uint32_t             aStretchHint,
                      nsBoundingMetrics&   aStretchedMetrics,
-                     const nsAString&     aFamilies,
+                     const FontFamilyList&  aFamilyList,
                      bool&              aGlyphFound)
     : mChar(aChar),
       mPresContext(aPresContext),
       mThebesContext(aThebesContext),
+      mFontSizeInflation(aFontSizeInflation),
       mDirection(aStretchDirection),
       mTargetSize(aTargetSize),
       mStretchHint(aStretchHint),
       mBoundingMetrics(aStretchedMetrics),
-      mFamilies(aFamilies),
+      mFamilyList(aFamilyList),
       mTryVariants(true),
       mTryParts(true),
       mGlyphFound(aGlyphFound) {}
 
   static bool
-  EnumCallback(const nsString& aFamily, bool aGeneric, void *aData);
+  EnumCallback(const FontFamilyName& aFamily, bool aGeneric, void *aData);
 
 private:
-  bool TryVariants(nsGlyphTable* aGlyphTable, const nsAString& aFamily);
-  bool TryParts(nsGlyphTable* aGlyphTable, const nsAString& aFamily);
+  bool TryVariants(nsGlyphTable* aGlyphTable,
+                   nsRefPtr<gfxFontGroup>* aFontGroup,
+                   const FontFamilyList& aFamilyList);
+  bool TryParts(nsGlyphTable* aGlyphTable,
+                nsRefPtr<gfxFontGroup>* aFontGroup,
+                const FontFamilyList& aFamilyList);
 
   nsMathMLChar* mChar;
   nsPresContext* mPresContext;
   gfxContext* mThebesContext;
+  float mFontSizeInflation;
   const nsStretchDirection mDirection;
   const nscoord mTargetSize;
   const uint32_t mStretchHint;
   nsBoundingMetrics& mBoundingMetrics;
   // Font families to search
-  const nsAString& mFamilies;
+  const FontFamilyList& mFamilyList;
 
 public:
   bool mTryVariants;
@@ -957,16 +1101,19 @@ private:
 // Returns true if the size is OK, false to keep searching.
 // Always updates the char if a better match is found.
 bool
-nsMathMLChar::StretchEnumContext::TryVariants(nsGlyphTable*    aGlyphTable,
-                                              const nsAString& aFamily)
+nsMathMLChar::
+StretchEnumContext::TryVariants(nsGlyphTable* aGlyphTable,
+                                nsRefPtr<gfxFontGroup>* aFontGroup,
+                                const FontFamilyList& aFamilyList)
 {
   // Use our stretchy style context now that stretching is in progress
   nsStyleContext *sc = mChar->mStyleContext;
   nsFont font = sc->StyleFont()->mFont;
-  // Ensure SetFontFamily will set the font
-  font.name.Truncate();
+  NormalizeDefaultFont(font, mFontSizeInflation);
 
   bool isVertical = (mDirection == NS_STRETCH_DIRECTION_VERTICAL);
+  nscoord oneDevPixel = mPresContext->AppUnitsPerDevPixel();
+  char16_t uchar = mChar->mData[0];
   bool largeop = (NS_STRETCH_LARGEOP & mStretchHint) != 0;
   bool largeopOnly =
     largeop && (NS_STRETCH_VARIABLE_MASK & mStretchHint) == 0;
@@ -979,17 +1126,46 @@ nsMathMLChar::StretchEnumContext::TryVariants(nsGlyphTable*    aGlyphTable,
 
   // start at size = 1 (size = 0 is the char at its normal size)
   int32_t size = 1;
+  nsGlyphCode ch;
+  nscoord displayOperatorMinHeight = 0;
+  if (largeopOnly) {
+    NS_ASSERTION(isVertical, "Stretching should be in the vertical direction");
+    ch = aGlyphTable->BigOf(mThebesContext, oneDevPixel, *aFontGroup, uchar,
+                            isVertical, 0);
+    if (ch.IsGlyphID()) {
+      gfxFont* mathFont = aFontGroup->get()->GetFirstMathFont();
+      // For OpenType MATH fonts, we will rely on the DisplayOperatorMinHeight
+      // to select the right size variant. Note that the value is sometimes too
+      // small so we use kLargeOpFactor/kIntegralFactor as a minimum value.
+      if (mathFont) {
+        displayOperatorMinHeight =
+          mathFont->GetMathConstant(gfxFontEntry::DisplayOperatorMinHeight,
+                                    oneDevPixel);
+        nsAutoPtr<gfxTextRun> textRun;
+        textRun = aGlyphTable->MakeTextRun(mThebesContext, oneDevPixel,
+                                           *aFontGroup, ch);
+        nsBoundingMetrics bm = MeasureTextRun(mThebesContext, textRun);
+        float largeopFactor = kLargeOpFactor;
+        if (NS_STRETCH_INTEGRAL & mStretchHint) {
+          // integrals are drawn taller
+          largeopFactor = kIntegralFactor;
+        }
+        nscoord minHeight = largeopFactor * (bm.ascent + bm.descent);
+        if (displayOperatorMinHeight < minHeight) {
+          displayOperatorMinHeight = minHeight;
+        }
+      }
+    }
+  }
 #ifdef NOISY_SEARCH
   printf("  searching in %s ...\n",
            NS_LossyConvertUTF16toASCII(aFamily).get());
 #endif
+  while ((ch = aGlyphTable->BigOf(mThebesContext, oneDevPixel, *aFontGroup,
+                                  uchar, isVertical, size)).Exists()) {
 
-  nsGlyphCode ch;
-  nsRefPtr<gfxFontGroup> fontGroup;
-  while ((ch = aGlyphTable->BigOf(mChar->mData[0], size)).Exists()) {
-
-    if (!mChar->SetFontFamily(mPresContext, aGlyphTable, ch, aFamily, font,
-                              &fontGroup)) {
+    if (!mChar->SetFontFamily(mPresContext, aGlyphTable, ch, aFamilyList, font,
+                              aFontGroup)) {
       // if largeopOnly is set, break now
       if (largeopOnly) break;
       ++size;
@@ -997,10 +1173,31 @@ nsMathMLChar::StretchEnumContext::TryVariants(nsGlyphTable*    aGlyphTable,
     }
 
     nsAutoPtr<gfxTextRun> textRun;
-    textRun = aGlyphTable->MakeTextRun(mThebesContext,
-                                       mPresContext->AppUnitsPerDevPixel(),
-                                       fontGroup, ch);
+    textRun = aGlyphTable->MakeTextRun(mThebesContext, oneDevPixel,
+                                       *aFontGroup, ch);
     nsBoundingMetrics bm = MeasureTextRun(mThebesContext, textRun);
+    if (ch.IsGlyphID()) {
+      gfxFont* mathFont = aFontGroup->get()->GetFirstMathFont();
+      if (mathFont) {
+        // MeasureTextRun should have set the advance width to the right
+        // bearing for OpenType MATH fonts. We now subtract the italic
+        // correction, so that nsMathMLmmultiscripts will place the scripts
+        // correctly.
+        // Note that STIX-Word does not provide italic corrections but its
+        // advance widths do not match right bearings.
+        // (http://sourceforge.net/p/stixfonts/tracking/50/)
+        gfxFloat italicCorrection;
+        if (mathFont->GetFontEntry()->
+            GetMathItalicsCorrection(ch.glyphID, &italicCorrection)) {
+          bm.width -=
+            NSToCoordRound(italicCorrection *
+                           mathFont->GetAdjustedSize() * oneDevPixel);
+          if (bm.width < 0) {
+            bm.width = 0;
+          }
+        }
+      }
+    }
 
     nscoord charSize =
       isVertical ? bm.ascent + bm.descent
@@ -1040,8 +1237,10 @@ nsMathMLChar::StretchEnumContext::TryVariants(nsGlyphTable*    aGlyphTable,
         break; // Not making an futher progress, stop searching
     }
 
-    // if largeopOnly is set, break now
-    if (largeopOnly) break;
+    // If this a largeop only operator, we stop if the glyph is large enough.
+    if (largeopOnly && (bm.ascent + bm.descent) >= displayOperatorMinHeight) {
+      break;
+    }
     ++size;
   }
 
@@ -1054,18 +1253,13 @@ nsMathMLChar::StretchEnumContext::TryVariants(nsGlyphTable*    aGlyphTable,
 // Returns true if the size is OK, false to keep searching.
 // Always updates the char if a better match is found.
 bool
-nsMathMLChar::StretchEnumContext::TryParts(nsGlyphTable*    aGlyphTable,
-                                           const nsAString& aFamily)
+nsMathMLChar::StretchEnumContext::TryParts(nsGlyphTable* aGlyphTable,
+                                           nsRefPtr<gfxFontGroup>* aFontGroup,
+                                           const FontFamilyList& aFamilyList)
 {
-  if (!aGlyphTable->HasPartsOf(mChar->mData[0]))
-    return false; // to next table
-
-  // See if the parts of this table fit in the desired space //////////////////
-
   // Use our stretchy style context now that stretching is in progress
   nsFont font = mChar->mStyleContext->StyleFont()->mFont;
-  // Ensure SetFontFamily will set the font
-  font.name.Truncate();
+  NormalizeDefaultFont(font, mFontSizeInflation);
 
   // Compute the bounding metrics of all partial glyphs
   nsAutoPtr<gfxTextRun> textRun[4];
@@ -1074,25 +1268,25 @@ nsMathMLChar::StretchEnumContext::TryParts(nsGlyphTable*    aGlyphTable,
   nscoord sizedata[4];
 
   bool isVertical = (mDirection == NS_STRETCH_DIRECTION_VERTICAL);
+  nscoord oneDevPixel = mPresContext->AppUnitsPerDevPixel();
+  char16_t uchar = mChar->mData[0];
   bool maxWidth = (NS_STRETCH_MAXWIDTH & mStretchHint) != 0;
-  nsRefPtr<gfxFontGroup> fontGroup;
+  if (!aGlyphTable->HasPartsOf(mThebesContext, oneDevPixel, *aFontGroup,
+                               uchar, isVertical))
+    return false; // to next table
 
   for (int32_t i = 0; i < 4; i++) {
-    nsGlyphCode ch = aGlyphTable->ElementAt(mChar->mData[0], i);
+    nsGlyphCode ch = aGlyphTable->ElementAt(mThebesContext, oneDevPixel,
+                                            *aFontGroup, uchar, isVertical, i);
     chdata[i] = ch;
     if (ch.Exists()) {
-      if (!mChar->SetFontFamily(mPresContext, aGlyphTable, ch, aFamily, font,
-                                &fontGroup))
+      if (!mChar->SetFontFamily(mPresContext, aGlyphTable, ch, aFamilyList, font,
+                                aFontGroup))
         return false;
 
-      textRun[i] = aGlyphTable->MakeTextRun(mThebesContext,
-                                            mPresContext->AppUnitsPerDevPixel(),
-                                            fontGroup, ch);
+      textRun[i] = aGlyphTable->MakeTextRun(mThebesContext, oneDevPixel,
+                                            *aFontGroup, ch);
       nsBoundingMetrics bm = MeasureTextRun(mThebesContext, textRun[i]);
-
-      // TODO: For the generic Unicode table, ideally we should check that the
-      // glyphs are actually found and that they each come from the same
-      // font.
       bmdata[i] = bm;
       sizedata[i] = isVertical ? bm.ascent + bm.descent
                                : bm.rightBearing - bm.leftBearing;
@@ -1102,6 +1296,32 @@ nsMathMLChar::StretchEnumContext::TryParts(nsGlyphTable*    aGlyphTable,
       textRun[i] = nullptr;
       bmdata[i] = nsBoundingMetrics();
       sizedata[i] = i == 3 ? mTargetSize : 0;
+    }
+  }
+
+  // For the Unicode table, we check that all the glyphs are actually found and
+  // come from the same font.
+  if (aGlyphTable == &gGlyphTableList->mUnicodeTable) {
+    gfxFont* unicodeFont = nullptr;
+    for (int32_t i = 0; i < 4; i++) {
+      if (!textRun[i]) {
+        continue;
+      }
+      if (textRun[i]->GetLength() != 1 ||
+          textRun[i]->GetCharacterGlyphs()[0].IsMissing()) {
+        return false;
+      }
+      uint32_t numGlyphRuns;
+      const gfxTextRun::GlyphRun* glyphRuns =
+        textRun[i]->GetGlyphRuns(&numGlyphRuns);
+      if (numGlyphRuns != 1) {
+        return false;
+      }
+      if (!unicodeFont) {
+        unicodeFont = glyphRuns[0].mFont;
+      } else if (unicodeFont != glyphRuns[0].mFont) {
+        return false;
+      }
     }
   }
 
@@ -1202,51 +1422,104 @@ nsMathMLChar::StretchEnumContext::TryParts(nsGlyphTable*    aGlyphTable,
 
 // This is called for each family, whether it exists or not
 bool
-nsMathMLChar::StretchEnumContext::EnumCallback(const nsString& aFamily,
+nsMathMLChar::StretchEnumContext::EnumCallback(const FontFamilyName& aFamily,
                                                bool aGeneric, void *aData)
 {
   StretchEnumContext* context = static_cast<StretchEnumContext*>(aData);
 
-  // See if there is a special table for the family, but always use the
-  // Unicode table for generic fonts.
-  nsGlyphTable* glyphTable = aGeneric ?
-    &gGlyphTableList->mUnicodeTable :
-    gGlyphTableList->GetGlyphTableFor(aFamily);
-
-  if (context->mTablesTried.Contains(glyphTable))
-    return true; // already tried this one
+  // for comparisons, force use of unquoted names
+  FontFamilyName unquotedFamilyName(aFamily);
+  if (unquotedFamilyName.mType == eFamily_named_quoted) {
+    unquotedFamilyName.mType = eFamily_named;
+  }
 
   // Check font family if it is not a generic one
   // We test with the kNullGlyph
   nsStyleContext *sc = context->mChar->mStyleContext;
   nsFont font = sc->StyleFont()->mFont;
+  NormalizeDefaultFont(font, context->mFontSizeInflation);
   nsRefPtr<gfxFontGroup> fontGroup;
+  FontFamilyList family;
+  family.Append(unquotedFamilyName);
   if (!aGeneric && !context->mChar->SetFontFamily(context->mPresContext,
-                                                  nullptr, kNullGlyph, aFamily,
+                                                  nullptr, kNullGlyph, family,
                                                   font, &fontGroup))
      return true; // Could not set the family
 
-  // Now see if the table has a glyph that matches the container
+  // Determine the glyph table to use for this font.
+  nsAutoPtr<nsOpenTypeTable> openTypeTable;
+  nsGlyphTable* glyphTable;
+  if (aGeneric) {
+    // This is a generic font, use the Unicode table.
+    glyphTable = &gGlyphTableList->mUnicodeTable;
+  } else {
+    // If the font contains an Open Type MATH table, use it.
+    openTypeTable = nsOpenTypeTable::Create(fontGroup->GetFirstValidFont());
+    if (openTypeTable) {
+      glyphTable = openTypeTable;
+    } else {
+      // Otherwise try to find a .properties file corresponding to that font
+      // family or fallback to the Unicode table.
+      nsAutoString familyName;
+      unquotedFamilyName.AppendToString(familyName);
+      glyphTable = gGlyphTableList->GetGlyphTableFor(familyName);
+    }
+  }
 
-  // Only try this table once.
-  context->mTablesTried.AppendElement(glyphTable);
+  if (!openTypeTable) {
+    if (context->mTablesTried.Contains(glyphTable))
+      return true; // already tried this one
+    
+    // Only try this table once.
+    context->mTablesTried.AppendElement(glyphTable);
+  }
 
   // If the unicode table is being used, then search all font families.  If a
   // special table is being used then the font in this family should have the
   // specified glyphs.
-  const nsAString& family = glyphTable == &gGlyphTableList->mUnicodeTable ?
-    context->mFamilies : aFamily;
+  const FontFamilyList& familyList = glyphTable == &gGlyphTableList->mUnicodeTable ?
+    context->mFamilyList : family;
 
-  if((context->mTryVariants && context->TryVariants(glyphTable, family)) ||
-     (context->mTryParts && context->TryParts(glyphTable, family)))
+  if((context->mTryVariants &&
+      context->TryVariants(glyphTable, &fontGroup, familyList)) ||
+     (context->mTryParts && context->TryParts(glyphTable,
+                                              &fontGroup,
+                                              familyList)))
     return false; // no need to continue
 
   return true; // true means continue
 }
 
+// insert math fallback families just before the first generic or at the end
+// when no generic present
+static void
+InsertMathFallbacks(FontFamilyList& aFamilyList,
+                    nsTArray<nsString>& aFallbacks)
+{
+  FontFamilyList aMergedList;
+
+  bool inserted = false;
+  const nsTArray<FontFamilyName>& fontlist = aFamilyList.GetFontlist();
+  uint32_t i, num = fontlist.Length();
+  for (i = 0; i < num; i++) {
+    const FontFamilyName& name = fontlist[i];
+    if (!inserted && name.IsGeneric()) {
+      inserted = true;
+      aMergedList.Append(aFallbacks);
+    }
+    aMergedList.Append(name);
+  }
+
+  if (!inserted) {
+    aMergedList.Append(aFallbacks);
+  }
+  aFamilyList = aMergedList;
+}
+
 nsresult
 nsMathMLChar::StretchInternal(nsPresContext*           aPresContext,
                               gfxContext*              aThebesContext,
+                              float                    aFontSizeInflation,
                               nsStretchDirection&      aStretchDirection,
                               const nsBoundingMetrics& aContainerSize,
                               nsBoundingMetrics&       aDesiredStretchSize,
@@ -1265,20 +1538,15 @@ nsMathMLChar::StretchInternal(nsPresContext*           aPresContext,
   // mStyleContext is a leaf context used only when stretching happens.
   // For the base size, the default font should come from the parent context
   nsFont font = mStyleContext->GetParent()->StyleFont()->mFont;
+  NormalizeDefaultFont(font, aFontSizeInflation);
 
-  // Override with specific fonts if applicable for this character
-  nsAutoString families;
-  if (GetFontExtensionPref(mData[0], eExtension_base, families)) {
-    font.name = families;
-  }
-
-  // Don't modify this nsMathMLChar when doing GetMaxWidth()
-  bool maxWidth = (NS_STRETCH_MAXWIDTH & aStretchHint) != 0;
-
+  const nsStyleFont* styleFont = mStyleContext->StyleFont();
   nsRefPtr<nsFontMetrics> fm;
   aPresContext->DeviceContext()->
     GetMetricsFor(font,
-                  mStyleContext->StyleFont()->mLanguage,
+                  styleFont->mLanguage,
+                  styleFont->mExplicitLanguage,
+                  gfxFont::eHorizontal,
                   aPresContext->GetUserFontSet(),
                   aPresContext->GetTextPerfMetrics(),
                   *getter_AddRefs(fm));
@@ -1286,10 +1554,12 @@ nsMathMLChar::StretchInternal(nsPresContext*           aPresContext,
   nsAutoPtr<gfxTextRun> textRun;
   textRun = fm->GetThebesFontGroup()->
     MakeTextRun(static_cast<const char16_t*>(mData.get()), len, aThebesContext,
-                aPresContext->AppUnitsPerDevPixel(), 0);
+                aPresContext->AppUnitsPerDevPixel(), 0,
+                aPresContext->MissingFontRecorder());
   aDesiredStretchSize = MeasureTextRun(aThebesContext, textRun);
   mGlyphs[0] = textRun;
 
+  bool maxWidth = (NS_STRETCH_MAXWIDTH & aStretchHint) != 0;
   if (!maxWidth) {
     mUnscaledAscent = aDesiredStretchSize.ascent;
   }
@@ -1381,57 +1651,38 @@ nsMathMLChar::StretchInternal(nsPresContext*           aPresContext,
   //////////////////////////////////////////////////////////////////////////////
 
   bool glyphFound = false;
-  nsAutoString cssFamilies;
-
-  if (!done) {
-    font = mStyleContext->StyleFont()->mFont;
-    cssFamilies = font.name;
-  }
-
-  // See if there are preferred fonts for the variants of this char
-  if (!done && GetFontExtensionPref(mData[0], eExtension_variants, families)) {
-    font.name = families;
-
-    StretchEnumContext enumData(this, aPresContext, aThebesContext,
-                                aStretchDirection, targetSize, aStretchHint,
-                                aDesiredStretchSize, font.name, glyphFound);
-    enumData.mTryParts = false;
-
-    done = !font.EnumerateFamilies(StretchEnumContext::EnumCallback, &enumData);
-  }
-
-  // See if there are preferred fonts for the parts of this char
-  if (!done && !largeopOnly
-      && GetFontExtensionPref(mData[0], eExtension_parts, families)) {
-    font.name = families;
-
-    StretchEnumContext enumData(this, aPresContext, aThebesContext,
-                                aStretchDirection, targetSize, aStretchHint,
-                                aDesiredStretchSize, font.name, glyphFound);
-    enumData.mTryVariants = false;
-
-    done = !font.EnumerateFamilies(StretchEnumContext::EnumCallback, &enumData);
-  }
 
   if (!done) { // normal case
     // Use the css font-family but add preferred fallback fonts.
-    font.name = cssFamilies;
-    NS_NAMED_LITERAL_CSTRING(defaultKey, "font.mathfont-family");
-    nsAdoptingString fallbackFonts = Preferences::GetString(defaultKey.get());
-    if (!fallbackFonts.IsEmpty()) {
-      AddFallbackFonts(font.name, fallbackFonts);
-    }
+    font = mStyleContext->StyleFont()->mFont;
+    NormalizeDefaultFont(font, aFontSizeInflation);
+
+    // really shouldn't be doing things this way but for now
+    // insert fallbacks into the list
+    nsAutoTArray<nsString, 10> mathFallbacks;
+    gfxFontUtils::GetPrefsFontList("font.mathfont-family", mathFallbacks);
+    InsertMathFallbacks(font.fontlist, mathFallbacks);
+
 
 #ifdef NOISY_SEARCH
+    nsAutoString fontlistStr;
+    font.fontlist.ToString(fontlistStr, false, true);
     printf("Searching in "%s" for a glyph of appropriate size for: 0x%04X:%c\n",
-           font.name, mData[0], mData[0]&0x00FF);
+           NS_ConvertUTF16toUTF8(fontlistStr).get(), mData[0], mData[0]&0x00FF);
 #endif
     StretchEnumContext enumData(this, aPresContext, aThebesContext,
+                                aFontSizeInflation,
                                 aStretchDirection, targetSize, aStretchHint,
-                                aDesiredStretchSize, font.name, glyphFound);
+                                aDesiredStretchSize, font.fontlist, glyphFound);
     enumData.mTryParts = !largeopOnly;
 
-    font.EnumerateFamilies(StretchEnumContext::EnumCallback, &enumData);
+    const nsTArray<FontFamilyName>& fontlist = font.fontlist.GetFontlist();
+    uint32_t i, num = fontlist.Length();
+    bool next = true;
+    for (i = 0; i < num && next; i++) {
+      const FontFamilyName& name = fontlist[i];
+      next = StretchEnumContext::EnumCallback(name, name.IsGeneric(), &enumData);
+    }
   }
 
   if (!maxWidth) {
@@ -1440,12 +1691,24 @@ nsMathMLChar::StretchInternal(nsPresContext*           aPresContext,
     mUnscaledAscent = aDesiredStretchSize.ascent;
   }
     
+  if (glyphFound) {
+    return NS_OK;
+  }
+
+  // We did not find a size variant or a glyph assembly to stretch this
+  // operator. Verify whether a font with an OpenType MATH table is available
+  // and record missing math script otherwise.
+  gfxMissingFontRecorder* MFR = aPresContext->MissingFontRecorder();
+  if (MFR && !fm->GetThebesFontGroup()->GetFirstMathFont()) {
+    MFR->RecordScript(MOZ_SCRIPT_MATHEMATICAL_NOTATION);
+  }
+
   // stretchy character
   if (stretchy) {
     if (isVertical) {
       float scale =
-        float(aContainerSize.ascent + aContainerSize.descent) /
-        (aDesiredStretchSize.ascent + aDesiredStretchSize.descent);
+        std::min(kMaxScaleFactor, float(aContainerSize.ascent + aContainerSize.descent) /
+        (aDesiredStretchSize.ascent + aDesiredStretchSize.descent));
       if (!largeop || scale > 1.0) {
         // make the character match the desired height.
         if (!maxWidth) {
@@ -1456,8 +1719,8 @@ nsMathMLChar::StretchInternal(nsPresContext*           aPresContext,
       }
     } else {
       float scale =
-        float(aContainerSize.rightBearing - aContainerSize.leftBearing) /
-        (aDesiredStretchSize.rightBearing - aDesiredStretchSize.leftBearing);
+        std::min(kMaxScaleFactor, float(aContainerSize.rightBearing - aContainerSize.leftBearing) /
+        (aDesiredStretchSize.rightBearing - aDesiredStretchSize.leftBearing));
       if (!largeop || scale > 1.0) {
         // make the character match the desired width.
         if (!maxWidth) {
@@ -1472,9 +1735,9 @@ nsMathMLChar::StretchInternal(nsPresContext*           aPresContext,
 
   // We do not have a char variant for this largeop in display mode, so we
   // apply a scale transform to the base char.
-  if (!glyphFound && largeop) {
+  if (largeop) {
     float scale;
-    float largeopFactor = float(M_SQRT2);
+    float largeopFactor = kLargeOpFactor;
 
     // increase the width if it is not largeopFactor times larger
     // than the initial one.
@@ -1495,7 +1758,7 @@ nsMathMLChar::StretchInternal(nsPresContext*           aPresContext,
     // than the initial one.
     if (NS_STRETCH_INTEGRAL & aStretchHint) {
       // integrals are drawn taller
-      largeopFactor = 2.0;
+      largeopFactor = kIntegralFactor;
     }
     if ((aDesiredStretchSize.ascent + aDesiredStretchSize.descent) <
         largeopFactor * (initialSize.ascent + initialSize.descent)) {
@@ -1516,6 +1779,7 @@ nsMathMLChar::StretchInternal(nsPresContext*           aPresContext,
 nsresult
 nsMathMLChar::Stretch(nsPresContext*           aPresContext,
                       nsRenderingContext&     aRenderingContext,
+                      float                    aFontSizeInflation,
                       nsStretchDirection       aStretchDirection,
                       const nsBoundingMetrics& aContainerSize,
                       nsBoundingMetrics&       aDesiredStretchSize,
@@ -1532,7 +1796,8 @@ nsMathMLChar::Stretch(nsPresContext*           aPresContext,
   mScaleY = mScaleX = 1.0;
   mDirection = aStretchDirection;
   nsresult rv =
-    StretchInternal(aPresContext, aRenderingContext.ThebesContext(), mDirection,
+    StretchInternal(aPresContext, aRenderingContext.ThebesContext(),
+                    aFontSizeInflation, mDirection,
                     aContainerSize, aDesiredStretchSize, aStretchHint);
 
   // Record the metrics
@@ -1556,6 +1821,7 @@ nsMathMLChar::Stretch(nsPresContext*           aPresContext,
 nscoord
 nsMathMLChar::GetMaxWidth(nsPresContext* aPresContext,
                           nsRenderingContext& aRenderingContext,
+                          float aFontSizeInflation,
                           uint32_t aStretchHint,
                           float aMaxSize, bool aMaxSizeIsAbsolute)
 {
@@ -1563,7 +1829,8 @@ nsMathMLChar::GetMaxWidth(nsPresContext* aPresContext,
   nsStretchDirection direction = NS_STRETCH_DIRECTION_VERTICAL;
   const nsBoundingMetrics container; // zero target size
 
-  StretchInternal(aPresContext, aRenderingContext.ThebesContext(), direction,
+  StretchInternal(aPresContext, aRenderingContext.ThebesContext(),
+                  aFontSizeInflation, direction,
                   container, bm, aStretchHint | NS_STRETCH_MAXWIDTH);
 
   return std::max(bm.width, bm.rightBearing) - std::min(0, bm.leftBearing);
@@ -1583,7 +1850,7 @@ public:
 #endif
 
   virtual void Paint(nsDisplayListBuilder* aBuilder,
-                     nsRenderingContext* aCtx);
+                     nsRenderingContext* aCtx) MOZ_OVERRIDE;
   NS_DISPLAY_DECL_NAME("MathMLSelectionRect", TYPE_MATHML_SELECTION_RECT)
 private:
   nsRect    mRect;
@@ -1592,12 +1859,15 @@ private:
 void nsDisplayMathMLSelectionRect::Paint(nsDisplayListBuilder* aBuilder,
                                          nsRenderingContext* aCtx)
 {
+  DrawTarget* drawTarget = aCtx->GetDrawTarget();
+  Rect rect = NSRectToSnappedRect(mRect + ToReferenceFrame(),
+                                  mFrame->PresContext()->AppUnitsPerDevPixel(),
+                                  *drawTarget);
   // get color to use for selection from the look&feel object
   nscolor bgColor =
     LookAndFeel::GetColor(LookAndFeel::eColorID_TextSelectBackground,
                           NS_RGB(0, 0, 0));
-  aCtx->SetColor(bgColor);
-  aCtx->FillRect(mRect + ToReferenceFrame());
+  drawTarget->FillRect(rect, ColorPattern(ToDeviceColor(bgColor)));
 }
 
 class nsDisplayMathMLCharBackground : public nsDisplayItem {
@@ -1619,7 +1889,7 @@ public:
                                          const nsDisplayItemGeometry* aGeometry,
                                          nsRegion *aInvalidRegion) MOZ_OVERRIDE;
   virtual void Paint(nsDisplayListBuilder* aBuilder,
-                     nsRenderingContext* aCtx);
+                     nsRenderingContext* aCtx) MOZ_OVERRIDE;
   NS_DISPLAY_DECL_NAME("MathMLCharBackground", TYPE_MATHML_CHAR_BACKGROUND)
 private:
   nsStyleContext* mStyleContext;
@@ -1662,7 +1932,7 @@ public:
   }
 #endif
 
-  virtual nsRect GetBounds(nsDisplayListBuilder* aBuilder, bool* aSnap) {
+  virtual nsRect GetBounds(nsDisplayListBuilder* aBuilder, bool* aSnap) MOZ_OVERRIDE {
     *aSnap = false;
     nsRect rect;
     mChar->GetRect(rect);
@@ -1677,7 +1947,7 @@ public:
   }
   
   virtual void Paint(nsDisplayListBuilder* aBuilder,
-                     nsRenderingContext* aCtx)
+                     nsRenderingContext* aCtx) MOZ_OVERRIDE
   {
     mChar->PaintForeground(mFrame->PresContext(), *aCtx,
                            ToReferenceFrame(), mIsSelected);
@@ -1685,13 +1955,13 @@ public:
 
   NS_DISPLAY_DECL_NAME("MathMLCharForeground", TYPE_MATHML_CHAR_FOREGROUND)
 
-  virtual nsRect GetComponentAlphaBounds(nsDisplayListBuilder* aBuilder)
+  virtual nsRect GetComponentAlphaBounds(nsDisplayListBuilder* aBuilder) MOZ_OVERRIDE
   {
     bool snap;
     return GetBounds(aBuilder, &snap);
   }
   
-  virtual uint32_t GetPerFrameKey() {
+  virtual uint32_t GetPerFrameKey() MOZ_OVERRIDE {
     return (mIndex << nsDisplayItem::TYPE_BITS)
       | nsDisplayItem::GetPerFrameKey();
   }
@@ -1717,7 +1987,7 @@ public:
 #endif
 
   virtual void Paint(nsDisplayListBuilder* aBuilder,
-                     nsRenderingContext* aCtx);
+                     nsRenderingContext* aCtx) MOZ_OVERRIDE;
   NS_DISPLAY_DECL_NAME("MathMLCharDebug", TYPE_MATHML_CHAR_DEBUG)
 
 private:
@@ -1728,7 +1998,7 @@ void nsDisplayMathMLCharDebug::Paint(nsDisplayListBuilder* aBuilder,
                                      nsRenderingContext* aCtx)
 {
   // for visual debug
-  int skipSides = 0;
+  Sides skipSides;
   nsPresContext* presContext = mFrame->PresContext();
   nsStyleContext* styleContext = mFrame->StyleContext();
   nsRect rect = mRect + ToReferenceFrame();
@@ -1799,16 +2069,18 @@ nsMathMLChar::ApplyTransforms(gfxContext* aThebesContext,
   // apply the transforms
   if (mMirrored) {
     nsPoint pt = r.TopRight();
-    aThebesContext->
-      Translate(gfxPoint(NSAppUnitsToFloatPixels(pt.x, aAppUnitsPerGfxUnit),
-                         NSAppUnitsToFloatPixels(pt.y, aAppUnitsPerGfxUnit)));
-    aThebesContext->Scale(-mScaleX, mScaleY);
+    gfxPoint devPixelOffset(NSAppUnitsToFloatPixels(pt.x, aAppUnitsPerGfxUnit),
+                            NSAppUnitsToFloatPixels(pt.y, aAppUnitsPerGfxUnit));
+    aThebesContext->SetMatrix(
+      aThebesContext->CurrentMatrix().Translate(devPixelOffset).
+                                      Scale(-mScaleX, mScaleY));
   } else {
     nsPoint pt = r.TopLeft();
-    aThebesContext->
-      Translate(gfxPoint(NSAppUnitsToFloatPixels(pt.x, aAppUnitsPerGfxUnit),
-                         NSAppUnitsToFloatPixels(pt.y, aAppUnitsPerGfxUnit)));
-    aThebesContext->Scale(mScaleX, mScaleY);
+    gfxPoint devPixelOffset(NSAppUnitsToFloatPixels(pt.x, aAppUnitsPerGfxUnit),
+                            NSAppUnitsToFloatPixels(pt.y, aAppUnitsPerGfxUnit));
+    aThebesContext->SetMatrix(
+      aThebesContext->CurrentMatrix().Translate(devPixelOffset).
+                                      Scale(mScaleX, mScaleY));
   }
 
   // update the bounding rectangle.
@@ -1861,9 +2133,9 @@ nsMathMLChar::PaintForeground(nsPresContext* aPresContext,
     case DRAW_PARTS: {
       // paint by parts
       if (NS_STRETCH_DIRECTION_VERTICAL == mDirection)
-        PaintVertically(aPresContext, thebesContext, r);
+        PaintVertically(aPresContext, thebesContext, r, fgColor);
       else if (NS_STRETCH_DIRECTION_HORIZONTAL == mDirection)
-        PaintHorizontally(aPresContext, thebesContext, r);
+        PaintHorizontally(aPresContext, thebesContext, r, fgColor);
       break;
     }
     default:
@@ -1909,22 +2181,25 @@ SnapToDevPixels(const gfxContext* aThebesContext, int32_t aAppUnitsPerGfxUnit,
 }
 
 static void
-PaintRule(gfxContext* aThebesContext,
+PaintRule(DrawTarget& aDrawTarget,
           int32_t     aAppUnitsPerGfxUnit,
-          nsRect&     aRect)
+          nsRect&     aRect,
+          nscolor     aColor)
 {
-  aThebesContext->NewPath();
-  gfxRect rect = nsLayoutUtils::RectToGfxRect(aRect, aAppUnitsPerGfxUnit);
-  aThebesContext->SnappedRectangle(rect);
-  aThebesContext->Fill();
+  Rect rect = NSRectToSnappedRect(aRect, aAppUnitsPerGfxUnit, aDrawTarget);
+  ColorPattern color(ToDeviceColor(aColor));
+  aDrawTarget.FillRect(rect, color);
 }
 
 // paint a stretchy char by assembling glyphs vertically
 nsresult
 nsMathMLChar::PaintVertically(nsPresContext* aPresContext,
                               gfxContext*    aThebesContext,
-                              nsRect&        aRect)
+                              nsRect&        aRect,
+                              nscolor        aColor)
 {
+  DrawTarget& aDrawTarget = *aThebesContext->GetDrawTarget();
+
   // Get the device pixel size in the vertical direction.
   // (This makes no effort to optimize for non-translation transformations.)
   nscoord oneDevPixel = aPresContext->AppUnitsPerDevPixel();
@@ -2048,7 +2323,7 @@ nsMathMLChar::PaintVertically(nsPresContext* aPresContext,
       // paint the rule between the parts
       nsRect rule(aRect.x + lbearing, end[first],
                   rbearing - lbearing, start[last] - end[first]);
-      PaintRule(aThebesContext, oneDevPixel, rule);
+      PaintRule(aDrawTarget, oneDevPixel, rule, aColor);
       first = last;
       last++;
     }
@@ -2097,8 +2372,11 @@ nsMathMLChar::PaintVertically(nsPresContext* aPresContext,
 nsresult
 nsMathMLChar::PaintHorizontally(nsPresContext* aPresContext,
                                 gfxContext*    aThebesContext,
-                                nsRect&        aRect)
+                                nsRect&        aRect,
+                                nscolor        aColor)
 {
+  DrawTarget& aDrawTarget = *aThebesContext->GetDrawTarget();
+
   // Get the device pixel size in the horizontal direction.
   // (This makes no effort to optimize for non-translation transformations.)
   nscoord oneDevPixel = aPresContext->AppUnitsPerDevPixel();
@@ -2215,7 +2493,7 @@ nsMathMLChar::PaintHorizontally(nsPresContext* aPresContext,
       // paint the rule between the parts
       nsRect rule(end[first], dy - ascent,
                   start[last] - end[first], ascent + descent);
-      PaintRule(aThebesContext, oneDevPixel, rule);
+      PaintRule(aDrawTarget, oneDevPixel, rule, aColor);
       first = last;
       last++;
     }

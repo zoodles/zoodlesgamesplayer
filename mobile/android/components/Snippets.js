@@ -11,6 +11,8 @@ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "Home", "resource://gre/modules/Home.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "OS", "resource://gre/modules/osfile.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "Task", "resource://gre/modules/Task.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "UITelemetry", "resource://gre/modules/UITelemetry.jsm");
+
 
 XPCOMUtils.defineLazyGetter(this, "gEncoder", function() { return new gChromeWin.TextEncoder(); });
 XPCOMUtils.defineLazyGetter(this, "gDecoder", function() { return new gChromeWin.TextDecoder(); });
@@ -198,14 +200,17 @@ function updateBanner(messages) {
     let id = Home.banner.add({
       text: message.text,
       icon: message.icon,
+      weight: message.weight,
       onclick: function() {
         let parentId = gChromeWin.BrowserApp.selectedTab.id;
         gChromeWin.BrowserApp.addTab(message.url, { parentId: parentId });
+        UITelemetry.addEvent("action.1", "banner", null, message.id);
       },
       ondismiss: function() {
         // Remove this snippet from the banner, and store its id so we'll never show it again.
         Home.banner.remove(id);
         removeSnippet(message.id);
+        UITelemetry.addEvent("cancel.1", "banner", null, message.id);
       },
       onshown: function() {
         // 10% of the time, record the snippet id and a timestamp
@@ -354,11 +359,15 @@ function loadSyncPromoBanner() {
           // Remove the message, so that it won't show again for the rest of the app lifetime.
           Home.banner.remove(id);
           Accounts.launchSetup();
+
+          UITelemetry.addEvent("action.1", "banner", null, "syncpromo");
         },
         ondismiss: function() {
           // Remove the sync promo message from the banner and never try to show it again.
           Home.banner.remove(id);
           Services.prefs.setBoolPref("browser.snippets.syncPromo.enabled", false);
+
+          UITelemetry.addEvent("cancel.1", "banner", null, "syncpromo");
         }
       });
     },
@@ -366,6 +375,30 @@ function loadSyncPromoBanner() {
       Cu.reportError("Error checking whether sync account exists: " + err);
     }
   );
+}
+
+function loadHomePanelsBanner() {
+  let stringBundle = Services.strings.createBundle("chrome://browser/locale/aboutHome.properties");
+  let text = stringBundle.GetStringFromName("banner.firstrunHomepage.text");
+
+  let id = Home.banner.add({
+    text: text,
+    icon: "drawable://homepage_banner_firstrun",
+    onclick: function() {
+      // Remove the message, so that it won't show again for the rest of the app lifetime.
+      Home.banner.remove(id);
+      // User has interacted with this snippet so don't show it again.
+      Services.prefs.setBoolPref("browser.snippets.firstrunHomepage.enabled", false);
+
+      UITelemetry.addEvent("action.1", "banner", null, "firstrun-homepage");
+    },
+    ondismiss: function() {
+      Home.banner.remove(id);
+      Services.prefs.setBoolPref("browser.snippets.firstrunHomepage.enabled", false);
+
+      UITelemetry.addEvent("cancel.1", "banner", null, "firstrun-homepage");
+    }
+  });
 }
 
 function Snippets() {}
@@ -376,11 +409,12 @@ Snippets.prototype = {
 
   observe: function(subject, topic, data) {
     switch(topic) {
-      case "profile-after-change":
-        Services.obs.addObserver(this, "browser-delayed-startup-finished", false);
-        break;
       case "browser-delayed-startup-finished":
-        Services.obs.removeObserver(this, "browser-delayed-startup-finished", false);
+        // Add snippets to be cycled through.
+        if (Services.prefs.getBoolPref("browser.snippets.firstrunHomepage.enabled")) {
+          loadHomePanelsBanner();
+        }
+
         if (Services.prefs.getBoolPref("browser.snippets.syncPromo.enabled")) {
           loadSyncPromoBanner();
         }

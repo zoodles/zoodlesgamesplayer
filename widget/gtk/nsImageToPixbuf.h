@@ -9,10 +9,6 @@
 #include "nsIImageToPixbuf.h"
 #include "mozilla/Attributes.h"
 
-class gfxASurface;
-class gfxPattern;
-class gfxImageSurface;
-
 namespace mozilla {
 namespace gfx {
 class SourceSurface;
@@ -24,7 +20,7 @@ class nsImageToPixbuf MOZ_FINAL : public nsIImageToPixbuf {
 
     public:
         NS_DECL_ISUPPORTS
-        NS_IMETHOD_(GdkPixbuf*) ConvertImageToPixbuf(imgIContainer* aImage);
+        NS_IMETHOD_(GdkPixbuf*) ConvertImageToPixbuf(imgIContainer* aImage) MOZ_OVERRIDE;
 
         // Friendlier version of ConvertImageToPixbuf for callers inside of
         // widget

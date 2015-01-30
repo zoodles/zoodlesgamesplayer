@@ -3,7 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 const ObservableObject = require("devtools/shared/observable-object");
-const promise = require("sdk/core/promise");
+const promise = require("devtools/toolkit/deprecated-sync-thenables");
 const {Connection} = require("devtools/client/connection-manager");
 
 const {Cu} = require("chrome");
@@ -73,15 +73,20 @@ WebappsStore.prototype = {
   _listTabs: function() {
     this._connection.client.listTabs((resp) => {
       this._webAppsActor = resp.webappsActor;
-      this._feedStore();
+      this._feedStore().then(() => {
+        this.emit("store-ready");
+      });
     });
   },
 
-  _feedStore: function(deviceFront, webAppsActor) {
+  _feedStore: function() {
+    if (!this._webAppsActor) {
+      return promise.resolve();
+    }
     this._listenToApps();
-    this._getAllApps()
-    .then(this._getRunningApps.bind(this))
-    .then(this._getAppsIcons.bind(this))
+    return this._getAllApps()
+               .then(this._getRunningApps.bind(this))
+               .then(this._getAppsIcons.bind(this));
   },
 
   _listenToApps: function() {

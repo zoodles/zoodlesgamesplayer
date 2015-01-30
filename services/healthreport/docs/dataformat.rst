@@ -293,6 +293,11 @@ Abnormal terminations will be missing a duration and will feature these keys:
 "stopped"
     was the session stopped gently?
 
+Version 3.2
+-----------
+
+As of Firefox 35, the search counts measurement is now bumped to v6, including the *activity* location for the search activity.
+
 Version 3.1
 -----------
 
@@ -305,6 +310,36 @@ an *intl.accept_languages* preference.
 The search counts measurement is now at version 5, which indicates that
 non-partner searches are recorded. You'll see identifiers like "other-Foo Bar"
 rather than "other".
+
+
+Version 3.2
+-----------
+
+In Firefox 32, Firefox for Android includes a device configuration section
+in the environment description::
+
+    "org.mozilla.device.config": {
+      "hasHardwareKeyboard": false,
+      "screenXInMM": 58,
+      "screenLayout": 2,
+      "uiType": "default",
+      "screenYInMM": 103,
+      "_v": 1,
+      "uiMode": 1
+    }
+
+Of these, the only keys that need explanation are:
+
+uiType
+    One of "default", "smalltablet", "largetablet".
+uiMode
+    A mask of the Android *Configuration.uiMode* value, e.g.,
+    *UI_MODE_TYPE_CAR*.
+screenLayout
+    A mask of the Android *Configuration.screenLayout* value. One of the
+    *SCREENLAYOUT_SIZE_* constants.
+
+Note that screen dimensions can be incorrect due to device inaccuracies and platform limitations.
 
 Other notable differences from Version 2
 ----------------------------------------
@@ -386,6 +421,21 @@ thisPingDate
 
 version
     Integer version of this payload format. Currently only 1 is defined.
+
+clientID
+    An identifier that identifies the client that is submitting data.
+
+    This property may not be present in older clients.
+
+    See :ref:`healthreport_identifiers` for more info on identifiers.
+
+clientIDVersion
+    Integer version associated with the generation semantics for the
+    ``clientID``.
+
+    If the value is ``1``, ``clientID`` is a randomly-generated UUID.
+
+    This property may not be present in older clients.
 
 data
     Object holding data constituting health report.
@@ -1028,6 +1078,83 @@ org.mozilla.crashes.crashes
 
 This measurement contains a historical record of application crashes.
 
+Version 5
+^^^^^^^^^
+
+This version adds support for Gecko media plugin (GMP) crashes.
+
+This measurement will be reported on each day there was a crash or crash
+submission. Records may contain the following fields, whose values indicate
+the number of crashes, hangs, or submissions that occurred on the given day:
+
+* content-crash
+* content-crash-submission-succeeded
+* content-crash-submission-failed
+* content-hang
+* content-hang-submission-succeeded
+* content-hang-submission-failed
+* gmplugin-crash
+* gmplugin-crash-submission-succeeded
+* gmplugin-crash-submission-failed
+* main-crash
+* main-crash-submission-succeeded
+* main-crash-submission-failed
+* main-hang
+* main-hang-submission-succeeded
+* main-hang-submission-failed
+* plugin-crash
+* plugin-crash-submission-succeeded
+* plugin-crash-submission-failed
+* plugin-hang
+* plugin-hang-submission-succeeded
+* plugin-hang-submission-failed
+
+Version 4
+^^^^^^^^^
+
+This version follows up from version 3, adding submissions which are now
+tracked by the :ref:`crashes_crashmanager`.
+
+This measurement will be reported on each day there was a crash or crash
+submission. Records may contain the following fields, whose values indicate
+the number of crashes, hangs, or submissions that occurred on the given day:
+
+* main-crash
+* main-crash-submission-succeeded
+* main-crash-submission-failed
+* main-hang
+* main-hang-submission-succeeded
+* main-hang-submission-failed
+* content-crash
+* content-crash-submission-succeeded
+* content-crash-submission-failed
+* content-hang
+* content-hang-submission-succeeded
+* content-hang-submission-failed
+* plugin-crash
+* plugin-crash-submission-succeeded
+* plugin-crash-submission-failed
+* plugin-hang
+* plugin-hang-submission-succeeded
+* plugin-hang-submission-failed
+
+Version 3
+^^^^^^^^^
+
+This version follows up from version 2, building on improvements to
+the :ref:`crashes_crashmanager`.
+
+This measurement will be reported on each day there was a
+crash. Records may contain the following fields, whose values indicate
+the number of crashes or hangs that occurred on the given day:
+
+* main-crash
+* main-hang
+* content-crash
+* content-hang
+* plugin-crash
+* plugin-hang
+
 Version 2
 ^^^^^^^^^
 
@@ -1090,6 +1217,14 @@ Example
       "_v": 2,
       "mainCrash": 2
     }
+    "org.mozilla.crashes.crashes": {
+      "_v": 4,
+      "main-crash": 2,
+      "main-crash-submission-succeeded": 1,
+      "main-crash-submission-failed": 1,
+      "main-hang": 1,
+      "plugin-crash": 2
+    }
 
 org.mozilla.healthreport.submissions
 ------------------------------------
@@ -1146,6 +1281,55 @@ the attempt, even if the result occurred on a different day from the attempt.
 Therefore, the sum of the result counts should equal the result of the attempt
 counts.
 
+org.mozilla.hotfix.update
+-------------------------
+
+This measurement contains results from the Firefox update hotfix.
+
+The Firefox update hotfix bypasses the built-in application update mechanism
+and installs a modern Firefox.
+
+Version 1
+^^^^^^^^^
+
+The fields in this measurement are dynamically created based on which
+versions of the update hotfix state file are found on disk.
+
+The general format of the fields is ``<version>.<thing>`` where ``version``
+is a hotfix version like ``v20140527`` and ``thing`` is a key from the
+hotfix state file, e.g. ``upgradedFrom``. Here are some of the ``things``
+that can be defined.
+
+upgradedFrom
+    String identifying the Firefox version that the hotfix upgraded from.
+    e.g. ``16.0`` or ``17.0.1``.
+
+uninstallReason
+    String with enumerated values identifying why the hotfix was uninstalled.
+    Value will be ``STILL_INSTALLED`` if the hotfix is still installed.
+
+downloadAttempts
+    Integer number of times the hotfix started downloading an installer.
+    Download resumes are part of this count.
+
+downloadFailures
+    Integer count of times a download supposedly completed but couldn't
+    be validated. This likely represents something wrong with the network
+    connection. The ratio of this to ``downloadAttempts`` should be low.
+
+installAttempts
+    Integer count of times the hotfix attempted to run the installer.
+    This should ideally be 1. It should only be greater than 1 if UAC
+    elevation was cancelled or not allowed.
+
+installFailures
+    Integer count of total installation failures this client experienced.
+    Can be 0. ``installAttempts - installFailures`` implies install successes.
+
+notificationsShown
+    Integer count of times a notification was displayed to the user that
+    they are running an older Firefox.
+
 org.mozilla.places.places
 -------------------------
 
@@ -1176,7 +1360,15 @@ Example
 org.mozilla.profile.age
 -----------------------
 
-This measurement contains information about the current profile's age.
+This measurement contains information about the current profile's age (and
+in version 2, the profile's most recent reset date)
+
+Version 2
+^^^^^^^^^
+
+*profileCreation* and *profileReset* properties are present.  Both define
+the integer days since UNIX epoch that the current profile was created or
+reset accordingly.
 
 Version 1
 ^^^^^^^^^
@@ -1188,7 +1380,9 @@ Notes
 ^^^^^
 
 It is somewhat difficult to obtain a reliable *profile born date* due to a
-number of factors.
+number of factors, but since Version 2, improvements have been made - on a
+"profile reset" we copy the profileCreation date from the old profile and
+record the time of the reset in profileReset.
 
 Example
 ^^^^^^^
@@ -1196,8 +1390,9 @@ Example
 ::
 
     "org.mozilla.profile.age": {
-      "_v": 1,
+      "_v": 2,
       "profileCreation": 15176
+      "profileReset": 15576
     }
 
 org.mozilla.searches.counts
@@ -1205,6 +1400,11 @@ org.mozilla.searches.counts
 
 This measurement contains information about searches performed in the
 application.
+
+Version 6 (mobile)
+^^^^^^^^^^^^^^^^^^
+
+This adds two new search locations: *widget* and *activity*, corresponding to the search widget and search activity respectively.
 
 Version 2
 ^^^^^^^^^
@@ -1340,6 +1540,36 @@ Example
       "google.urlbar": 7
     },
 
+org.mozilla.searches.engines
+----------------------------
+
+This measurement contains information about search engines.
+
+Version 1
+^^^^^^^^^
+
+This version debuted with Firefox 31 on desktop. It contains the
+following properties:
+
+default
+   Daily string identifier or name of the default search engine provider.
+
+   This field will only be collected if Telemetry is enabled. If
+   Telemetry is enabled and then later disabled, this field may
+   disappear from future days in the payload.
+
+   The special value ``NONE`` could occur if there is no default search
+   engine.
+
+   The special value ``UNDEFINED`` could occur if a default search
+   engine exists but its identifier could not be determined.
+
+   This field's contents are
+   ``Services.search.defaultEngine.identifier`` (if defined) or
+   ``"other-"`` + ``Services.search.defaultEngine.name`` if not.
+   In other words, search engines without an ``.identifier``
+   are prefixed with ``other-``.
+
 org.mozilla.sync.sync
 ---------------------
 
@@ -1466,6 +1696,107 @@ Example
     }
 
 
+org.mozilla.translation.translation
+-----------------------------------
+
+This daily measurement contains information about the usage of the translation
+feature. It is a special telemetry measurement which will only be recorded in
+FHR if telemetry is enabled.
+
+Version 1
+^^^^^^^^^
+
+Daily counts are reported in the following properties:
+
+translationOpportunityCount
+    Integer count of the number of opportunities there were to translate a page.
+missedTranslationOpportunityCount
+    Integer count of the number of missed opportunities there were to translate a page.
+    A missed opportunity is when the page language is not supported by the translation
+    provider.
+pageTranslatedCount
+    Integer count of the number of pages translated.
+charactersTranslatedCount
+    Integer count of the number of characters translated.
+detectedLanguageChangedBefore
+    Integer count of the number of times the user manually adjusted the detected
+    language before translating.
+detectedLanguageChangedAfter
+    Integer count of the number of times the user manually adjusted the detected
+    language after having first translated the page.
+targetLanguageChanged
+    Integer count of the number of times the user manually adjusted the target
+    language.
+deniedTranslationOffer
+    Integer count of the number of times the user opted-out offered
+    page translation, either by the Not Now button or by the notification's
+    close button in the "offer" state.
+autoRejectedTranlationOffer
+    Integer count of the number of times the user is not offered page
+    translation because they had previously clicked "Never translate this
+    language" or "Never translate this site".
+showOriginalContent
+    Integer count of the number of times the user activated the Show Original
+    command.
+
+Additional daily counts broken down by language are reported in the following
+properties:
+
+translationOpportunityCountsByLanguage
+    A mapping from language to count of opportunities to translate that
+    language.
+missedTranslationOpportunityCountsByLanguage
+    A mapping from language to count of missed opportunities to translate that
+    language.
+pageTranslatedCountsByLanguage
+    A mapping from language to the counts of pages translated from that
+    language. Each language entry will be an object containing a "total" member
+    along with individual counts for each language translated to.
+
+Other properties:
+
+detectLanguageEnabled
+    Whether automatic language detection is enabled. This is an integer, 0 or 1.
+showTranslationUI
+    Whether the translation feature UI will be shown. This is an integer, 0 or 1.
+
+Example
+^^^^^^^
+
+::
+
+    "org.mozilla.translation.translation": {
+      "_v": 1,
+      "detectLanguageEnabled": 1,
+      "showTranslationUI": 1,
+      "translationOpportunityCount": 134,
+      "missedTranslationOpportunityCount": 32,
+      "pageTranslatedCount": 6,
+      "charactersTranslatedCount": "1126",
+      "detectedLanguageChangedBefore": 1,
+      "detectedLanguageChangedAfter": 2,
+      "targetLanguageChanged": 0,
+      "deniedTranslationOffer": 3,
+      "autoRejectedTranlationOffer": 1,
+      "showOriginalContent": 2,
+      "translationOpportunityCountsByLanguage": {
+        "fr": 100,
+        "es": 34
+      },
+      "missedTranslationOpportunityCountsByLanguage": {
+        "it": 20,
+        "nl": 10,
+        "fi": 2
+      },
+      "pageTranslatedCountsByLanguage": {
+        "fr": {
+          "total": 6,
+          "es": 5,
+          "en": 1
+        }
+      }
+    }
+
 
 org.mozilla.experiments.info
 ----------------------------------
@@ -1481,13 +1812,51 @@ lastActive
     ID of the final Telemetry Experiment that is active on a given day, if any.
 
 
+Version 2
+^^^^^^^^^
+
+Adds an additional optional property:
+
+lastActiveBranch
+    If the experiment uses branches, the branch identifier string.
+
 Example
 ^^^^^^^
 
 ::
 
     "org.mozilla.experiments.info": {
-      "_v": 1,
-      "lastActive": "some.experiment.id"
+      "_v": 2,
+      "lastActive": "some.experiment.id",
+      "lastActiveBranch": "control"
     }
 
+org.mozilla.uitour.treatment
+----------------------------
+
+Daily measurement reporting information about treatment tagging done
+by the UITour module.
+
+Version 1
+^^^^^^^^^
+
+Daily text values in the following properties:
+
+<tag>:
+    Array of discrete strings corresponding to calls for setTreatmentTag(tag, value).
+
+Example
+^^^^^^^
+
+::
+
+    "org.mozilla.uitour.treatment": {
+      "_v": 1,
+      "treatment": [
+        "optin",
+        "optin-DNT"
+      ],
+      "another-tag": [
+        "foobar-value"
+      ]
+    }

@@ -148,11 +148,9 @@ FRAME_STATE_BIT(Generic, 15, NS_FRAME_PART_OF_IBSPLIT)
 // common case.
 FRAME_STATE_BIT(Generic, 16, NS_FRAME_MAY_BE_TRANSFORMED)
 
-#ifdef IBMBIDI
 // If this bit is set, the frame itself is a bidi continuation,
 // or is incomplete (its next sibling is a bidi continuation)
 FRAME_STATE_BIT(Generic, 17, NS_FRAME_IS_BIDI)
-#endif
 
 // If this bit is set the frame has descendant with a view
 FRAME_STATE_BIT(Generic, 18, NS_FRAME_HAS_CHILD_WITH_VIEW)
@@ -186,7 +184,7 @@ FRAME_STATE_BIT(Generic, 36, NS_FRAME_UPDATE_LAYER_TREE)
 // Frame can accept absolutely positioned children.
 FRAME_STATE_BIT(Generic, 37, NS_FRAME_HAS_ABSPOS_CHILDREN)
 
-// A display item for this frame has been painted as part of a ThebesLayer.
+// A display item for this frame has been painted as part of a PaintedLayer.
 FRAME_STATE_BIT(Generic, 38, NS_FRAME_PAINTED_THEBES)
 
 // Frame is or is a descendant of something with a fixed height, unless that
@@ -250,6 +248,9 @@ FRAME_STATE_BIT(Generic, 53, NS_FRAME_IS_NONDISPLAY)
 
 // Frame has a LayerActivityProperty property
 FRAME_STATE_BIT(Generic, 54, NS_FRAME_HAS_LAYER_ACTIVITY_PROPERTY)
+
+// Frame has VR content, and needs VR display items created
+FRAME_STATE_BIT(Generic, 57, NS_FRAME_HAS_VR_CONTENT)
 
 // Set for all descendants of MathML sub/supscript elements (other than the
 // base frame) to indicate that the SSTY font feature should be used.
@@ -407,10 +408,8 @@ FRAME_STATE_BIT(Text, 60, TEXT_IN_UNINFLATED_TEXTRUN_USER_DATA)
 
 FRAME_STATE_BIT(Text, 61, TEXT_HAS_FONT_INFLATION)
 
-// If true, then this frame is being removed due to a SetLength() on a
-// previous continuation and the style context of that previous
-// continuation is the same as this frame's
-FRAME_STATE_BIT(Text, 62, TEXT_STYLE_MATCHES_PREV_CONTINUATION)
+// Set when this text frame contains nothing that will actually render
+FRAME_STATE_BIT(Text, 62, TEXT_NO_RENDERED_GLYPHS)
 
 // Whether this frame is cached in the Offset Frame Cache
 // (OffsetToFrameProperty)
@@ -516,6 +515,22 @@ FRAME_STATE_GROUP(Inline, nsInlineFrame)
 FRAME_STATE_BIT(Inline, 21, NS_INLINE_FRAME_BIDI_VISUAL_STATE_IS_SET)
 FRAME_STATE_BIT(Inline, 22, NS_INLINE_FRAME_BIDI_VISUAL_IS_FIRST)
 FRAME_STATE_BIT(Inline, 23, NS_INLINE_FRAME_BIDI_VISUAL_IS_LAST)
+// nsRubyTextFrame inherits from nsInlineFrame
+
+
+// == Frame state bits that apply to ruby text frames =========================
+
+FRAME_STATE_GROUP(RubyText, nsRubyTextFrame)
+
+// inherits from nsInlineFrame
+FRAME_STATE_BIT(RubyText, 24, NS_RUBY_TEXT_FRAME_AUTOHIDE)
+
+
+// == Frame state bits that apply to ruby text container frames ===============
+
+FRAME_STATE_GROUP(RubyTextContainer, nsRubyTextContainerFrame)
+
+FRAME_STATE_BIT(RubyTextContainer, 20, NS_RUBY_TEXT_CONTAINER_IS_SPAN)
 
 
 // == Frame state bits that apply to placeholder frames =======================

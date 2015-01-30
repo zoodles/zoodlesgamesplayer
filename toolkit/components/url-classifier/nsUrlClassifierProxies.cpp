@@ -6,6 +6,8 @@
 #include "nsUrlClassifierProxies.h"
 #include "nsUrlClassifierDBService.h"
 
+#include "mozilla/SyncRunnable.h"
+
 using namespace mozilla::safebrowsing;
 
 static nsresult
@@ -18,8 +20,8 @@ DispatchToWorkerThread(nsIRunnable* r)
   return t->Dispatch(r, NS_DISPATCH_NORMAL);
 }
 
-NS_IMPL_ISUPPORTS1(UrlClassifierDBServiceWorkerProxy,
-                              nsIUrlClassifierDBServiceWorker)
+NS_IMPL_ISUPPORTS(UrlClassifierDBServiceWorkerProxy,
+                  nsIUrlClassifierDBServiceWorker)
 
 NS_IMETHODIMP
 UrlClassifierDBServiceWorkerProxy::Lookup(nsIPrincipal* aPrincipal,
@@ -117,6 +119,31 @@ UrlClassifierDBServiceWorkerProxy::FinishStream()
 }
 
 NS_IMETHODIMP
+UrlClassifierDBServiceWorkerProxy::DoLocalLookupRunnable::Run()
+{
+  mTarget->DoLocalLookup(mSpec, mTables, mResults);
+  return NS_OK;
+}
+
+nsresult
+UrlClassifierDBServiceWorkerProxy::DoLocalLookup(const nsACString& spec,
+                                                 const nsACString& tables,
+                                                 LookupResultArray* results)
+
+{
+  // Run synchronously on background thread. NS_DISPATCH_SYNC does *not* do
+  // what we want -- it continues processing events on the main thread loop
+  // before the Dispatch returns.
+  nsCOMPtr<nsIRunnable> r = new DoLocalLookupRunnable(mTarget, spec, tables, results);
+  nsIThread* t = nsUrlClassifierDBService::BackgroundThread();
+  if (!t)
+    return NS_ERROR_FAILURE;
+
+  mozilla::SyncRunnable::DispatchToThread(t, r);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 UrlClassifierDBServiceWorkerProxy::FinishUpdate()
 {
   nsCOMPtr<nsIRunnable> r =
@@ -140,6 +167,15 @@ UrlClassifierDBServiceWorkerProxy::ResetDatabase()
   nsCOMPtr<nsIRunnable> r =
     NS_NewRunnableMethod(mTarget,
                          &nsIUrlClassifierDBServiceWorker::ResetDatabase);
+  return DispatchToWorkerThread(r);
+}
+
+NS_IMETHODIMP
+UrlClassifierDBServiceWorkerProxy::OpenDb()
+{
+  nsCOMPtr<nsIRunnable> r =
+    NS_NewRunnableMethod(mTarget,
+                         &nsIUrlClassifierDBServiceWorker::OpenDb);
   return DispatchToWorkerThread(r);
 }
 
@@ -181,8 +217,8 @@ UrlClassifierDBServiceWorkerProxy::CacheMissesRunnable::Run()
 }
 
 
-NS_IMPL_ISUPPORTS1(UrlClassifierLookupCallbackProxy,
-                              nsIUrlClassifierLookupCallback)
+NS_IMPL_ISUPPORTS(UrlClassifierLookupCallbackProxy,
+                  nsIUrlClassifierLookupCallback)
 
 NS_IMETHODIMP
 UrlClassifierLookupCallbackProxy::LookupComplete
@@ -199,8 +235,8 @@ UrlClassifierLookupCallbackProxy::LookupCompleteRunnable::Run()
   return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS1(UrlClassifierCallbackProxy,
-                              nsIUrlClassifierCallback)
+NS_IMPL_ISUPPORTS(UrlClassifierCallbackProxy,
+                  nsIUrlClassifierCallback)
 
 NS_IMETHODIMP
 UrlClassifierCallbackProxy::HandleEvent(const nsACString& aValue)
@@ -216,8 +252,8 @@ UrlClassifierCallbackProxy::HandleEventRunnable::Run()
   return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS1(UrlClassifierUpdateObserverProxy,
-                              nsIUrlClassifierUpdateObserver)
+NS_IMPL_ISUPPORTS(UrlClassifierUpdateObserverProxy,
+                  nsIUrlClassifierUpdateObserver)
 
 NS_IMETHODIMP
 UrlClassifierUpdateObserverProxy::UpdateUrlRequested

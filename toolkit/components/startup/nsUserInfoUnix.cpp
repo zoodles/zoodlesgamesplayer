@@ -31,7 +31,7 @@ nsUserInfo::~nsUserInfo()
 {
 }
 
-NS_IMPL_ISUPPORTS1(nsUserInfo,nsIUserInfo)
+NS_IMPL_ISUPPORTS(nsUserInfo,nsIUserInfo)
 
 NS_IMETHODIMP
 nsUserInfo::GetFullname(char16_t **aFullname)
@@ -122,7 +122,7 @@ nsUserInfo::GetDomain(char * *aDomain)
         // try to get the hostname from the nodename
         // on machines that use DHCP, domainname may not be set
         // but the nodename might.
-        if (buf.nodename && buf.nodename[0]) {
+        if (buf.nodename[0]) {
             // if the nodename is foo.bar.org, use bar.org as the domain
             char *pos = strchr(buf.nodename,'.');
             if (pos) {

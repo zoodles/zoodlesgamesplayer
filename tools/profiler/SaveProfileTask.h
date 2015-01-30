@@ -15,9 +15,6 @@
 #include "nsIJSRuntimeService.h"
 #include "nsIProfileSaveEvent.h"
 
-#include <ostream>
-#include <fstream>
-
 #ifdef XP_WIN
  #include <windows.h>
  #define getpid GetCurrentProcessId
@@ -46,10 +43,10 @@ public:
     , mClosure(aClosure)
   {}
 
+  NS_IMETHOD AddSubProfile(const char* aProfile) MOZ_OVERRIDE;
+private:
   ~ProfileSaveEvent() {}
 
-  NS_IMETHOD AddSubProfile(const char* aProfile);
-private:
   AddSubProfileFunc mFunc;
   void* mClosure;
 };

@@ -30,10 +30,15 @@ public:
   // Forward to base class
   NS_FORWARD_TO_UIEVENT
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE
+  static already_AddRefed<KeyboardEvent> Constructor(
+                                           const GlobalObject& aGlobal,
+                                           const nsAString& aType,
+                                           const KeyboardEventInit& aParam,
+                                           ErrorResult& aRv);
+
+  virtual JSObject* WrapObjectInternal(JSContext* aCx) MOZ_OVERRIDE
   {
-    return KeyboardEventBinding::Wrap(aCx, aScope, this);
+    return KeyboardEventBinding::Wrap(aCx, this);
   }
 
   bool AltKey();
@@ -47,10 +52,13 @@ public:
   }
 
   bool Repeat();
+  bool IsComposing();
   uint32_t CharCode();
   uint32_t KeyCode();
   virtual uint32_t Which() MOZ_OVERRIDE;
   uint32_t Location();
+
+  void GetCode(nsAString& aCode);
 
   void InitKeyEvent(const nsAString& aType, bool aCanBubble, bool aCancelable,
                     nsIDOMWindow* aView, bool aCtrlKey, bool aAltKey,
@@ -62,6 +70,23 @@ public:
                        aCtrlKey, aAltKey, aShiftKey,aMetaKey,
                        aKeyCode, aCharCode);
   }
+
+protected:
+  ~KeyboardEvent() {}
+
+  void InitWithKeyboardEventInit(EventTarget* aOwner,
+                                 const nsAString& aType,
+                                 const KeyboardEventInit& aParam,
+                                 ErrorResult& aRv);
+
+private:
+  // True, if the instance is created with Constructor().
+  bool mInitializedByCtor;
+
+  // If the instance is created with Constructor(), which may have independent
+  // value.  mInitializedWhichValue stores it.  I.e., this is invalid when
+  // mInitializedByCtor is false.
+  uint32_t mInitializedWhichValue;
 };
 
 } // namespace dom

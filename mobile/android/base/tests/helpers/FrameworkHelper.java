@@ -4,9 +4,7 @@
 
 package org.mozilla.gecko.tests.helpers;
 
-import static org.mozilla.gecko.tests.helpers.AssertionHelper.*;
-
-import org.mozilla.gecko.tests.UITestContext;
+import static org.mozilla.gecko.tests.helpers.AssertionHelper.fFail;
 
 import java.lang.reflect.Field;
 
@@ -31,7 +29,13 @@ public final class FrameworkHelper {
         do {
             try {
                 return cls.getDeclaredField(fieldName);
-            } catch (final NoSuchFieldException e) {
+            } catch (final Exception e) {
+                // NoSuchFieldException is a documented exception of getDeclaredField
+                // and is frequently observed here. No other exceptions are documented
+                // for getDeclaredField. However, on Android 2.3, NoSuchMethodException 
+                // is also observed, when called on some classes. This appears to be 
+                // an Android bug reportedly fixed in Honeycomb. Since NoSuchMethodException
+                // is not declared, it cannot be caught, so we catch all Exceptions.
                 cls = cls.getSuperclass();
             }
         } while (cls != null);

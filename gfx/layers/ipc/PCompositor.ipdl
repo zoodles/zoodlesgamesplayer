@@ -6,7 +6,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 include LayersSurfaces;
-include protocol PGrallocBuffer;
 include protocol PLayerTransaction;
 include "mozilla/GfxMessageUtils.h";
 include "nsRegion.h";
@@ -40,7 +39,27 @@ child:
   // The child should invalidate everything so that the whole window is redrawn.
   async InvalidateAll();
 
+  // The compositor completed a layers transaction. id is the layers id
+  // of the child layer tree that was composited (or 0 when notifying
+  // the root layer tree).
+  async DidComposite(uint64_t id, uint64_t transactionId);
+
+  // The parent sends the child the requested fill ratio numbers.
+  async Overfill(uint32_t aOverfill);
+
+  /**
+   * Parent informs the child that the graphics objects are ready for
+   * compositing.  This usually means that the graphics objects (textures
+   * and the like) are available on the GPU.  This is used for chrome UI.
+   * @see RequestNotifyAfterRemotePaint
+   * @see PBrowser
+   */
+  async RemotePaintIsReady();
+
 parent:
+
+  // Child sends the parent a request for fill ratio numbers.
+  async RequestOverfill();
 
   // The child is about to be destroyed, so perform any necessary cleanup.
   sync WillStop();
@@ -54,6 +73,7 @@ parent:
   sync Resume();
 
   async NotifyChildCreated(uint64_t id);
+  async AdoptChild(uint64_t id);
 
   // Make a snapshot of the content that would have been drawn to our
   // render target at the time this message is received.  If the size
@@ -62,12 +82,15 @@ parent:
   //
   // NB: this message will result in animations, transforms, effects,
   // and so forth being interpolated.  That's what we want to happen.
-  sync MakeSnapshot(SurfaceDescriptor inSnapshot)
-    returns (SurfaceDescriptor outSnapshot);
+  sync MakeSnapshot(SurfaceDescriptor inSnapshot, nsIntRect dirtyRect);
 
   // Make sure any pending composites are started immediately and
   // block until they are completed.
   sync FlushRendering();
+
+  // Get the size of the tiles. This number should not change at runtime.
+  sync GetTileSize()
+    returns (int32_t tileWidth, int32_t tileHeight);
 
   sync StartFrameTimeRecording(int32_t bufferSize)
     returns (uint32_t startIndex);
@@ -83,6 +106,14 @@ parent:
 
   // Notify the compositor that a region of the screen has been invalidated.
   async NotifyRegionInvalidated(nsIntRegion region);
+
+  /**
+   * The child (content/chrome thread) requests that the parent inform it when
+   * the graphics objects are ready to display.
+   * @see PBrowser
+   * @see RemotePaintIsReady
+   */
+  async RequestNotifyAfterRemotePaint();
 
 child:
   // Send back Compositor Frame Metrics from APZCs so tiled layers can

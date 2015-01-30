@@ -57,6 +57,9 @@
             <item android:id="@+id/subscribe"
                   android:title="@string/contextmenu_subscribe"/>
 
+            <item android:id="@+id/save_as_pdf"
+                  android:title="@string/save_as_pdf"/>
+
             <item android:id="@+id/add_search_engine"
                   android:title="@string/contextmenu_add_search_engine"/>
 
@@ -76,10 +79,6 @@
 
         <menu>
 
-            <item android:id="@+id/save_as_pdf"
-                  android:icon="@drawable/ic_menu_save_as_pdf"
-                  android:title="@string/save_as_pdf" />
-
             <item android:id="@+id/downloads"
                   android:icon="@drawable/ic_menu_downloads"
                   android:title="@string/downloads"/>
@@ -97,6 +96,11 @@
                   android:visible="false"
                   android:title="@string/new_guest_session"/>
 
+            <item android:id="@+id/exit_guest_session"
+                  android:icon="@drawable/ic_menu_guest"
+                  android:visible="false"
+                  android:title="@string/exit_guest_session"/>
+
         </menu>
 
     </item>
@@ -110,8 +114,7 @@
           android:icon="@drawable/ic_menu_settings"
           android:title="@string/settings" />
 
-    <item android:id="@+id/exit_guest_session"
-          android:icon="@drawable/ic_menu_guest"
-          android:visible="false"
-          android:title="@string/exit_guest_session"/>
+    <item android:id="@+id/help"
+          android:title="@string/help_menu" />
+
 </menu>

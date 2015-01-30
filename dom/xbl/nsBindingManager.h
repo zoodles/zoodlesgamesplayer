@@ -8,7 +8,7 @@
 
 #include "nsIContent.h"
 #include "nsStubMutationObserver.h"
-#include "pldhash.h"
+#include "nsHashKeys.h"
 #include "nsInterfaceHashtable.h"
 #include "nsRefPtrHashtable.h"
 #include "nsURIHashKey.h"
@@ -30,10 +30,16 @@ class nsXBLBinding;
 template<class E> class nsRefPtr;
 typedef nsTArray<nsRefPtr<nsXBLBinding> > nsBindingList;
 class nsIPrincipal;
-class nsCSSStyleSheet;
+class nsITimer;
+
+namespace mozilla {
+class CSSStyleSheet;
+} // namespace mozilla
 
 class nsBindingManager MOZ_FINAL : public nsStubMutationObserver
 {
+  ~nsBindingManager();
+
 public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
 
@@ -41,8 +47,7 @@ public:
   NS_DECL_NSIMUTATIONOBSERVER_CONTENTINSERTED
   NS_DECL_NSIMUTATIONOBSERVER_CONTENTREMOVED
 
-  nsBindingManager(nsIDocument* aDocument);
-  ~nsBindingManager();
+  explicit nsBindingManager(nsIDocument* aDocument);
 
   nsXBLBinding* GetBindingWithContent(nsIContent* aContent);
 
@@ -116,9 +121,9 @@ public:
   nsresult MediumFeaturesChanged(nsPresContext* aPresContext,
                                  bool* aRulesChanged);
 
-  void AppendAllSheets(nsTArray<nsCSSStyleSheet*>& aArray);
+  void AppendAllSheets(nsTArray<mozilla::CSSStyleSheet*>& aArray);
 
-  NS_HIDDEN_(void) Traverse(nsIContent *aContent,
+  void Traverse(nsIContent *aContent,
                             nsCycleCollectionTraversalCallback &cb);
 
   NS_DECL_CYCLE_COLLECTION_CLASS(nsBindingManager)
@@ -158,8 +163,11 @@ protected:
   // Post an event to process the attached queue.
   void PostProcessAttachedQueueEvent();
 
+  // Call PostProcessAttachedQueueEvent() on a timer.
+  static void PostPAQEventCallback(nsITimer* aTimer, void* aClosure);
+
 // MEMBER VARIABLES
-protected: 
+protected:
   // A set of nsIContent that currently have a binding installed.
   nsAutoPtr<nsTHashtable<nsRefPtrHashKey<nsIContent> > > mBoundContentSet;
 
@@ -170,7 +178,8 @@ protected:
   // its lifetime, and I prevent a re-wrap of the same script object
   // (in the case where multiple bindings in an XBL inheritance chain
   // both implement an XPIDL interface).
-  PLDHashTable mWrapperTable;
+  typedef nsInterfaceHashtable<nsISupportsHashKey, nsIXPConnectWrappedJS> WrapperHashtable;
+  nsAutoPtr<WrapperHashtable> mWrapperTable;
 
   // A mapping from a URL (a string) to nsXBLDocumentInfo*.  This table
   // is the cache of all binding documents that have been loaded by a
@@ -193,7 +202,7 @@ protected:
   nsRefPtr< nsRunnableMethod<nsBindingManager> > mProcessAttachedQueueEvent;
 
   // Our document.  This is a weak ref; the document owns us
-  nsIDocument* mDocument; 
+  nsIDocument* mDocument;
 };
 
 #endif

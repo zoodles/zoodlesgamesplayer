@@ -14,6 +14,7 @@
 #include "mozilla/layers/LayersTypes.h"  // for LayerRenderState, etc
 #include "nsISupportsImpl.h"            // for TextureImage::AddRef, etc
 #include "nscore.h"                     // for nsACString
+#include "CompositableHost.h"           // for CompositableHost
 
 struct nsIntPoint;
 struct nsIntRect;
@@ -21,7 +22,6 @@ struct nsIntRect;
 namespace mozilla {
 namespace layers {
 
-class CompositableHost;
 class ImageHost;
 class Layer;
 
@@ -31,10 +31,12 @@ class ImageLayerComposite : public ImageLayer,
   typedef gl::TextureImage TextureImage;
 
 public:
-  ImageLayerComposite(LayerManagerComposite* aManager);
+  explicit ImageLayerComposite(LayerManagerComposite* aManager);
 
+protected:
   virtual ~ImageLayerComposite();
 
+public:
   virtual LayerRenderState GetRenderState() MOZ_OVERRIDE;
 
   virtual void Disconnect() MOZ_OVERRIDE;
@@ -43,7 +45,16 @@ public:
 
   virtual Layer* GetLayer() MOZ_OVERRIDE;
 
-  virtual void RenderLayer(const nsIntRect& aClipRect);
+  virtual void SetLayerManager(LayerManagerComposite* aManager) MOZ_OVERRIDE
+  {
+    LayerComposite::SetLayerManager(aManager);
+    mManager = aManager;
+    if (mImageHost) {
+      mImageHost->SetCompositor(mCompositor);
+    }
+  }
+
+  virtual void RenderLayer(const nsIntRect& aClipRect) MOZ_OVERRIDE;
 
   virtual void ComputeEffectiveTransforms(const mozilla::gfx::Matrix4x4& aTransformToSurface) MOZ_OVERRIDE;
 
@@ -51,12 +62,17 @@ public:
 
   CompositableHost* GetCompositableHost() MOZ_OVERRIDE;
 
+  virtual void GenEffectChain(EffectChain& aEffect) MOZ_OVERRIDE;
+
   virtual LayerComposite* AsLayerComposite() MOZ_OVERRIDE { return this; }
 
-  virtual const char* Name() const { return "ImageLayerComposite"; }
+  virtual const char* Name() const MOZ_OVERRIDE { return "ImageLayerComposite"; }
 
 protected:
-  virtual nsACString& PrintInfo(nsACString& aTo, const char* aPrefix) MOZ_OVERRIDE;
+  virtual void PrintInfo(std::stringstream& aStream, const char* aPrefix) MOZ_OVERRIDE;
+
+private:
+  gfx::Filter GetEffectFilter();
 
 private:
   RefPtr<CompositableHost> mImageHost;

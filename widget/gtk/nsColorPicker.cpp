@@ -11,7 +11,7 @@
 #include "nsIWidget.h"
 #include "WidgetUtils.h"
 
-NS_IMPL_ISUPPORTS1(nsColorPicker, nsIColorPicker)
+NS_IMPL_ISUPPORTS(nsColorPicker, nsIColorPicker)
 
 int nsColorPicker::convertGdkColorComponent(guint16 color_component) {
   // GdkColor value is in range [0..65535]. We need something in range [0..255]
@@ -175,7 +175,7 @@ void nsColorPicker::ReadValueFromColorSelection(GtkColorSelection* colorselectio
   GdkColor rgba;
   gtk_color_selection_get_current_color(colorselection, &rgba);
 
-  mColor.AssignLiteral("#");
+  mColor.Assign('#');
   mColor += ToHexString(convertGdkColorComponent(rgba.red));
   mColor += ToHexString(convertGdkColorComponent(rgba.green));
   mColor += ToHexString(convertGdkColorComponent(rgba.blue));

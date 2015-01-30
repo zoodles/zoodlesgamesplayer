@@ -20,6 +20,7 @@
 #include "nsString.h"
 #include "nsCOMArray.h"
 #include "nsThreadUtils.h"
+#include "mozilla/Attributes.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/TimeStamp.h"
 
@@ -46,9 +47,9 @@ class CacheFileOutputStream;
 class CacheOutputCloseListener;
 class CacheEntryHandle;
 
-class CacheEntry : public nsICacheEntry
-                 , public nsIRunnable
-                 , public CacheFileListener
+class CacheEntry MOZ_FINAL : public nsICacheEntry
+                           , public nsIRunnable
+                           , public CacheFileListener
 {
 public:
   NS_DECL_THREADSAFE_ISUPPORTS
@@ -67,10 +68,11 @@ public:
   nsCString const &GetStorageID() const { return mStorageID; }
   nsCString const &GetEnhanceID() const { return mEnhanceID; }
   nsIURI* GetURI() const { return mURI; }
-  bool UsingDisk() const;
-  bool SetUsingDisk(bool aUsingDisk);
+  // Accessible at any time
+  bool IsUsingDisk() const { return mUseDisk; }
   bool IsReferenced() const;
   bool IsFileDoomed();
+  bool IsDoomed() const { return mIsDoomed; }
 
   // Methods for entry management (eviction from memory),
   // called only on the management thread.
@@ -78,10 +80,13 @@ public:
   // TODO make these inline
   double GetFrecency() const;
   uint32_t GetExpirationTime() const;
+  uint32_t UseCount() const { return mUseCount; }
 
   bool IsRegistered() const;
   bool CanRegister() const;
   void SetRegistered(bool aRegistered);
+
+  TimeStamp const& LoadStart() const { return mLoadStart; }
 
   enum EPurge {
     PURGE_DATA_ONLY_DISK_BACKED,
@@ -93,12 +98,17 @@ public:
   void PurgeAndDoom();
   void DoomAlreadyRemoved();
 
-  nsresult HashingKeyWithStorage(nsACString &aResult);
-  nsresult HashingKey(nsACString &aResult);
+  nsresult HashingKeyWithStorage(nsACString &aResult) const;
+  nsresult HashingKey(nsACString &aResult) const;
 
   static nsresult HashingKey(nsCSubstring const& aStorageID,
                              nsCSubstring const& aEnhanceID,
                              nsIURI* aURI,
+                             nsACString &aResult);
+
+  static nsresult HashingKey(nsCSubstring const& aStorageID,
+                             nsCSubstring const& aEnhanceID,
+                             nsCSubstring const& aURISpec,
                              nsACString &aResult);
 
   // Accessed only on the service management thread
@@ -113,8 +123,8 @@ private:
   virtual ~CacheEntry();
 
   // CacheFileListener
-  NS_IMETHOD OnFileReady(nsresult aResult, bool aIsNew);
-  NS_IMETHOD OnFileDoomed(nsresult aResult);
+  NS_IMETHOD OnFileReady(nsresult aResult, bool aIsNew) MOZ_OVERRIDE;
+  NS_IMETHOD OnFileDoomed(nsresult aResult) MOZ_OVERRIDE;
 
   // Keep the service alive during life-time of an entry
   nsRefPtr<CacheStorageService> mService;
@@ -127,7 +137,7 @@ private:
   public:
     Callback(CacheEntry* aEntry,
              nsICacheEntryOpenCallback *aCallback,
-             bool aReadOnly, bool aCheckOnAnyThread);
+             bool aReadOnly, bool aCheckOnAnyThread, bool aSecret);
     Callback(Callback const &aThat);
     ~Callback();
 
@@ -145,6 +155,7 @@ private:
     bool mCheckOnAnyThread : 1;
     bool mRecheckAfterWrite : 1;
     bool mNotWanted : 1;
+    bool mSecret : 1;
 
     nsresult OnCheckThread(bool *aOnCheckThread) const;
     nsresult OnAvailThread(bool *aOnAvailThread) const;
@@ -198,11 +209,14 @@ private:
     nsresult mRv;
   };
 
+  // Starts the load or just invokes the callback, bypasses (when required)
+  // if busy.  Returns true on job done, false on bypass.
+  bool Open(Callback & aCallback, bool aTruncate, bool aPriority, bool aBypassIfBusy);
   // Loads from disk asynchronously
   bool Load(bool aTruncate, bool aPriority);
   void OnLoaded();
 
-  void RememberCallback(Callback const & aCallback);
+  void RememberCallback(Callback & aCallback);
   void InvokeCallbacksLock();
   void InvokeCallbacks();
   bool InvokeCallbacks(bool aReadOnly);
@@ -217,9 +231,18 @@ private:
   void OnHandleClosed(CacheEntryHandle const* aHandle);
 
 private:
+  friend class CacheEntryHandle;
+  // Increment/decrements the number of handles keeping this entry.
+  void AddHandleRef() { ++mHandlesCount; }
+  void ReleaseHandleRef() { --mHandlesCount; }
+  // Current number of handles keeping this entry.
+  uint32_t HandlesCount() const { return mHandlesCount; }
+
+private:
   friend class CacheOutputCloseListener;
   void OnOutputClosed();
 
+private:
   // Schedules a background operation on the management thread.
   // When executed on the management thread directly, the operation(s)
   // is (are) executed immediately.
@@ -236,8 +259,7 @@ private:
   mozilla::Mutex mLock;
 
   // Reflects the number of existing handles for this entry
-  friend class CacheEntryHandle;
-  ::mozilla::ThreadSafeAutoRefCnt mHandlersCount;
+  ::mozilla::ThreadSafeAutoRefCnt mHandlesCount;
 
   nsTArray<Callback> mCallbacks;
   nsCOMPtr<nsICacheEntryDoomCallback> mDoomCallback;
@@ -249,9 +271,7 @@ private:
   nsCString mStorageID;
 
   // Whether it's allowed to persist the data to disk
-  // Synchronized by the service management lock.
-  // Hence, leave it as a standalone boolean.
-  bool mUseDisk;
+  bool const mUseDisk;
 
   // Set when entry is doomed with AsyncDoom() or DoomAlreadyRemoved().
   // Left as a standalone flag to not bother with locking (there is no need).
@@ -325,12 +345,9 @@ private:
   } mBackgroundOperations;
 
   nsCOMPtr<nsISupports> mSecurityInfo;
-
   int64_t mPredictedDataSize;
-  uint32_t mDataSize; // ???
-
   mozilla::TimeStamp mLoadStart;
-
+  uint32_t mUseCount;
   nsCOMPtr<nsIThread> mReleaseThread;
 };
 
@@ -338,28 +355,29 @@ private:
 class CacheEntryHandle : public nsICacheEntry
 {
 public:
-  CacheEntryHandle(CacheEntry* aEntry);
-  virtual ~CacheEntryHandle();
+  explicit CacheEntryHandle(CacheEntry* aEntry);
   CacheEntry* Entry() const { return mEntry; }
 
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_FORWARD_NSICACHEENTRY(mEntry->)
 private:
+  virtual ~CacheEntryHandle();
   nsRefPtr<CacheEntry> mEntry;
 };
 
 
-class CacheOutputCloseListener : public nsRunnable
+class CacheOutputCloseListener MOZ_FINAL : public nsRunnable
 {
 public:
   void OnOutputClosed();
-  virtual ~CacheOutputCloseListener();
 
 private:
   friend class CacheEntry;
 
+  virtual ~CacheOutputCloseListener();
+
   NS_DECL_NSIRUNNABLE
-  CacheOutputCloseListener(CacheEntry* aEntry);
+  explicit CacheOutputCloseListener(CacheEntry* aEntry);
 
 private:
   nsRefPtr<CacheEntry> mEntry;

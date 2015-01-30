@@ -11,7 +11,7 @@
 #include "base/message_loop.h"
 #include "mozilla/FileUtils.h"
 #include "mozilla/Observer.h"
-#include "mozilla/RefPtr.h"
+#include "nsISupportsImpl.h"
 #include "nsString.h"
 #include "nsTArray.h"
 
@@ -73,16 +73,16 @@ namespace system {
 *
 ***************************************************************************/
 
-class VolumeManager : public MessageLoopForIO::LineWatcher,
-                      public RefCounted<VolumeManager>
+class VolumeManager MOZ_FINAL : public MessageLoopForIO::LineWatcher
 {
-public:
-  MOZ_DECLARE_REFCOUNTED_TYPENAME(VolumeManager)
+  virtual ~VolumeManager();
 
-  typedef nsTArray<RefPtr<Volume> > VolumeArray;
+public:
+  NS_INLINE_DECL_REFCOUNTING(VolumeManager)
+
+  typedef nsTArray<RefPtr<Volume>> VolumeArray;
 
   VolumeManager();
-  virtual ~VolumeManager();
 
   //-----------------------------------------------------------------------
   //
@@ -122,11 +122,13 @@ public:
   //-----------------------------------------------------------------------
 
   static void Start();
+  static void Dump(const char* aLabel);
 
   static VolumeArray::size_type NumVolumes();
   static TemporaryRef<Volume> GetVolume(VolumeArray::index_type aIndex);
   static TemporaryRef<Volume> FindVolumeByName(const nsCSubstring& aName);
   static TemporaryRef<Volume> FindAddVolumeByName(const nsCSubstring& aName);
+  static void InitConfig();
 
   static void       PostCommand(VolumeCommand* aCommand);
 
@@ -135,6 +137,8 @@ protected:
   virtual void OnLineRead(int aFd, nsDependentCSubstring& aMessage);
   virtual void OnFileCanWriteWithoutBlocking(int aFd);
   virtual void OnError();
+
+  static void DefaultConfig();
 
 private:
   bool OpenSocket();

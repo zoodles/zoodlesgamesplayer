@@ -1,6 +1,8 @@
 package org.mozilla.gecko.tests;
 
-import org.mozilla.gecko.*;
+import org.mozilla.gecko.Actions;
+import org.mozilla.gecko.PaintedSurface;
+
 import android.net.Uri;
 
 /**
@@ -14,11 +16,6 @@ public class testVkbOverlap extends PixelTest {
     private static final int CURSOR_BLINK_PERIOD = 500;
     private static final int LESS_THAN_CURSOR_BLINK_PERIOD = CURSOR_BLINK_PERIOD - 50;
     private static final int PAGE_SETTLE_TIME = 5000;
-
-    @Override
-    protected int getTestType() {
-        return TEST_MOCHITEST;
-    }
 
     public void testVkbOverlap() {
         blockForGeckoReady();
@@ -73,7 +70,7 @@ public class testVkbOverlap extends PixelTest {
             // account for borders and such of the text input which might still be out of view.
             int newCount = countGreenPixels(painted);
 
-            // if zooming is allowed, the number of green pixels visible should have increased substatially
+            // if zooming is allowed, the number of green pixels visible should have increased substantially
             if (shouldZoom) {
                 mAsserter.ok(newCount > greenPixelCount * 1.5, "testVkbOverlap", "Found " + newCount + " green pixels after tapping; expected " + greenPixelCount);
             } else {

@@ -13,7 +13,7 @@ let gEnableLogging = Services.prefs.getBoolPref("devtools.debugger.log");
 Services.prefs.setBoolPref("devtools.debugger.log", false);
 
 let { Task } = Cu.import("resource://gre/modules/Task.jsm", {});
-let { Promise: promise } = Cu.import("resource://gre/modules/commonjs/sdk/core/promise.js", {});
+let { Promise: promise } = Cu.import("resource://gre/modules/devtools/deprecated-sync-thenables.js", {});
 let { gDevTools } = Cu.import("resource:///modules/devtools/gDevTools.jsm", {});
 let { devtools } = Cu.import("resource://gre/modules/devtools/Loader.jsm", {});
 let { require } = devtools;
@@ -22,10 +22,13 @@ let { BrowserToolboxProcess } = Cu.import("resource:///modules/devtools/ToolboxP
 let { DebuggerServer } = Cu.import("resource://gre/modules/devtools/dbg-server.jsm", {});
 let { DebuggerClient } = Cu.import("resource://gre/modules/devtools/dbg-client.jsm", {});
 let { AddonManager } = Cu.import("resource://gre/modules/AddonManager.jsm", {});
+let EventEmitter = require("devtools/toolkit/event-emitter");
+const { promiseInvoke } = require("devtools/async-utils");
 let TargetFactory = devtools.TargetFactory;
 let Toolbox = devtools.Toolbox;
 
 const EXAMPLE_URL = "http://example.com/browser/browser/devtools/debugger/test/";
+const FRAME_SCRIPT_URL = getRootDirectory(gTestPath) + "code_frame-script.js";
 
 gDevTools.testing = true;
 SimpleTest.registerCleanupFunction(() => {
@@ -35,9 +38,18 @@ SimpleTest.registerCleanupFunction(() => {
 // All tests are asynchronous.
 waitForExplicitFinish();
 
-registerCleanupFunction(function() {
+registerCleanupFunction(function* () {
   info("finish() was called, cleaning up...");
   Services.prefs.setBoolPref("devtools.debugger.log", gEnableLogging);
+
+  while (gBrowser && gBrowser.tabs && gBrowser.tabs.length > 1) {
+    info("Destroying toolbox.");
+    let target = TargetFactory.forTab(gBrowser.selectedTab);
+    yield gDevTools.closeToolbox(target);
+
+    info("Removing tab.");
+    gBrowser.removeCurrentTab();
+  }
 
   // Properly shut down the server to avoid memory leaks.
   DebuggerServer.destroy();
@@ -49,7 +61,10 @@ registerCleanupFunction(function() {
 
 // Import the GCLI test helper
 let testDir = gTestPath.substr(0, gTestPath.lastIndexOf("/"));
-Services.scriptloader.loadSubScript(testDir + "../../../commandline/test/helpers.js", this);
+testDir = testDir.replace(/\/\//g, '/');
+testDir = testDir.replace("chrome:/mochitest", "chrome://mochitest");
+let helpersjs = testDir + "/../../commandline/test/helpers.js";
+Services.scriptloader.loadSubScript(helpersjs, this);
 
 // Redeclare dbg_assert with a fatal behavior.
 function dbg_assert(cond, e) {
@@ -60,11 +75,11 @@ function dbg_assert(cond, e) {
 
 function addWindow(aUrl) {
   info("Adding window: " + aUrl);
-  return promise.resolve(getDOMWindow(window.open(aUrl)));
+  return promise.resolve(getChromeWindow(window.open(aUrl)));
 }
 
-function getDOMWindow(aReference) {
-  return aReference
+function getChromeWindow(aWindow) {
+  return aWindow
     .QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIWebNavigation)
     .QueryInterface(Ci.nsIDocShellTreeItem).rootTreeItem
     .QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindow);
@@ -80,6 +95,9 @@ function addTab(aUrl, aWindow) {
   targetWindow.focus();
   let tab = targetBrowser.selectedTab = targetBrowser.addTab(aUrl);
   let linkedBrowser = tab.linkedBrowser;
+
+  info("Loading frame script with url " + FRAME_SCRIPT_URL + ".");
+  linkedBrowser.messageManager.loadFrameScript(FRAME_SCRIPT_URL, false);
 
   linkedBrowser.addEventListener("load", function onLoad() {
     linkedBrowser.removeEventListener("load", onLoad, true);
@@ -118,7 +136,11 @@ function addAddon(aUrl) {
     let listener = {
       onInstallEnded: function(aAddon, aAddonInstall) {
         aInstaller.removeListener(listener);
-        deferred.resolve(aAddonInstall);
+
+        // Wait for add-on's startup scripts to execute. See bug 997408
+        executeSoon(function() {
+          deferred.resolve(aAddonInstall);
+        });
       }
     };
     aInstaller.addListener(listener);
@@ -233,7 +255,7 @@ function waitForTime(aDelay) {
 
 function waitForSourceShown(aPanel, aUrl) {
   return waitForDebuggerEvents(aPanel, aPanel.panelWin.EVENTS.SOURCE_SHOWN).then(aSource => {
-    let sourceUrl = aSource.url;
+    let sourceUrl = aSource.url || aSource.introductionUrl;
     info("Source shown: " + sourceUrl);
 
     if (!sourceUrl.contains(aUrl)) {
@@ -245,19 +267,21 @@ function waitForSourceShown(aPanel, aUrl) {
 }
 
 function waitForEditorLocationSet(aPanel) {
-  return waitForDebuggerEvents(aPanel,
-                               aPanel.panelWin.EVENTS.EDITOR_LOCATION_SET);
+  return waitForDebuggerEvents(aPanel, aPanel.panelWin.EVENTS.EDITOR_LOCATION_SET);
 }
 
-function ensureSourceIs(aPanel, aUrl, aWaitFlag = false) {
-  if (aPanel.panelWin.DebuggerView.Sources.selectedValue.contains(aUrl)) {
-    ok(true, "Expected source is shown: " + aUrl);
+function ensureSourceIs(aPanel, aUrlOrSource, aWaitFlag = false) {
+  let sources = aPanel.panelWin.DebuggerView.Sources;
+
+  if (sources.selectedValue === aUrlOrSource ||
+      sources.selectedItem.attachment.source.url.contains(aUrlOrSource)) {
+    ok(true, "Expected source is shown: " + aUrlOrSource);
     return promise.resolve(null);
   }
   if (aWaitFlag) {
-    return waitForSourceShown(aPanel, aUrl);
+    return waitForSourceShown(aPanel, aUrlOrSource);
   }
-  ok(false, "Expected source was not already shown: " + aUrl);
+  ok(false, "Expected source was not already shown: " + aUrlOrSource);
   return promise.reject(null);
 }
 
@@ -293,6 +317,15 @@ function isCaretPos(aPanel, aLine, aCol = 1) {
   // Source editor starts counting line and column numbers from 0.
   info("Current editor caret position: " + (cursor.line + 1) + ", " + (cursor.ch + 1));
   return cursor.line == (aLine - 1) && cursor.ch == (aCol - 1);
+}
+
+function isDebugPos(aPanel, aLine) {
+  let editor = aPanel.panelWin.DebuggerView.editor;
+  let location = editor.getDebugLocation();
+
+  // Source editor starts counting line and column numbers from 0.
+  info("Current editor debug position: " + (location + 1));
+  return location != null && editor.hasLineClass(aLine - 1, "debug-line");
 }
 
 function isEditorSel(aPanel, [start, end]) {
@@ -472,6 +505,14 @@ function getTab(aTarget, aWindow) {
   }
 }
 
+function getSources(aClient) {
+  let deferred = promise.defer();
+
+  aClient.getSources(({sources}) => deferred.resolve(sources));
+
+  return deferred.promise;
+}
+
 function initDebugger(aTarget, aWindow) {
   info("Initializing a debugger panel.");
 
@@ -501,32 +542,160 @@ function initDebugger(aTarget, aWindow) {
   });
 }
 
-function initAddonDebugger(aClient, aUrl, aFrame) {
-  info("Initializing an addon debugger panel.");
+// Creates an add-on debugger for a given add-on. The returned AddonDebugger
+// object must be destroyed before finishing the test
+function initAddonDebugger(aUrl) {
+  let addonDebugger = new AddonDebugger();
+  return addonDebugger.init(aUrl).then(() => addonDebugger);
+}
 
-  return getAddonActorForUrl(aClient, aUrl).then((addonActor) => {
+function AddonDebugger() {
+  this._onMessage = this._onMessage.bind(this);
+  this._onConsoleAPICall = this._onConsoleAPICall.bind(this);
+  EventEmitter.decorate(this);
+}
+
+AddonDebugger.prototype = {
+  init: Task.async(function*(aUrl) {
+    info("Initializing an addon debugger panel.");
+
+    if (!DebuggerServer.initialized) {
+      DebuggerServer.init();
+      DebuggerServer.addBrowserActors();
+    }
+
+    this.frame = document.createElement("iframe");
+    this.frame.setAttribute("height", 400);
+    document.documentElement.appendChild(this.frame);
+    window.addEventListener("message", this._onMessage);
+
+    let transport = DebuggerServer.connectPipe();
+    this.client = new DebuggerClient(transport);
+
+    let connected = promise.defer();
+    this.client.connect(connected.resolve);
+    yield connected.promise;
+
+    let addonActor = yield getAddonActorForUrl(this.client, aUrl);
+
     let targetOptions = {
-      form: { addonActor: addonActor.actor, title: addonActor.name },
-      client: aClient,
+      form: addonActor,
+      client: this.client,
       chrome: true
     };
 
     let toolboxOptions = {
-      customIframe: aFrame
+      customIframe: this.frame
     };
 
-    let target = devtools.TargetFactory.forTab(targetOptions);
-    return gDevTools.showToolbox(target, "jsdebugger", devtools.Toolbox.HostType.CUSTOM, toolboxOptions);
-  }).then(aToolbox => {
+    this.target = devtools.TargetFactory.forTab(targetOptions);
+    let toolbox = yield gDevTools.showToolbox(this.target, "jsdebugger", devtools.Toolbox.HostType.CUSTOM, toolboxOptions);
+
     info("Addon debugger panel shown successfully.");
 
-    let debuggerPanel = aToolbox.getCurrentPanel();
+    this.debuggerPanel = toolbox.getCurrentPanel();
 
     // Wait for the initial resume...
-    return waitForClientEvents(debuggerPanel, "resumed")
-      .then(() => prepareDebugger(debuggerPanel))
-      .then(() => debuggerPanel);
-  });
+    yield waitForClientEvents(this.debuggerPanel, "resumed");
+    yield prepareDebugger(this.debuggerPanel);
+    yield this._attachConsole();
+  }),
+
+  destroy: Task.async(function*() {
+    let deferred = promise.defer();
+    this.client.close(deferred.resolve);
+    yield deferred.promise;
+    yield this.debuggerPanel._toolbox.destroy();
+    this.frame.remove();
+    window.removeEventListener("message", this._onMessage);
+  }),
+
+  _attachConsole: function() {
+    let deferred = promise.defer();
+    this.client.attachConsole(this.target.form.consoleActor, ["ConsoleAPI"], (aResponse, aWebConsoleClient) => {
+      if (aResponse.error) {
+        deferred.reject(aResponse);
+      }
+      else {
+        this.webConsole = aWebConsoleClient;
+        this.client.addListener("consoleAPICall", this._onConsoleAPICall);
+        deferred.resolve();
+      }
+    });
+    return deferred.promise;
+  },
+
+  _onConsoleAPICall: function(aType, aPacket) {
+    if (aPacket.from != this.webConsole.actor)
+      return;
+    this.emit("console", aPacket.message);
+  },
+
+  /**
+   * Returns a list of the groups and sources in the UI. The returned array
+   * contains objects for each group with properties name and sources. The
+   * sources property contains an array with objects for each source for that
+   * group with properties label and url.
+   */
+  getSourceGroups: Task.async(function*() {
+    let debuggerWin = this.debuggerPanel.panelWin;
+    let sources = yield getSources(debuggerWin.gThreadClient);
+    ok(sources.length, "retrieved sources");
+
+    // groups will be the return value, groupmap and the maps we put in it will
+    // be used as quick lookups to add the url information in below
+    let groups = [];
+    let groupmap = new Map();
+
+    let uigroups = this.debuggerPanel.panelWin.document.querySelectorAll(".side-menu-widget-group");
+    for (let g of uigroups) {
+      let name = g.querySelector(".side-menu-widget-group-title .name").value;
+      let group = {
+        name: name,
+        sources: []
+      };
+      groups.push(group);
+      let labelmap = new Map();
+      groupmap.set(name, labelmap);
+
+      for (let l of g.querySelectorAll(".dbg-source-item")) {
+        let source = {
+          label: l.value,
+          url: null
+        };
+
+        labelmap.set(l.value, source);
+        group.sources.push(source);
+      }
+    }
+
+    for (let source of sources) {
+      let { label, group } = debuggerWin.DebuggerView.Sources.getItemByValue(source.actor).attachment;
+
+      if (!groupmap.has(group)) {
+        ok(false, "Saw a source group not in the UI: " + group);
+        continue;
+      }
+
+      if (!groupmap.get(group).has(label)) {
+        ok(false, "Saw a source label not in the UI: " + label);
+        continue;
+      }
+
+      groupmap.get(group).get(label).url = source.url.split(" -> ").pop();
+    }
+
+    return groups;
+  }),
+
+  _onMessage: function(event) {
+    let json = JSON.parse(event.data);
+    switch (json.name) {
+      case "toolbox-title":
+        this.title = json.data.value;
+        break;
+    }
+  }
 }
 
 function initChromeDebugger(aOnClose) {
@@ -535,7 +704,7 @@ function initChromeDebugger(aOnClose) {
   let deferred = promise.defer();
 
   // Wait for the toolbox process to start...
-  BrowserToolboxProcess.init(aOnClose, aProcess => {
+  BrowserToolboxProcess.init(aOnClose, (aEvent, aProcess) => {
     info("Browser toolbox process started successfully.");
 
     prepareDebugger(aProcess);
@@ -595,6 +764,13 @@ function getBlackBoxButton(aPanel) {
   return aPanel.panelWin.document.getElementById("black-box");
 }
 
+/**
+ * Returns the node that has the black-boxed class applied to it.
+ */
+function getSelectedSourceElement(aPanel) {
+    return aPanel.panelWin.DebuggerView.Sources.selectedItem.prebuiltNode;
+}
+
 function toggleBlackBoxing(aPanel, aSource = null) {
   function clickBlackBoxButton() {
     getBlackBoxButton(aPanel).click();
@@ -612,13 +788,14 @@ function toggleBlackBoxing(aPanel, aSource = null) {
   return blackBoxChanged;
 }
 
-function selectSourceAndGetBlackBoxButton(aPanel, aSource) {
+function selectSourceAndGetBlackBoxButton(aPanel, aUrl) {
   function returnBlackboxButton() {
     return getBlackBoxButton(aPanel);
   }
 
-  aPanel.panelWin.DebuggerView.Sources.selectedValue = aSource;
-  return ensureSourceIs(aPanel, aSource, true).then(returnBlackboxButton);
+  let sources = aPanel.panelWin.DebuggerView.Sources;
+  sources.selectedValue = getSourceActor(sources, aUrl);
+  return ensureSourceIs(aPanel, aUrl, true).then(returnBlackboxButton);
 }
 
 // Variables view inspection popup helpers
@@ -633,10 +810,11 @@ function openVarPopup(aPanel, aCoords, aWaitForFetchedProperties) {
   let fetchedProperties = aWaitForFetchedProperties
     ? waitForDebuggerEvents(aPanel, events.FETCHED_BUBBLE_PROPERTIES)
     : promise.resolve(null);
+  let updatedFrame = waitForDebuggerEvents(aPanel, events.FETCHED_SCOPES);
 
   let { left, top } = editor.getCoordsFromPosition(aCoords);
   bubble._findIdentifier(left, top);
-  return promise.all([popupShown, fetchedProperties]).then(waitForTick);
+  return promise.all([popupShown, fetchedProperties, updatedFrame]).then(waitForTick);
 }
 
 // Simulates the mouse hovering a variable in the debugger
@@ -740,4 +918,102 @@ function attachAddonActorForUrl(aClient, aUrl) {
   });
 
   return deferred.promise;
+}
+
+function rdpInvoke(aClient, aMethod, ...args) {
+  return promiseInvoke(aClient, aMethod, ...args)
+    .then(({error, message }) => {
+      if (error) {
+        throw new Error(error + ": " + message);
+      }
+    });
+}
+
+function doResume(aPanel) {
+  const threadClient = aPanel.panelWin.gThreadClient;
+  return rdpInvoke(threadClient, threadClient.resume);
+}
+
+function doInterrupt(aPanel) {
+  const threadClient = aPanel.panelWin.gThreadClient;
+  return rdpInvoke(threadClient, threadClient.interrupt);
+}
+
+function pushPrefs(...aPrefs) {
+  let deferred = promise.defer();
+  SpecialPowers.pushPrefEnv({"set": aPrefs}, deferred.resolve);
+  return deferred.promise;
+}
+
+function popPrefs() {
+  let deferred = promise.defer();
+  SpecialPowers.popPrefEnv(deferred.resolve);
+  return deferred.promise;
+}
+
+function sendMessageToTab(tab, name, data, objects) {
+  info("Sending message with name " + name + " to tab.");
+
+  tab.linkedBrowser.messageManager.sendAsyncMessage(name, data, objects);
+}
+
+function waitForMessageFromTab(tab, name) {
+  info("Waiting for message with name " + name + " from tab.");
+
+  return new Promise(function (resolve) {
+    let messageManager = tab.linkedBrowser.messageManager;
+    messageManager.addMessageListener(name, function listener(message) {
+      messageManager.removeMessageListener(name, listener);
+      resolve(message);
+    });
+  });
+}
+
+function callInTab(tab, name) {
+  info("Calling function with name " + name + " in tab.");
+
+  sendMessageToTab(tab, "test:call", {
+    name: name,
+    args: Array.prototype.slice.call(arguments, 2)
+  });
+  waitForMessageFromTab(tab, "test:call");
+}
+
+function evalInTab(tab, string) {
+  info("Evalling string " + string + " in tab.");
+
+  sendMessageToTab(tab, "test:eval", {
+    string: string,
+  });
+  waitForMessageFromTab(tab, "test:eval");
+}
+
+function sendMouseClickToTab(tab, target) {
+  info("Sending mouse click to tab.");
+
+  sendMessageToTab(tab, "test:click", undefined, {
+    target: target
+  });
+}
+
+// Source helpers
+
+function getSelectedSourceURL(aSources) {
+  return (aSources.selectedItem &&
+          aSources.selectedItem.attachment.source.url);
+}
+
+function getSourceURL(aSources, aActor) {
+  let item = aSources.getItemByValue(aActor);
+  return item && item.attachment.source.url;
+}
+
+function getSourceActor(aSources, aURL) {
+  let item = aSources.getItemForAttachment(a => a.source.url === aURL);
+  return item && item.value;
+}
+
+function getSourceForm(aSources, aURL) {
+  let item = aSources.getItemByValue(getSourceActor(gSources, aURL));
+  return item.attachment.source;
 }

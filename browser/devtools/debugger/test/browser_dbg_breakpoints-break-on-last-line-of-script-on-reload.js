@@ -9,16 +9,18 @@
 const TAB_URL = EXAMPLE_URL + "doc_breakpoints-break-on-last-line-of-script-on-reload.html";
 const CODE_URL = EXAMPLE_URL + "code_breakpoints-break-on-last-line-of-script-on-reload.js";
 
-const { promiseInvoke } = require("devtools/async-utils");
-
 function test() {
-  let gPanel, gDebugger, gThreadClient, gEvents;
+  // Debug test slaves are a bit slow at this test.
+  requestLongerTimeout(2);
 
-  initDebugger(TAB_URL).then(([aTab, aDebuggee, aPanel]) => {
+  let gPanel, gDebugger, gThreadClient, gEvents, gSources;
+
+  initDebugger(TAB_URL).then(([aTab,, aPanel]) => {
     gPanel = aPanel;
     gDebugger = gPanel.panelWin;
     gThreadClient = gDebugger.gThreadClient;
     gEvents = gDebugger.EVENTS;
+    gSources = gDebugger.DebuggerView.Sources;
 
     Task.spawn(function* () {
       try {
@@ -59,15 +61,15 @@ function test() {
 
         // And we should hit the breakpoints as we resume.
         yield promise.all([
-          doResume(),
+          doResume(gPanel),
           waitForCaretAndScopes(gPanel, 3)
         ]);
         yield promise.all([
-          doResume(),
+          doResume(gPanel),
           waitForCaretAndScopes(gPanel, 4)
         ]);
         yield promise.all([
-          doResume(),
+          doResume(gPanel),
           waitForCaretAndScopes(gPanel, 5)
         ]);
 
@@ -90,26 +92,12 @@ function test() {
     });
   });
 
-  function rdpInvoke(obj, method) {
-    return promiseInvoke(obj, method)
-      .then(({error, message }) => {
-        if (error) {
-          throw new Error(error + ": " + message);
-        }
-      });
-  }
-
-  function doResume() {
-    return rdpInvoke(gThreadClient, gThreadClient.resume);
-  }
-
-  function doInterrupt() {
-    return rdpInvoke(gThreadClient, gThreadClient.interrupt);
-  }
-
   function setBreakpoint(location) {
+    let item = gSources.getItemByValue(getSourceActor(gSources, location.url));
+    let source = gThreadClient.source(item.attachment.source);
+
     let deferred = promise.defer();
-    gThreadClient.setBreakpoint(location, ({ error, message }, bpClient) => {
+    source.setBreakpoint(location, ({ error, message }, bpClient) => {
       if (error) {
         deferred.reject(error + ": " + message);
       }

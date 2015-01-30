@@ -16,46 +16,6 @@ interface RandomSource {
 Crypto implements RandomSource;
 
 interface Crypto {
+  [Pref="dom.webcrypto.enabled"]
+  readonly attribute SubtleCrypto subtle;
 };
-
-#ifndef MOZ_DISABLE_CRYPTOLEGACY
-[NoInterfaceObject]
-interface CryptoLegacy {
-  readonly attribute DOMString version;
-
-  [SetterThrows]
-  attribute boolean enableSmartCardEvents;
-
-  [Throws,NewObject]
-  CRMFObject? generateCRMFRequest(ByteString? reqDN,
-                                  ByteString? regToken,
-                                  ByteString? authenticator,
-                                  ByteString? eaCert,
-                                  ByteString? jsCallback,
-                                  any... args);
-
-  [Throws]
-  DOMString importUserCertificates(DOMString nickname,
-                                   DOMString cmmfResponse,
-                                   boolean doForcedBackup);
-
-  [Throws]
-  DOMString popChallengeResponse(DOMString challenge);
-
-  [Throws]
-  DOMString random(long numBytes);
-
-  DOMString signText(DOMString stringToSign,
-                     DOMString caOption,
-                     ByteString... args);
-
-  [Throws]
-  void logout();
-
-  [Throws]
-  void disableRightClick();
-};
-
-Crypto implements CryptoLegacy;
-#endif // !MOZ_DISABLE_CRYPTOLEGACY
-

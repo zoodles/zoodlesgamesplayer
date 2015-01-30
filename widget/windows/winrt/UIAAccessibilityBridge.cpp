@@ -11,7 +11,6 @@
 #include <OAIdl.h>
 
 #include "nsIAccessibleEvent.h"
-#include "nsIAccessibleEditableText.h"
 #include "nsIPersistentProperties2.h"
 
 // generated
@@ -27,7 +26,7 @@ namespace winrt {
 
 using namespace Microsoft::WRL;
 
-NS_IMPL_ISUPPORTS1(AccessibilityBridge, nsIObserver)
+NS_IMPL_ISUPPORTS(AccessibilityBridge, nsIObserver)
 
 nsresult
 AccessibilityBridge::Observe(nsISupports *aSubject, const char *aTopic, const char16_t *aData)

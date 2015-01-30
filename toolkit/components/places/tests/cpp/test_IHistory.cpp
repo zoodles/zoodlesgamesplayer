@@ -49,10 +49,12 @@ new_test_uri()
 
 class VisitURIObserver MOZ_FINAL : public nsIObserver
 {
+  ~VisitURIObserver() {}
+
 public:
   NS_DECL_ISUPPORTS
 
-  VisitURIObserver(int aExpectedVisits = 1) :
+  explicit VisitURIObserver(int aExpectedVisits = 1) :
     mVisits(0),
     mExpectedVisits(aExpectedVisits)
   {
@@ -73,7 +75,7 @@ public:
 
   NS_IMETHOD Observe(nsISupports* aSubject,
                      const char* aTopic,
-                     const char16_t* aData)
+                     const char16_t* aData) MOZ_OVERRIDE
   {
     mVisits++;
 
@@ -89,7 +91,7 @@ private:
   int mVisits;
   int mExpectedVisits;
 };
-NS_IMPL_ISUPPORTS1(
+NS_IMPL_ISUPPORTS(
   VisitURIObserver,
   nsIObserver
 )
@@ -305,6 +307,8 @@ namespace test_observer_topic_dispatched_helpers {
   #define URI_VISITED_RESOLUTION_TOPIC "visited-status-resolution"
   class statusObserver MOZ_FINAL : public nsIObserver
   {
+    ~statusObserver() {}
+
   public:
     NS_DECL_ISUPPORTS
 
@@ -325,7 +329,7 @@ namespace test_observer_topic_dispatched_helpers {
 
     NS_IMETHOD Observe(nsISupports* aSubject,
                        const char* aTopic,
-                       const char16_t* aData)
+                       const char16_t* aData) MOZ_OVERRIDE
     {
       // Make sure we got notified of the right topic.
       do_check_false(strcmp(aTopic, URI_VISITED_RESOLUTION_TOPIC));
@@ -364,7 +368,7 @@ namespace test_observer_topic_dispatched_helpers {
     const bool mExpectVisit;
     bool& mNotified;
   };
-  NS_IMPL_ISUPPORTS1(
+  NS_IMPL_ISUPPORTS(
     statusObserver,
     nsIObserver
   )

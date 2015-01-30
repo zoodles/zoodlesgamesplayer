@@ -7,15 +7,23 @@
 
 #include "base/file_path.h"
 #include "base/process_util.h"
-#include "base/scoped_ptr.h"
 #include "base/waitable_event.h"
 #include "chrome/common/child_process_host.h"
 
+#include "mozilla/DebugOnly.h"
 #include "mozilla/ipc/FileDescriptor.h"
 #include "mozilla/Monitor.h"
+#include "mozilla/StaticPtr.h"
 
+#include "nsCOMPtr.h"
 #include "nsXULAppAPI.h"        // for GeckoProcessType
 #include "nsString.h"
+
+#if defined(XP_WIN) && defined(MOZ_SANDBOX)
+#include "sandboxBroker.h"
+#endif
+
+class nsIFile;
 
 namespace mozilla {
 namespace ipc {
@@ -32,8 +40,8 @@ public:
 
   static ChildPrivileges DefaultChildPrivileges();
 
-  GeckoChildProcessHost(GeckoProcessType aProcessType,
-                        ChildPrivileges aPrivileges=base::PRIVILEGES_DEFAULT);
+  explicit GeckoChildProcessHost(GeckoProcessType aProcessType,
+                                 ChildPrivileges aPrivileges=base::PRIVILEGES_DEFAULT);
 
   ~GeckoChildProcessHost();
 
@@ -44,7 +52,10 @@ public:
   // Block until the IPC channel for our subprocess is initialized,
   // but no longer.  The child process may or may not have been
   // created when this method returns.
-  bool AsyncLaunch(StringVector aExtraOpts=StringVector());
+  bool AsyncLaunch(StringVector aExtraOpts=StringVector(),
+                   base::ProcessArchitecture arch=base::GetCurrentProcessArchitecture());
+
+  virtual bool WaitUntilConnected(int32_t aTimeoutMs = 0);
 
   // Block until the IPC channel for our subprocess is initialized and
   // the OS process is created.  The subprocess may or may not have
@@ -126,13 +137,8 @@ public:
   // For bug 943174: Skip the EnsureProcessTerminated call in the destructor.
   void SetAlreadyDead();
 
-  void SetSandboxEnabled(bool aSandboxEnabled) {
-    mSandboxEnabled = aSandboxEnabled;
-  }
-
 protected:
   GeckoProcessType mProcessType;
-  bool mSandboxEnabled;
   ChildPrivileges mPrivileges;
   Monitor mMonitor;
   FilePath mProcessPath;
@@ -161,7 +167,21 @@ protected:
 #ifdef XP_WIN
   void InitWindowsGroupID();
   nsString mGroupId;
+
+#ifdef MOZ_SANDBOX
+  SandboxBroker mSandboxBroker;
+  std::vector<std::wstring> mAllowedFilesRead;
+  bool mEnableSandboxLogging;
+
+  // XXX: Bug 1124167: We should get rid of the process specific logic for
+  // sandboxing in this class at some point. Unfortunately it will take a bit
+  // of reorganizing so I don't think this patch is the right time.
+  bool mEnableNPAPISandbox;
+#if defined(MOZ_CONTENT_SANDBOX)
+  bool mMoreStrictContentSandbox;
 #endif
+#endif
+#endif // XP_WIN
 
 #if defined(OS_POSIX)
   base::file_handle_mapping_vector mFileMap;
@@ -185,6 +205,8 @@ private:
 
   bool RunPerformAsyncLaunch(StringVector aExtraOpts=StringVector(),
 			     base::ProcessArchitecture aArch=base::GetCurrentProcessArchitecture());
+
+  static void GetPathToBinary(FilePath& exePath);
 
   // In between launching the subprocess and handing off its IPC
   // channel, there's a small window of time in which *we* might still

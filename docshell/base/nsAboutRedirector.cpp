@@ -8,8 +8,9 @@
 #include "nsNetUtil.h"
 #include "nsAboutProtocolUtils.h"
 #include "mozilla/ArrayUtils.h"
+#include "nsDOMString.h"
 
-NS_IMPL_ISUPPORTS1(nsAboutRedirector, nsIAboutModule)
+NS_IMPL_ISUPPORTS(nsAboutRedirector, nsIAboutModule)
 
 struct RedirEntry {
     const char* id;
@@ -50,10 +51,9 @@ static RedirEntry kRedirMap[] = {
       nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
       nsIAboutModule::ALLOW_SCRIPT |
       nsIAboutModule::HIDE_FROM_ABOUTABOUT },
-    { "compartments", "chrome://global/content/aboutCompartments.xhtml",
-      nsIAboutModule::ALLOW_SCRIPT |
-      nsIAboutModule::HIDE_FROM_ABOUTABOUT },
     { "memory", "chrome://global/content/aboutMemory.xhtml",
+      nsIAboutModule::ALLOW_SCRIPT },
+    { "compartments", "chrome://global/content/aboutCompartments.xhtml",
       nsIAboutModule::ALLOW_SCRIPT },
     { "addons", "chrome://mozapps/content/extensions/extensions.xul",
       nsIAboutModule::ALLOW_SCRIPT },
@@ -66,7 +66,7 @@ static RedirEntry kRedirMap[] = {
       nsIAboutModule::ALLOW_SCRIPT },
     { "networking", "chrome://global/content/aboutNetworking.xhtml",
        nsIAboutModule::ALLOW_SCRIPT },
-    { "webrtc", "chrome://global/content/aboutWebrtc.xhtml",
+    { "webrtc", "chrome://global/content/aboutwebrtc/aboutWebrtc.xhtml",
        nsIAboutModule::ALLOW_SCRIPT },
     // about:srcdoc is unresolvable by specification.  It is included here
     // because the security manager would disallow srcdoc iframes otherwise.
@@ -77,29 +77,42 @@ static RedirEntry kRedirMap[] = {
 static const int kRedirTotal = mozilla::ArrayLength(kRedirMap);
 
 NS_IMETHODIMP
-nsAboutRedirector::NewChannel(nsIURI *aURI, nsIChannel **result)
+nsAboutRedirector::NewChannel(nsIURI* aURI,
+                              nsILoadInfo* aLoadInfo,
+                              nsIChannel** result)
 {
     NS_ENSURE_ARG_POINTER(aURI);
     NS_ASSERTION(result, "must not be null");
 
-    nsresult rv;
-
     nsAutoCString path;
-    rv = NS_GetAboutModuleName(aURI, path);
-    if (NS_FAILED(rv))
-        return rv;
+    nsresult rv = NS_GetAboutModuleName(aURI, path);
+    NS_ENSURE_SUCCESS(rv, rv);
 
     nsCOMPtr<nsIIOService> ioService = do_GetIOService(&rv);
-    if (NS_FAILED(rv))
-        return rv;
+    NS_ENSURE_SUCCESS(rv, rv);
+
 
     for (int i=0; i<kRedirTotal; i++) 
     {
         if (!strcmp(path.get(), kRedirMap[i].id))
         {
             nsCOMPtr<nsIChannel> tempChannel;
-            rv = ioService->NewChannel(nsDependentCString(kRedirMap[i].url),
-                                       nullptr, nullptr, getter_AddRefs(tempChannel));
+            nsCOMPtr<nsIURI> tempURI;
+            rv = NS_NewURI(getter_AddRefs(tempURI), kRedirMap[i].url);
+            NS_ENSURE_SUCCESS(rv, rv);
+            // Bug 1087720 (and Bug 1099296):
+            // Once all callsites have been updated to call NewChannel2()
+            // instead of NewChannel() we should have a non-null loadInfo
+            // consistently. Until then we have to branch on the loadInfo.
+            if (aLoadInfo) {
+              rv = NS_NewChannelInternal(getter_AddRefs(tempChannel),
+                                         tempURI,
+                                         aLoadInfo);
+            }
+            else {
+              rv = ioService->NewChannelFromURI(tempURI,
+                                                getter_AddRefs(tempChannel));
+            }
             if (NS_FAILED(rv))
                 return rv;
 
@@ -134,6 +147,13 @@ nsAboutRedirector::GetURIFlags(nsIURI *aURI, uint32_t *result)
 
     NS_ERROR("nsAboutRedirector called for unknown case");
     return NS_ERROR_ILLEGAL_VALUE;
+}
+
+NS_IMETHODIMP
+nsAboutRedirector::GetIndexedDBOriginPostfix(nsIURI *aURI, nsAString &result)
+{
+    SetDOMStringToNull(result);
+    return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 nsresult

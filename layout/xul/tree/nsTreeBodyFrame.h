@@ -24,8 +24,8 @@
 #include "nsScrollbarFrame.h"
 #include "nsThreadUtils.h"
 #include "mozilla/LookAndFeel.h"
-#include "nsIScrollbarOwner.h"
 
+class nsFontMetrics;
 class nsOverflowChecker;
 class nsTreeImageListener;
 
@@ -52,12 +52,11 @@ class nsTreeBodyFrame MOZ_FINAL
   , public nsICSSPseudoComparator
   , public nsIScrollbarMediator
   , public nsIReflowCallback
-  , public nsIScrollbarOwner
 {
 public:
   typedef mozilla::layout::ScrollbarActivity ScrollbarActivity;
 
-  nsTreeBodyFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
+  explicit nsTreeBodyFrame(nsStyleContext* aContext);
   ~nsTreeBodyFrame();
 
   NS_DECL_QUERYFRAME_TARGET(nsTreeBodyFrame)
@@ -82,12 +81,12 @@ public:
   }
   nsresult GetView(nsITreeView **aView);
   nsresult SetView(nsITreeView *aView);
-  nsresult GetFocused(bool *aFocused);
+  bool GetFocused() const { return mFocused; }
   nsresult SetFocused(bool aFocused);
   nsresult GetTreeBody(nsIDOMElement **aElement);
-  nsresult GetRowHeight(int32_t *aValue);
-  nsresult GetRowWidth(int32_t *aValue);
-  nsresult GetHorizontalPosition(int32_t *aValue);
+  int32_t RowHeight() const;
+  int32_t RowWidth();
+  int32_t GetHorizontalPosition() const;
   nsresult GetSelectionRegion(nsIScriptableRegion **aRegion);
   int32_t FirstVisibleRow() const { return mTopRowIndex; }
   int32_t LastVisibleRow() const { return mTopRowIndex + mPageLength; }
@@ -134,20 +133,25 @@ public:
   virtual bool PseudoMatches(nsCSSSelector* aSelector) MOZ_OVERRIDE;
 
   // nsIScrollbarMediator
-  NS_IMETHOD PositionChanged(nsScrollbarFrame* aScrollbar, int32_t aOldIndex, int32_t& aNewIndex) MOZ_OVERRIDE;
-  NS_IMETHOD ScrollbarButtonPressed(nsScrollbarFrame* aScrollbar, int32_t aOldIndex, int32_t aNewIndex) MOZ_OVERRIDE;
-  NS_IMETHOD VisibilityChanged(bool aVisible) MOZ_OVERRIDE { Invalidate(); return NS_OK; }
-
-  // nsIScrollbarOwner
+  virtual void ScrollByPage(nsScrollbarFrame* aScrollbar, int32_t aDirection) MOZ_OVERRIDE;
+  virtual void ScrollByWhole(nsScrollbarFrame* aScrollbar, int32_t aDirection) MOZ_OVERRIDE;
+  virtual void ScrollByLine(nsScrollbarFrame* aScrollbar, int32_t aDirection) MOZ_OVERRIDE;
+  virtual void RepeatButtonScroll(nsScrollbarFrame* aScrollbar) MOZ_OVERRIDE;
+  virtual void ThumbMoved(nsScrollbarFrame* aScrollbar,
+                          nscoord aOldPos,
+                          nscoord aNewPos) MOZ_OVERRIDE;
+  virtual void VisibilityChanged(bool aVisible) MOZ_OVERRIDE { Invalidate(); }
   virtual nsIFrame* GetScrollbarBox(bool aVertical) MOZ_OVERRIDE {
     ScrollParts parts = GetScrollParts();
     return aVertical ? parts.mVScrollbar : parts.mHScrollbar;
   }
+  virtual void ScrollbarActivityStarted() const MOZ_OVERRIDE;
+  virtual void ScrollbarActivityStopped() const MOZ_OVERRIDE;
 
   // Overridden from nsIFrame to cache our pres context.
-  virtual void Init(nsIContent*     aContent,
-                    nsIFrame*       aParent,
-                    nsIFrame*       aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
   virtual void DestroyFrom(nsIFrame* aDestructRoot) MOZ_OVERRIDE;
 
   virtual nsresult GetCursor(const nsPoint& aPoint,
@@ -293,6 +297,7 @@ protected:
   void AdjustForCellText(nsAutoString& aText,
                          int32_t aRowIndex,  nsTreeColumn* aColumn,
                          nsRenderingContext& aRenderingContext,
+                         nsFontMetrics& aFontMetrics,
                          nsRect& aTextRect);
 
   // A helper used when hit testing.
@@ -455,7 +460,7 @@ protected:
   class ScrollEvent : public nsRunnable {
   public:
     NS_DECL_NSIRUNNABLE
-    ScrollEvent(nsTreeBodyFrame *aInner) : mInner(aInner) {}
+    explicit ScrollEvent(nsTreeBodyFrame *aInner) : mInner(aInner) {}
     void Revoke() { mInner = nullptr; }
   private:
     nsTreeBodyFrame* mInner;
@@ -463,9 +468,6 @@ protected:
 
   void PostScrollEvent();
   void FireScrollEvent();
-
-  virtual void ScrollbarActivityStarted() const MOZ_OVERRIDE;
-  virtual void ScrollbarActivityStopped() const MOZ_OVERRIDE;
 
   /**
    * Clear the pointer to this frame for all nsTreeImageListeners that were

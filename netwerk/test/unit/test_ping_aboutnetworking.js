@@ -1,4 +1,4 @@
-/* -*- Mode: Javasript; indent-tab-mode: nil; js-indent-level: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -22,10 +22,11 @@ function connectionFailed(status) {
   return true;
 }
 
-function test_sockets() {
+function test_sockets(serverSocket) {
   do_test_pending();
   gDashboard.requestSockets(function(data) {
     let index = -1;
+    do_print("requestSockets: " + JSON.stringify(data.sockets));
     for (let i = 0; i < data.sockets.length; i++) {
       if (data.sockets[i].host == "127.0.0.1") {
         index = i;
@@ -36,16 +37,23 @@ function test_sockets() {
     do_check_eq(data.sockets[index].port, serverSocket.port);
     do_check_eq(data.sockets[index].tcp, 1);
 
-    serverSocket.close();
-
     do_test_finished();
   });
 }
 
 function run_test() {
+  var ps = Cc["@mozilla.org/preferences-service;1"]
+    .getService(Ci.nsIPrefBranch);
+  // disable network changed events to avoid the the risk of having the dns
+  // cache getting flushed behind our back
+  ps.setBoolPref("network.notify.changed", false);
+
+  do_register_cleanup(function() {
+    ps.clearUserPref("network.notify.changed");
+  });
+
   let serverSocket = Components.classes["@mozilla.org/network/server-socket;1"]
     .createInstance(Ci.nsIServerSocket);
-
   serverSocket.init(-1, true, -1);
 
   do_test_pending();
@@ -55,6 +63,7 @@ function run_test() {
       do_test_pending();
       gDashboard.requestDNSInfo(function(data) {
         let found = false;
+        do_print("requestDNSInfo: " + JSON.stringify(data.entries));
         for (let i = 0; i < data.entries.length; i++) {
           if (data.entries[i].hostname == "localhost") {
             found = true;
@@ -64,8 +73,7 @@ function run_test() {
         do_check_eq(found, true);
 
         do_test_finished();
-
-        test_sockets();
+        test_sockets(serverSocket);
       });
 
       do_test_finished();

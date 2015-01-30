@@ -88,18 +88,18 @@ public:
   // nsIFrame overrides
   // We need to override GetMinSize and GetPrefSize because XUL uses
   // placeholders not within lines.
-  virtual void AddInlineMinWidth(nsRenderingContext* aRenderingContext,
-                                 InlineMinWidthData* aData) MOZ_OVERRIDE;
-  virtual void AddInlinePrefWidth(nsRenderingContext* aRenderingContext,
-                                  InlinePrefWidthData* aData) MOZ_OVERRIDE;
+  virtual void AddInlineMinISize(nsRenderingContext* aRenderingContext,
+                                 InlineMinISizeData* aData) MOZ_OVERRIDE;
+  virtual void AddInlinePrefISize(nsRenderingContext* aRenderingContext,
+                                  InlinePrefISizeData* aData) MOZ_OVERRIDE;
   virtual nsSize GetMinSize(nsBoxLayoutState& aBoxLayoutState) MOZ_OVERRIDE;
   virtual nsSize GetPrefSize(nsBoxLayoutState& aBoxLayoutState) MOZ_OVERRIDE;
   virtual nsSize GetMaxSize(nsBoxLayoutState& aBoxLayoutState) MOZ_OVERRIDE;
 
-  virtual nsresult Reflow(nsPresContext* aPresContext,
-                          nsHTMLReflowMetrics& aDesiredSize,
-                          const nsHTMLReflowState& aReflowState,
-                          nsReflowStatus& aStatus) MOZ_OVERRIDE;
+  virtual void Reflow(nsPresContext* aPresContext,
+                      nsHTMLReflowMetrics& aDesiredSize,
+                      const nsHTMLReflowState& aReflowState,
+                      nsReflowStatus& aStatus) MOZ_OVERRIDE;
 
   virtual void DestroyFrom(nsIFrame* aDestructRoot) MOZ_OVERRIDE;
 
@@ -135,7 +135,7 @@ public:
   }
 #endif
 
-  virtual nsIFrame* GetParentStyleContextFrame() const MOZ_OVERRIDE;
+  virtual nsStyleContext* GetParentStyleContext(nsIFrame** aProviderFrame) const MOZ_OVERRIDE;
 
   /**
    * @return the out-of-flow for aFrame if aFrame is a placeholder; otherwise

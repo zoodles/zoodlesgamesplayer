@@ -140,10 +140,6 @@ gfxXlibNativeRenderer::DrawDirect(gfxContext *ctx, nsIntSize size,
                                   uint32_t flags,
                                   Screen *screen, Visual *visual)
 {
-    if (ctx->IsCairo()) {
-        return DrawCairo(ctx->GetCairo(), size, flags, screen, visual);
-    }
-
     // We need to actually borrow the context because we want to read out the
     // clip rectangles.
     BorrowedCairoContext borrowed(ctx->GetDrawTarget());
@@ -529,19 +525,11 @@ gfxXlibNativeRenderer::Draw(gfxContext* ctx, nsIntSize size,
     gfxPoint offset(drawingRect.x, drawingRect.y);
 
     DrawingMethod method;
-    cairo_surface_t* cairoTarget = nullptr;
-    DrawTarget* drawTarget = nullptr;
-    gfxPoint deviceTranslation;
-    if (ctx->IsCairo()) {
-        cairoTarget = cairo_get_group_target(ctx->GetCairo());
-        deviceTranslation = ctx->CurrentMatrix().GetTranslation();
-    } else {
-        drawTarget = ctx->GetDrawTarget();
-        Matrix dtTransform = drawTarget->GetTransform();
-        deviceTranslation = gfxPoint(dtTransform._31, dtTransform._32);
-        cairoTarget = static_cast<cairo_surface_t*>
+    DrawTarget* drawTarget = ctx->GetDrawTarget();
+    Matrix dtTransform = drawTarget->GetTransform();
+    gfxPoint deviceTranslation = gfxPoint(dtTransform._31, dtTransform._32);
+    cairo_surface_t* cairoTarget = static_cast<cairo_surface_t*>
             (drawTarget->GetNativeSurface(NativeSurfaceType::CAIRO_SURFACE));
-    }
 
     cairo_surface_t* tempXlibSurface =
         CreateTempXlibSurface(cairoTarget, drawTarget, size,
@@ -575,18 +563,19 @@ gfxXlibNativeRenderer::Draw(gfxContext* ctx, nsIntSize size,
         cairo_surface_destroy(tempXlibSurface);
         return;
     }
-  
+
     SurfaceFormat moz2DFormat =
         cairo_surface_get_content(tempXlibSurface) == CAIRO_CONTENT_COLOR ?
             SurfaceFormat::B8G8R8A8 : SurfaceFormat::B8G8R8X8;
     if (method != eAlphaExtraction) {
         if (drawTarget) {
-            // It doesn't matter if moz2DFormat doesn't exactly match the format
-            // of tempXlibSurface, since this DrawTarget just wraps the cairo
-            // drawing.
+            NativeSurface native;
+            native.mFormat = moz2DFormat;
+            native.mType = NativeSurfaceType::CAIRO_SURFACE;
+            native.mSurface = tempXlibSurface;
+            native.mSize = ToIntSize(size);
             RefPtr<SourceSurface> sourceSurface =
-                Factory::CreateSourceSurfaceForCairoSurface(tempXlibSurface,
-                                                            moz2DFormat);
+                drawTarget->CreateSourceSurfaceFromNativeSurface(native);
             if (sourceSurface) {
                 drawTarget->DrawSurface(sourceSurface,
                     Rect(offset.x, offset.y, size.width, size.height),
@@ -622,9 +611,13 @@ gfxXlibNativeRenderer::Draw(gfxContext* ctx, nsIntSize size,
 
         gfxASurface* paintSurface = blackImage;
         if (drawTarget) {
+            NativeSurface native;
+            native.mFormat = moz2DFormat;
+            native.mType = NativeSurfaceType::CAIRO_SURFACE;
+            native.mSurface = paintSurface->CairoSurface();
+            native.mSize = ToIntSize(size);
             RefPtr<SourceSurface> sourceSurface =
-                Factory::CreateSourceSurfaceForCairoSurface(paintSurface->CairoSurface(),
-                                                            moz2DFormat);
+                drawTarget->CreateSourceSurfaceFromNativeSurface(native);
             if (sourceSurface) {
                 drawTarget->DrawSurface(sourceSurface,
                     Rect(offset.x, offset.y, size.width, size.height),

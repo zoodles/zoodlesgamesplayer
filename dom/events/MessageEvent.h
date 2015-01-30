@@ -9,11 +9,12 @@
 #include "mozilla/dom/Event.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsIDOMMessageEvent.h"
+#include "mozilla/dom/MessagePortList.h"
 
 namespace mozilla {
 namespace dom {
 
-class MessageEventInit;
+struct MessageEventInit;
 class MessagePort;
 class MessagePortBase;
 class MessagePortList;
@@ -26,14 +27,13 @@ class OwningWindowProxyOrMessagePort;
  * See http://www.whatwg.org/specs/web-apps/current-work/#messageevent for
  * further details.
  */
-class MessageEvent : public Event,
-                     public nsIDOMMessageEvent
+class MessageEvent MOZ_FINAL : public Event,
+                               public nsIDOMMessageEvent
 {
 public:
   MessageEvent(EventTarget* aOwner,
                nsPresContext* aPresContext,
                WidgetEvent* aEvent);
-  ~MessageEvent();
 
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_INHERITED(MessageEvent, Event)
@@ -43,10 +43,10 @@ public:
   // Forward to base class
   NS_FORWARD_TO_EVENT
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObjectInternal(JSContext* aCx) MOZ_OVERRIDE;
 
-  JS::Value GetData(JSContext* aCx, ErrorResult& aRv);
+  void GetData(JSContext* aCx, JS::MutableHandle<JS::Value> aData,
+               ErrorResult& aRv);
 
   void GetSource(Nullable<OwningWindowProxyOrMessagePort>& aValue) const;
 
@@ -57,11 +57,31 @@ public:
 
   void SetPorts(MessagePortList* aPorts);
 
+  // Non WebIDL methods
+  void SetSource(mozilla::dom::MessagePort* aPort)
+  {
+    mPortSource = aPort;
+  }
+
+  void SetSource(nsPIDOMWindow* aWindow)
+  {
+    mWindowSource = aWindow;
+  }
+
   static already_AddRefed<MessageEvent>
-  Constructor(const GlobalObject& aGlobal, JSContext* aCx,
+  Constructor(const GlobalObject& aGlobal,
               const nsAString& aType,
               const MessageEventInit& aEventInit,
               ErrorResult& aRv);
+
+  static already_AddRefed<MessageEvent>
+  Constructor(EventTarget* aEventTarget,
+              const nsAString& aType,
+              const MessageEventInit& aEventInit,
+              ErrorResult& aRv);
+
+protected:
+  ~MessageEvent();
 
 private:
   JS::Heap<JS::Value> mData;

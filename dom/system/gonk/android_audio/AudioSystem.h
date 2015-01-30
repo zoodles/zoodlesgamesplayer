@@ -17,6 +17,8 @@
 #ifndef ANDROID_AUDIOSYSTEM_H_
 #define ANDROID_AUDIOSYSTEM_H_
 
+#pragma GCC visibility push(default)
+
 #include <utils/RefBase.h>
 #include <utils/threads.h>
 #include "IAudioFlinger.h"
@@ -40,12 +42,9 @@ typedef enum {
     AUDIO_POLICY_FORCE_WIRED_ACCESSORY,
     AUDIO_POLICY_FORCE_BT_CAR_DOCK,
     AUDIO_POLICY_FORCE_BT_DESK_DOCK,
-
-#ifdef VANILLA_ANDROID
     AUDIO_POLICY_FORCE_ANALOG_DOCK,
     AUDIO_POLICY_FORCE_DIGITAL_DOCK,
-#endif
-
+    AUDIO_POLICY_FORCE_NO_BT_A2DP,
     AUDIO_POLICY_FORCE_CFG_CNT,
     AUDIO_POLICY_FORCE_CFG_MAX = AUDIO_POLICY_FORCE_CFG_CNT - 1,
 
@@ -722,6 +721,9 @@ public:
         FORCE_WIRED_ACCESSORY,
         FORCE_BT_CAR_DOCK,
         FORCE_BT_DESK_DOCK,
+        FORCE_ANALOG_DOCK,
+        FORCE_DIGITAL_DOCK,
+        FORCE_NO_BT_A2DP,
         NUM_FORCE_CONFIG,
         FORCE_DEFAULT = FORCE_NONE
     };
@@ -960,5 +962,7 @@ private:
 };
 
 };  // namespace android
+
+#pragma GCC visibility pop
 
 #endif  /*ANDROID_AUDIOSYSTEM_H_*/

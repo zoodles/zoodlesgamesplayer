@@ -35,6 +35,8 @@ public:
   nsApplicationCacheNamespace() : mItemType(0) {}
 
 private:
+  ~nsApplicationCacheNamespace() {}
+
   uint32_t mItemType;
   nsCString mNamespaceSpec;
   nsCString mData;
@@ -45,7 +47,7 @@ public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_MOZISTORAGEFUNCTION
 
-  nsOfflineCacheEvictionFunction(nsOfflineCacheDevice *device)
+  explicit nsOfflineCacheEvictionFunction(nsOfflineCacheDevice *device)
     : mDevice(device)
   {}
 
@@ -53,13 +55,15 @@ public:
   void Apply();
 
 private:
+  ~nsOfflineCacheEvictionFunction() {}
+
   nsOfflineCacheDevice *mDevice;
   nsCOMArray<nsIFile> mItems;
 
 };
 
-class nsOfflineCacheDevice : public nsCacheDevice
-                           , public nsISupports
+class nsOfflineCacheDevice MOZ_FINAL : public nsCacheDevice
+                                     , public nsISupports
 {
 public:
   nsOfflineCacheDevice();
@@ -70,34 +74,34 @@ public:
    * nsCacheDevice methods
    */
 
-  virtual nsresult        Init();
+  virtual nsresult        Init() MOZ_OVERRIDE;
   nsresult                InitWithSqlite(mozIStorageService * ss);
-  virtual nsresult        Shutdown();
+  virtual nsresult        Shutdown() MOZ_OVERRIDE;
 
-  virtual const char *    GetDeviceID(void);
-  virtual nsCacheEntry *  FindEntry(nsCString * key, bool *collision);
-  virtual nsresult        DeactivateEntry(nsCacheEntry * entry);
-  virtual nsresult        BindEntry(nsCacheEntry * entry);
-  virtual void            DoomEntry( nsCacheEntry * entry );
+  virtual const char *    GetDeviceID(void) MOZ_OVERRIDE;
+  virtual nsCacheEntry *  FindEntry(nsCString * key, bool *collision) MOZ_OVERRIDE;
+  virtual nsresult        DeactivateEntry(nsCacheEntry * entry) MOZ_OVERRIDE;
+  virtual nsresult        BindEntry(nsCacheEntry * entry) MOZ_OVERRIDE;
+  virtual void            DoomEntry( nsCacheEntry * entry ) MOZ_OVERRIDE;
 
   virtual nsresult OpenInputStreamForEntry(nsCacheEntry *    entry,
                                            nsCacheAccessMode mode,
                                            uint32_t          offset,
-                                           nsIInputStream ** result);
+                                           nsIInputStream ** result) MOZ_OVERRIDE;
 
   virtual nsresult OpenOutputStreamForEntry(nsCacheEntry *     entry,
                                             nsCacheAccessMode  mode,
                                             uint32_t           offset,
-                                            nsIOutputStream ** result);
+                                            nsIOutputStream ** result) MOZ_OVERRIDE;
 
   virtual nsresult        GetFileForEntry(nsCacheEntry *    entry,
-                                          nsIFile **        result);
+                                          nsIFile **        result) MOZ_OVERRIDE;
 
-  virtual nsresult        OnDataSizeChange(nsCacheEntry * entry, int32_t deltaSize);
+  virtual nsresult        OnDataSizeChange(nsCacheEntry * entry, int32_t deltaSize) MOZ_OVERRIDE;
   
-  virtual nsresult        Visit(nsICacheVisitor * visitor);
+  virtual nsresult        Visit(nsICacheVisitor * visitor) MOZ_OVERRIDE;
 
-  virtual nsresult        EvictEntries(const char * clientID);
+  virtual nsresult        EvictEntries(const char * clientID) MOZ_OVERRIDE;
 
   /* Entry ownership */
   nsresult                GetOwnerDomains(const char *        clientID,
@@ -188,8 +192,10 @@ public:
   uint32_t                CacheCapacity() { return mCacheCapacity; }
   uint32_t                CacheSize();
   uint32_t                EntryCount();
-  
+
 private:
+  ~nsOfflineCacheDevice();
+
   friend class nsApplicationCache;
 
   static PLDHashOperator ShutdownApplicationCache(const nsACString &key,

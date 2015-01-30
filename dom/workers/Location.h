@@ -44,7 +44,11 @@ class WorkerLocation MOZ_FINAL : public nsWrapperCache
     , mOrigin(aOrigin)
   {
     MOZ_COUNT_CTOR(WorkerLocation);
-    SetIsDOMBinding();
+  }
+
+  ~WorkerLocation()
+  {
+    MOZ_COUNT_DTOR(WorkerLocation);
   }
 
 public:
@@ -56,15 +60,10 @@ public:
   Create(WorkerPrivate::LocationInfo& aInfo);
 
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   nsISupports* GetParentObject() const {
     return nullptr;
-  }
-
-  ~WorkerLocation()
-  {
-    MOZ_COUNT_DTOR(WorkerLocation);
   }
 
   void Stringify(nsString& aHref) const

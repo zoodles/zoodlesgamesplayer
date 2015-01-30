@@ -58,7 +58,7 @@ public:
     enum Flags {
         NoFlags          = 0x0,
         UseNearestFilter = 0x1,
-        NeedsYFlip       = 0x2,
+        OriginBottomLeft = 0x2,
         DisallowBigImage = 0x4
     };
 
@@ -67,19 +67,10 @@ public:
 
     static already_AddRefed<TextureImage> Create(
                        GLContext* gl,
-                       const nsIntSize& aSize,
-                       TextureImage::ContentType aContentType,
-                       GLenum aWrapMode,
-                       TextureImage::Flags aFlags = TextureImage::NoFlags);
-    // Moz2D equivalent...
-    static already_AddRefed<TextureImage> Create(
-                       GLContext* gl,
                        const gfx::IntSize& aSize,
                        TextureImage::ContentType aContentType,
                        GLenum aWrapMode,
                        TextureImage::Flags aFlags = TextureImage::NoFlags);
-
-    virtual ~TextureImage() {}
 
     /**
      * Returns a gfxASurface for updating |aRegion| of the client's
@@ -125,7 +116,7 @@ public:
      * The Image may contain several textures for different regions (tiles).
      * These functions iterate over each sub texture image tile.
      */
-    virtual void BeginTileIteration() {
+    virtual void BeginBigImageIteration() {
     }
 
     virtual bool NextTile() {
@@ -135,12 +126,12 @@ public:
     // Function prototype for a tile iteration callback. Returning false will
     // cause iteration to be interrupted (i.e. the corresponding NextTile call
     // will return false).
-    typedef bool (* TileIterationCallback)(TextureImage* aImage,
+    typedef bool (* BigImageIterationCallback)(TextureImage* aImage,
                                            int aTileNumber,
                                            void* aCallbackData);
 
     // Sets a callback to be called every time NextTile is called.
-    virtual void SetIterationCallback(TileIterationCallback aCallback,
+    virtual void SetIterationCallback(BigImageIterationCallback aCallback,
                                       void* aCallbackData) {
     }
 
@@ -237,6 +228,9 @@ protected:
                  GLenum aWrapMode, ContentType aContentType,
                  Flags aFlags = NoFlags);
 
+    // Protected destructor, to discourage deletion outside of Release():
+    virtual ~TextureImage() {}
+
     virtual gfx::IntRect GetSrcTileRect();
 
     gfx::IntSize mSize;
@@ -318,7 +312,7 @@ protected:
  * Aims to behave just like the real thing.
  */
 
-class TiledTextureImage
+class TiledTextureImage MOZ_FINAL
     : public TextureImage
 {
 public:
@@ -334,9 +328,9 @@ public:
     virtual void EndUpdate();
     virtual void Resize(const gfx::IntSize& aSize);
     virtual uint32_t GetTileCount();
-    virtual void BeginTileIteration();
+    virtual void BeginBigImageIteration();
     virtual bool NextTile();
-    virtual void SetIterationCallback(TileIterationCallback aCallback,
+    virtual void SetIterationCallback(BigImageIterationCallback aCallback,
                                       void* aCallbackData);
     virtual gfx::IntRect GetTileRect();
     virtual GLuint GetTextureID() {
@@ -350,7 +344,7 @@ protected:
     virtual gfx::IntRect GetSrcTileRect();
 
     unsigned int mCurrentImage;
-    TileIterationCallback mIterationCallback;
+    BigImageIterationCallback mIterationCallback;
     void* mIterationCallbackData;
     nsTArray< nsRefPtr<TextureImage> > mImages;
     bool mInUpdate;
@@ -387,7 +381,8 @@ CreateBasicTextureImage(GLContext* aGL,
   * |aWrapMode| (usually GL_CLAMP_TO_EDGE or GL_REPEAT) and by
   * default, GL_LINEAR filtering.  Specify
   * |aFlags=UseNearestFilter| for GL_NEAREST filtering. Specify
-  * |aFlags=NeedsYFlip| if the image is flipped. Return
+  * |aFlags=OriginBottomLeft| if the image is origin-bottom-left, instead of the
+  * default origin-top-left. Return
   * nullptr if creating the TextureImage fails.
   *
   * The returned TextureImage may only be used with this GLContext.

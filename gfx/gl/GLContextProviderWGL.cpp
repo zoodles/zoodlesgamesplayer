@@ -8,8 +8,6 @@
 #include "GLLibraryLoader.h"
 #include "nsDebug.h"
 #include "nsIWidget.h"
-#include "gfxASurface.h"
-#include "gfxImageSurface.h"
 #include "gfxPlatform.h"
 #include "gfxWindowsSurface.h"
 
@@ -19,10 +17,10 @@
 
 #include "mozilla/Preferences.h"
 
-using namespace mozilla::gfx;
-
 namespace mozilla {
 namespace gl {
+
+using namespace mozilla::gfx;
 
 WGLLibrary sWGLLib;
 
@@ -401,6 +399,12 @@ GetGlobalContextWGL()
 }
 
 already_AddRefed<GLContext>
+GLContextProviderWGL::CreateWrappingExisting(void*, void*)
+{
+    return nullptr;
+}
+
+already_AddRefed<GLContext>
 GLContextProviderWGL::CreateForWindow(nsIWidget *aWidget)
 {
     if (!sWGLLib.EnsureInitialized()) {
@@ -603,8 +607,7 @@ CreateWindowOffscreenContext()
 }
 
 already_AddRefed<GLContext>
-GLContextProviderWGL::CreateOffscreen(const gfxIntSize& size,
-                                      const SurfaceCaps& caps)
+GLContextProviderWGL::CreateHeadless()
 {
     if (!sWGLLib.EnsureInitialized()) {
         return nullptr;
@@ -631,6 +634,18 @@ GLContextProviderWGL::CreateOffscreen(const gfxIntSize& size,
     {
         return nullptr;
     }
+
+    nsRefPtr<GLContext> retGL = glContext.get();
+    return retGL.forget();
+}
+
+already_AddRefed<GLContext>
+GLContextProviderWGL::CreateOffscreen(const gfxIntSize& size,
+                                      const SurfaceCaps& caps)
+{
+    nsRefPtr<GLContext> glContext = CreateHeadless();
+    if (!glContext)
+        return nullptr;
 
     if (!glContext->InitOffscreen(ToIntSize(size), caps))
         return nullptr;

@@ -2,6 +2,13 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
+///////////////////
+//
+// Whitelisting this test.
+// As part of bug 1077403, the leaking uncaught rejection should be fixed. 
+//
+thisTestLeaksUncaughtRejectionsAndShouldBeFixed("Error: Unknown sheet source");
+
 let gUI;
 
 const FIRST_TEST_PAGE = TEST_BASE + "inline-1.html"
@@ -12,15 +19,14 @@ function test()
 {
   waitForExplicitFinish();
 
-  addTabAndOpenStyleEditor(function(panel) {
+  addTabAndOpenStyleEditors(2, function(panel) {
     gUI = panel.UI;
 
     // First test that identifiers are correcly generated. If not other tests
     // are likely to fail.
     testIndentifierGeneration();
 
-    waitForEditors(2)
-    .then(saveFirstInlineStyleSheet)
+    saveFirstInlineStyleSheet()
     .then(testFriendlyNamesAfterSave)
     .then(reloadPage)
     .then(testFriendlyNamesAfterSave)
@@ -93,10 +99,9 @@ function navigateToAnotherPage() {
 
   gUI = null;
 
-  addTabAndOpenStyleEditor(function(panel) {
+  addTabAndOpenStyleEditors(2, function(panel) {
     gUI = panel.UI;
-
-    waitForEditors(2).then(deferred.resolve);
+    deferred.resolve();
   });
 
   content.location = SECOND_TEST_PAGE;

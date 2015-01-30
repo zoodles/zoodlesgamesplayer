@@ -40,7 +40,6 @@ public:
   // doesn't unlock the 'cpu' resource.
 
   WakeLock();
-  virtual ~WakeLock();
 
   // Initialize this wake lock on behalf of the given window.  Null windows are
   // allowed; a lock without an associated window is always considered
@@ -57,13 +56,15 @@ public:
   nsISupports* GetParentObject() const;
 
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   void GetTopic(nsAString& aTopic);
 
   void Unlock(ErrorResult& aRv);
 
 private:
+  virtual ~WakeLock();
+
   void     DoUnlock();
   void     DoLock();
   void     AttachEventListener();

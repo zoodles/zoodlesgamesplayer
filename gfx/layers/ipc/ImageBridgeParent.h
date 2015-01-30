@@ -13,12 +13,17 @@
 #include "mozilla/Attributes.h"         // for MOZ_OVERRIDE
 #include "mozilla/ipc/ProtocolUtils.h"
 #include "mozilla/ipc/SharedMemory.h"   // for SharedMemory, etc
+#include "mozilla/layers/CompositorParent.h"
 #include "mozilla/layers/PImageBridgeParent.h"
 #include "nsAutoPtr.h"                  // for nsRefPtr
 #include "nsISupportsImpl.h"
 #include "nsTArrayForwardDeclare.h"     // for InfallibleTArray
 
 class MessageLoop;
+
+namespace base {
+class Thread;
+}
 
 namespace mozilla {
 namespace ipc {
@@ -32,14 +37,15 @@ namespace layers {
  * It's purpose is mainly to setup the IPDL connection. Most of the
  * interesting stuff is in ImageContainerParent.
  */
-class ImageBridgeParent : public PImageBridgeParent,
-                          public CompositableParentManager
+class ImageBridgeParent MOZ_FINAL : public PImageBridgeParent,
+                                    public CompositableParentManager
 {
 public:
   typedef InfallibleTArray<CompositableOperation> EditArray;
   typedef InfallibleTArray<EditReply> EditReplyArray;
+  typedef InfallibleTArray<AsyncChildMessageData> AsyncChildMessageArray;
 
-  ImageBridgeParent(MessageLoop* aLoop, Transport* aTransport);
+  ImageBridgeParent(MessageLoop* aLoop, Transport* aTransport, ProcessId aChildProcessId);
   ~ImageBridgeParent();
 
   virtual LayersBackend GetCompositorBackendType() const MOZ_OVERRIDE;
@@ -47,18 +53,26 @@ public:
   virtual void ActorDestroy(ActorDestroyReason aWhy) MOZ_OVERRIDE;
 
   static PImageBridgeParent*
-  Create(Transport* aTransport, ProcessId aOtherProcess);
+  Create(Transport* aTransport, ProcessId aChildProcessId);
 
-  virtual PGrallocBufferParent*
-  AllocPGrallocBufferParent(const IntSize&, const uint32_t&, const uint32_t&,
-                            MaybeMagicGrallocBufferHandle*) MOZ_OVERRIDE;
+  // CompositableParentManager
+  virtual void SendFenceHandleIfPresent(PTextureParent* aTexture,
+                                        CompositableHost* aCompositableHost) MOZ_OVERRIDE;
 
-  virtual bool
-  DeallocPGrallocBufferParent(PGrallocBufferParent* actor) MOZ_OVERRIDE;
+  virtual void SendFenceHandle(AsyncTransactionTracker* aTracker,
+                               PTextureParent* aTexture,
+                               const FenceHandle& aFence) MOZ_OVERRIDE;
+
+  virtual void SendAsyncMessage(const InfallibleTArray<AsyncParentMessageData>& aMessage) MOZ_OVERRIDE;
+
+  virtual base::ProcessId GetChildProcessId() MOZ_OVERRIDE
+  {
+    return mChildProcessId;
+  }
 
   // PImageBridge
-  virtual bool RecvUpdate(const EditArray& aEdits, EditReplyArray* aReply) MOZ_OVERRIDE;
-  virtual bool RecvUpdateNoSwap(const EditArray& aEdits) MOZ_OVERRIDE;
+  virtual bool RecvUpdate(EditArray&& aEdits, EditReplyArray* aReply) MOZ_OVERRIDE;
+  virtual bool RecvUpdateNoSwap(EditArray&& aEdits) MOZ_OVERRIDE;
 
   virtual bool IsAsync() const MOZ_OVERRIDE { return true; }
 
@@ -70,9 +84,15 @@ public:
                                               const TextureFlags& aFlags) MOZ_OVERRIDE;
   virtual bool DeallocPTextureParent(PTextureParent* actor) MOZ_OVERRIDE;
 
-  bool RecvStop() MOZ_OVERRIDE;
+  virtual bool
+  RecvChildAsyncMessages(InfallibleTArray<AsyncChildMessageData>&& aMessages) MOZ_OVERRIDE;
 
-  MessageLoop * GetMessageLoop();
+  // Shutdown step 1
+  virtual bool RecvWillStop() MOZ_OVERRIDE;
+  // Shutdown step 2
+  virtual bool RecvStop() MOZ_OVERRIDE;
+
+  virtual MessageLoop* GetMessageLoop() const MOZ_OVERRIDE;
 
 
   // ISurfaceAllocator
@@ -81,14 +101,14 @@ public:
                   ipc::SharedMemory::SharedMemoryType aType,
                   ipc::Shmem* aShmem) MOZ_OVERRIDE
   {
-    return AllocShmem(aSize, aType, aShmem);
+    return PImageBridgeParent::AllocShmem(aSize, aType, aShmem);
   }
 
   bool AllocUnsafeShmem(size_t aSize,
                         ipc::SharedMemory::SharedMemoryType aType,
                         ipc::Shmem* aShmem) MOZ_OVERRIDE
   {
-    return AllocUnsafeShmem(aSize, aType, aShmem);
+    return PImageBridgeParent::AllocUnsafeShmem(aSize, aType, aShmem);
   }
 
   void DeallocShmem(ipc::Shmem& aShmem) MOZ_OVERRIDE
@@ -97,6 +117,27 @@ public:
   }
 
   virtual bool IsSameProcess() const MOZ_OVERRIDE;
+
+  virtual void ReplyRemoveTexture(const OpReplyRemoveTexture& aReply) MOZ_OVERRIDE;
+
+  static void ReplyRemoveTexture(base::ProcessId aChildProcessId,
+                                 const OpReplyRemoveTexture& aReply);
+
+  void SendFenceHandleToTrackerIfPresent(uint64_t aDestHolderId,
+                                         uint64_t aTransactionId,
+                                         PTextureParent* aTexture,
+                                         CompositableHost* aCompositableHost);
+
+  static void SendFenceHandleToTrackerIfPresent(base::ProcessId aChildProcessId,
+                                                uint64_t aDestHolderId,
+                                                uint64_t aTransactionId,
+                                                PTextureParent* aTexture,
+                                                CompositableHost* aCompositableHost);
+
+  using CompositableParentManager::SendPendingAsyncMessges;
+  static void SendPendingAsyncMessges(base::ProcessId aChildProcessId);
+
+  static ImageBridgeParent* GetInstance(ProcessId aId);
 
   // Overriden from IToplevelProtocol
   IToplevelProtocol*
@@ -109,9 +150,20 @@ private:
 
   MessageLoop* mMessageLoop;
   Transport* mTransport;
+  // Child side's process id.
+  base::ProcessId mChildProcessId;
   // This keeps us alive until ActorDestroy(), at which point we do a
   // deferred destruction of ourselves.
   nsRefPtr<ImageBridgeParent> mSelfRef;
+
+  /**
+   * Map of all living ImageBridgeParent instances
+   */
+  static std::map<base::ProcessId, ImageBridgeParent*> sImageBridges;
+
+  static MessageLoop* sMainLoop;
+
+  nsRefPtr<CompositorThreadHolder> mCompositorThreadHolder;
 };
 
 } // layers

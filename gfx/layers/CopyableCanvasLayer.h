@@ -9,7 +9,6 @@
 #include <stdint.h>                     // for uint32_t
 #include "GLContextTypes.h"             // for GLContext
 #include "Layers.h"                     // for CanvasLayer, etc
-#include "gfxASurface.h"                // for gfxASurface
 #include "gfxContext.h"                 // for gfxContext, etc
 #include "gfxTypes.h"
 #include "gfxPlatform.h"                // for gfxImageFormat
@@ -22,13 +21,6 @@
 #include "nsISupportsImpl.h"            // for MOZ_COUNT_CTOR, etc
 
 namespace mozilla {
-
-namespace gfx {
-class SurfaceStream;
-class SharedSurface;
-class SurfaceFactory;
-}
-
 namespace layers {
 
 class CanvasClientWebGL;
@@ -41,57 +33,36 @@ class CopyableCanvasLayer : public CanvasLayer
 {
 public:
   CopyableCanvasLayer(LayerManager* aLayerManager, void *aImplData);
-  virtual ~CopyableCanvasLayer();
-
-  virtual void Initialize(const Data& aData);
-
-  virtual bool IsDataValid(const Data& aData);
 
 protected:
-  void PaintWithOpacity(gfx::DrawTarget* aTarget,
-                        float aOpacity,
-                        gfx::SourceSurface* aMaskSurface,
-                        gfx::CompositionOp aOperator = gfx::CompositionOp::OP_OVER);
+  virtual ~CopyableCanvasLayer();
 
-  void UpdateTarget(gfx::DrawTarget* aDestTarget = nullptr,
-                    gfx::SourceSurface* aMaskSurface = nullptr);
+public:
+  virtual void Initialize(const Data& aData) MOZ_OVERRIDE;
+
+  virtual bool IsDataValid(const Data& aData) MOZ_OVERRIDE;
+
+  bool IsGLLayer() { return !!mGLContext; }
+
+protected:
+  void UpdateTarget(gfx::DrawTarget* aDestTarget = nullptr);
 
   RefPtr<gfx::SourceSurface> mSurface;
-  nsRefPtr<gfxASurface> mDeprecatedSurface;
-  nsRefPtr<mozilla::gl::GLContext> mGLContext;
+  nsRefPtr<gl::GLContext> mGLContext;
+  GLuint mCanvasFrontbufferTexID;
   mozilla::RefPtr<mozilla::gfx::DrawTarget> mDrawTarget;
 
-  RefPtr<gfx::SurfaceStream> mStream;
+  UniquePtr<gl::SharedSurface> mGLFrontbuffer;
 
-  uint32_t mCanvasFramebuffer;
-
-  bool mIsGLAlphaPremult;
-  bool mNeedsYFlip;
+  bool mIsAlphaPremultiplied;
+  gl::OriginPos mOriginPos;
 
   RefPtr<gfx::DataSourceSurface> mCachedTempSurface;
-  nsRefPtr<gfxImageSurface> mDeprecatedCachedTempSurface;
-  gfx::IntSize mCachedSize;
-  gfx::SurfaceFormat mCachedFormat;
-  gfxImageFormat mDeprecatedCachedFormat;
 
   gfx::DataSourceSurface* GetTempSurface(const gfx::IntSize& aSize,
                                          const gfx::SurfaceFormat aFormat);
 
   void DiscardTempSurface();
-
-  /* Deprecated thebes methods */
-protected:
-  void DeprecatedPaintWithOpacity(gfxContext* aContext,
-                                  float aOpacity,
-                                  Layer* aMaskLayer,
-                                  gfxContext::GraphicsOperator aOperator = gfxContext::OPERATOR_OVER);
-
-  void DeprecatedUpdateSurface(gfxASurface* aDestSurface = nullptr,
-                               Layer* aMaskLayer = nullptr);
-
-  gfxImageSurface* DeprecatedGetTempSurface(const gfx::IntSize& aSize,
-                                            const gfxImageFormat aFormat);
-
 };
 
 }

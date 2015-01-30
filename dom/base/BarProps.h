@@ -33,7 +33,6 @@ class BarProp : public nsISupports,
 {
 public:
   explicit BarProp(nsGlobalWindow *aWindow);
-  virtual ~BarProp();
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(BarProp)
@@ -41,12 +40,14 @@ public:
   nsPIDOMWindow* GetParentObject() const;
 
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   virtual bool GetVisible(ErrorResult& aRv) = 0;
   virtual void SetVisible(bool aVisible, ErrorResult& aRv) = 0;
 
 protected:
+  virtual ~BarProp();
+
   bool GetVisibleByFlag(uint32_t aChromeFlag, ErrorResult& aRv);
   void SetVisibleByFlag(bool aVisible, uint32_t aChromeFlag, ErrorResult &aRv);
 

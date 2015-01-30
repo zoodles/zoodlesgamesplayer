@@ -37,8 +37,9 @@
 #include "nsIInterfaceInfo.h"
 #include "nsIScriptError.h"
 
-#include "nsIStyleRuleProcessor.h"
+#include "nsCSSRuleProcessor.h"
 #include "nsXBLResourceLoader.h"
+#include "mozilla/AddonPathService.h"
 #include "mozilla/dom/CDATASection.h"
 #include "mozilla/dom/Comment.h"
 #include "mozilla/dom/Element.h"
@@ -99,6 +100,7 @@ nsXBLPrototypeBinding::nsXBLPrototypeBinding()
   mCheckedBaseProto(false),
   mKeyHandlersRegistered(false),
   mChromeOnlyContent(false),
+  mBindToUntrustedContent(false),
   mResources(nullptr),
   mBaseNameSpaceID(kNameSpaceID_None)
 {
@@ -148,17 +150,21 @@ nsXBLPrototypeBinding::Traverse(nsCycleCollectionTraversalCallback &cb) const
   NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "proto mBinding");
   cb.NoteXPCOMChild(mBinding);
   if (mResources) {
-    NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "proto mResources mLoader");
-    cb.NoteXPCOMChild(mResources->mLoader);
+    mResources->Traverse(cb);
   }
   ImplCycleCollectionTraverse(cb, mInterfaceTable, "proto mInterfaceTable");
 }
 
 void
-nsXBLPrototypeBinding::UnlinkJSObjects()
+nsXBLPrototypeBinding::Unlink()
 {
-  if (mImplementation)
+  if (mImplementation) {
     mImplementation->UnlinkJSObjects();
+  }
+
+  if (mResources) {
+    mResources->Unlink();
+  }
 }
 
 void
@@ -179,7 +185,6 @@ nsXBLPrototypeBinding::Initialize()
 
 nsXBLPrototypeBinding::~nsXBLPrototypeBinding(void)
 {
-  delete mResources;
   delete mImplementation;
   MOZ_COUNT_DTOR(nsXBLPrototypeBinding);
 }
@@ -209,6 +214,10 @@ nsXBLPrototypeBinding::SetBindingElement(nsIContent* aElement)
   mChromeOnlyContent = mBinding->AttrValueIs(kNameSpaceID_None,
                                              nsGkAtoms::chromeOnlyContent,
                                              nsGkAtoms::_true, eCaseMatters);
+
+  mBindToUntrustedContent = mBinding->AttrValueIs(kNameSpaceID_None,
+                                                  nsGkAtoms::bindToUntrustedContent,
+                                                  nsGkAtoms::_true, eCaseMatters);
 }
 
 bool
@@ -232,11 +241,7 @@ nsXBLPrototypeBinding::LoadResources()
 nsresult
 nsXBLPrototypeBinding::AddResource(nsIAtom* aResourceType, const nsAString& aSrc)
 {
-  if (!mResources) {
-    mResources = new nsXBLPrototypeResources(this);
-    if (!mResources)
-      return NS_ERROR_OUT_OF_MEMORY;
-  }
+  EnsureResources();
 
   mResources->AddResource(aResourceType, aSrc);
   return NS_OK;
@@ -255,7 +260,7 @@ nsXBLPrototypeBinding::BindingAttached(nsIContent* aBoundElement)
 {
   if (mImplementation && mImplementation->CompiledMembers() &&
       mImplementation->mConstructor)
-    return mImplementation->mConstructor->Execute(aBoundElement);
+    return mImplementation->mConstructor->Execute(aBoundElement, MapURIToAddonID(mBindingURI));
   return NS_OK;
 }
 
@@ -264,7 +269,7 @@ nsXBLPrototypeBinding::BindingDetached(nsIContent* aBoundElement)
 {
   if (mImplementation && mImplementation->CompiledMembers() &&
       mImplementation->mDestructor)
-    return mImplementation->mDestructor->Execute(aBoundElement);
+    return mImplementation->mDestructor->Execute(aBoundElement, MapURIToAddonID(mBindingURI));
   return NS_OK;
 }
 
@@ -588,27 +593,7 @@ nsIStyleRuleProcessor*
 nsXBLPrototypeBinding::GetRuleProcessor()
 {
   if (mResources) {
-    return mResources->mRuleProcessor;
-  }
-
-  return nullptr;
-}
-
-nsXBLPrototypeResources::sheet_array_type*
-nsXBLPrototypeBinding::GetOrCreateStyleSheets()
-{
-  if (!mResources) {
-    mResources = new nsXBLPrototypeResources(this);
-  }
-
-  return &mResources->mStyleSheetList;
-}
-
-nsXBLPrototypeResources::sheet_array_type*
-nsXBLPrototypeBinding::GetStyleSheets()
-{
-  if (mResources) {
-    return &mResources->mStyleSheetList;
+    return mResources->GetRuleProcessor();
   }
 
   return nullptr;
@@ -618,7 +603,8 @@ void
 nsXBLPrototypeBinding::EnsureAttributeTable()
 {
   if (!mAttributeTable) {
-    mAttributeTable = new nsClassHashtable<nsUint32HashKey, InnerAttributeTable>(4);
+    mAttributeTable =
+        new nsClassHashtable<nsUint32HashKey, InnerAttributeTable>(2);
   }
 }
 
@@ -629,7 +615,7 @@ nsXBLPrototypeBinding::AddToAttributeTable(int32_t aSourceNamespaceID, nsIAtom* 
 {
     InnerAttributeTable* attributesNS = mAttributeTable->Get(aSourceNamespaceID);
     if (!attributesNS) {
-      attributesNS = new InnerAttributeTable(4);
+      attributesNS = new InnerAttributeTable(2);
       mAttributeTable->Put(aSourceNamespaceID, attributesNS);
     }
 
@@ -868,6 +854,8 @@ nsXBLPrototypeBinding::Read(nsIObjectInputStream* aStream,
   mInheritStyle = (aFlags & XBLBinding_Serialize_InheritStyle) ? true : false;
   mChromeOnlyContent =
     (aFlags & XBLBinding_Serialize_ChromeOnlyContent) ? true : false;
+  mBindToUntrustedContent =
+    (aFlags & XBLBinding_Serialize_BindToUntrustedContent) ? true : false;
 
   // nsXBLContentSink::ConstructBinding doesn't create a binding with an empty
   // id, so we don't here either.
@@ -923,8 +911,7 @@ nsXBLPrototypeBinding::Read(nsIObjectInputStream* aStream,
   }
 
   AutoSafeJSContext cx;
-  JS::Rooted<JSObject*> compilationGlobal(cx, aDocInfo->GetCompilationGlobal());
-  NS_ENSURE_TRUE(compilationGlobal, NS_ERROR_UNEXPECTED);
+  JS::Rooted<JSObject*> compilationGlobal(cx, xpc::CompilationScope());
   JSAutoCompartment ac(cx, compilationGlobal);
 
   bool isFirstBinding = aFlags & XBLBinding_Serialize_IsFirstBinding;
@@ -1076,8 +1063,7 @@ nsXBLPrototypeBinding::Write(nsIObjectOutputStream* aStream)
   // computed on demand.
 
   AutoSafeJSContext cx;
-  JS::Rooted<JSObject*> compilationGlobal(cx, mXBLDocInfoWeak->GetCompilationGlobal());
-  NS_ENSURE_TRUE(compilationGlobal, NS_ERROR_UNEXPECTED);
+  JS::Rooted<JSObject*> compilationGlobal(cx, xpc::CompilationScope());
   JSAutoCompartment ac(cx, compilationGlobal);
 
   uint8_t flags = mInheritStyle ? XBLBinding_Serialize_InheritStyle : 0;
@@ -1089,6 +1075,10 @@ nsXBLPrototypeBinding::Write(nsIObjectOutputStream* aStream)
 
   if (mChromeOnlyContent) {
     flags |= XBLBinding_Serialize_ChromeOnlyContent;
+  }
+
+  if (mBindToUntrustedContent) {
+    flags |= XBLBinding_Serialize_BindToUntrustedContent;
   }
 
   nsresult rv = aStream->Write8(flags);
@@ -1164,7 +1154,7 @@ nsXBLPrototypeBinding::Write(nsIObjectOutputStream* aStream)
     nsAutoString attrValue;
     for (uint32_t i = 0; i < attributes; ++i) {
       const nsAttrName* attr = mBinding->GetAttrNameAt(i);
-      nsDependentAtomString attrName = attr->LocalName();
+      nsDependentAtomString attrName(attr->LocalName());
       mBinding->GetAttr(attr->NamespaceID(), attr->LocalName(), attrValue);
       rv = aStream->Write8(XBLBinding_Serialize_Attribute);
       NS_ENSURE_SUCCESS(rv, rv);
@@ -1260,7 +1250,7 @@ nsXBLPrototypeBinding::ReadContentNode(nsIObjectInputStream* aStream,
   NS_ENSURE_SUCCESS(rv, rv);
 
   nsCOMPtr<nsIAtom> tagAtom = do_GetAtom(tag);
-  nsCOMPtr<nsINodeInfo> nodeInfo =
+  nsRefPtr<NodeInfo> nodeInfo =
     aNim->GetNodeInfo(tagAtom, prefixAtom, namespaceID, nsIDOMNode::ELEMENT_NODE);
 
   uint32_t attrCount;
@@ -1307,7 +1297,7 @@ nsXBLPrototypeBinding::ReadContentNode(nsIObjectInputStream* aStream,
         if (!prefix.IsEmpty())
           prefixAtom = do_GetAtom(prefix);
 
-        nsCOMPtr<nsINodeInfo> ni =
+        nsRefPtr<NodeInfo> ni =
           aNim->GetNodeInfo(nameAtom, prefixAtom,
                             namespaceID, nsIDOMNode::ATTRIBUTE_NODE);
         attrs[i].mName.SetTo(ni);
@@ -1701,4 +1691,64 @@ nsXBLPrototypeBinding::ResolveBaseBinding()
   }
 
   return NS_OK;
+}
+
+void
+nsXBLPrototypeBinding::EnsureResources()
+{
+  if (!mResources) {
+    mResources = new nsXBLPrototypeResources(this);
+  }
+}
+
+void
+nsXBLPrototypeBinding::AppendStyleSheet(CSSStyleSheet* aSheet)
+{
+  EnsureResources();
+  mResources->AppendStyleSheet(aSheet);
+}
+
+void
+nsXBLPrototypeBinding::RemoveStyleSheet(CSSStyleSheet* aSheet)
+{
+  if (!mResources) {
+    MOZ_ASSERT(false, "Trying to remove a sheet that does not exist.");
+    return;
+  }
+
+  mResources->RemoveStyleSheet(aSheet);
+} 
+void
+nsXBLPrototypeBinding::InsertStyleSheetAt(size_t aIndex, CSSStyleSheet* aSheet)
+{
+  EnsureResources();
+  mResources->InsertStyleSheetAt(aIndex, aSheet);
+}
+
+CSSStyleSheet*
+nsXBLPrototypeBinding::StyleSheetAt(size_t aIndex) const
+{
+  MOZ_ASSERT(mResources);
+  return mResources->StyleSheetAt(aIndex);
+}
+
+size_t
+nsXBLPrototypeBinding::SheetCount() const
+{
+  return mResources ? mResources->SheetCount() : 0;
+}
+
+bool
+nsXBLPrototypeBinding::HasStyleSheets() const
+{
+  return mResources && mResources->HasStyleSheets();
+}
+
+void
+nsXBLPrototypeBinding::AppendStyleSheetsTo(
+                                      nsTArray<CSSStyleSheet*>& aResult) const
+{
+  if (mResources) {
+    mResources->AppendStyleSheetsTo(aResult);
+  }
 }

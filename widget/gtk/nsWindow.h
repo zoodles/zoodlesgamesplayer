@@ -37,9 +37,6 @@
 #undef LOG
 #ifdef MOZ_LOGGING
 
-// make sure that logging is enabled before including prlog.h
-#define FORCE_PR_LOG
-
 #include "prlog.h"
 #include "nsTArray.h"
 
@@ -75,7 +72,6 @@ class nsWindow : public nsBaseWidget, public nsSupportsWeakReference
 {
 public:
     nsWindow();
-    virtual ~nsWindow();
 
     static void ReleaseGlobals();
 
@@ -84,10 +80,10 @@ public:
     void CommonCreate(nsIWidget *aParent, bool aListenForResizes);
     
     virtual nsresult DispatchEvent(mozilla::WidgetGUIEvent* aEvent,
-                                   nsEventStatus& aStatus);
+                                   nsEventStatus& aStatus) MOZ_OVERRIDE;
     
     // called when we are destroyed
-    void OnDestroy(void);
+    virtual void OnDestroy(void) MOZ_OVERRIDE;
 
     // called to check and see if a widget's dimensions are sane
     bool AreBoundsSane(void);
@@ -97,60 +93,63 @@ public:
                               nsNativeWidget   aNativeParent,
                               const nsIntRect  &aRect,
                               nsDeviceContext *aContext,
-                              nsWidgetInitData *aInitData);
-    NS_IMETHOD         Destroy(void);
-    virtual nsIWidget *GetParent();
-    virtual float      GetDPI();
-    virtual nsresult   SetParent(nsIWidget* aNewParent);
-    NS_IMETHOD         SetModal(bool aModal);
-    virtual bool       IsVisible() const;
+                              nsWidgetInitData *aInitData) MOZ_OVERRIDE;
+    NS_IMETHOD         Destroy(void) MOZ_OVERRIDE;
+    virtual nsIWidget *GetParent() MOZ_OVERRIDE;
+    virtual float      GetDPI() MOZ_OVERRIDE;
+    virtual double     GetDefaultScaleInternal() MOZ_OVERRIDE; 
+    virtual nsresult   SetParent(nsIWidget* aNewParent) MOZ_OVERRIDE;
+    NS_IMETHOD         SetModal(bool aModal) MOZ_OVERRIDE;
+    virtual bool       IsVisible() const MOZ_OVERRIDE;
     NS_IMETHOD         ConstrainPosition(bool aAllowSlop,
                                          int32_t *aX,
-                                         int32_t *aY);
-    virtual void       SetSizeConstraints(const SizeConstraints& aConstraints);
+                                         int32_t *aY) MOZ_OVERRIDE;
+    virtual void       SetSizeConstraints(const SizeConstraints& aConstraints) MOZ_OVERRIDE;
     NS_IMETHOD         Move(double aX,
-                            double aY);
-    NS_IMETHOD         Show             (bool aState);
+                            double aY) MOZ_OVERRIDE;
+    NS_IMETHOD         Show             (bool aState) MOZ_OVERRIDE;
     NS_IMETHOD         Resize           (double aWidth,
                                          double aHeight,
-                                         bool   aRepaint);
+                                         bool   aRepaint) MOZ_OVERRIDE;
     NS_IMETHOD         Resize           (double aX,
                                          double aY,
                                          double aWidth,
                                          double aHeight,
-                                         bool   aRepaint);
-    virtual bool       IsEnabled() const;
+                                         bool   aRepaint) MOZ_OVERRIDE;
+    virtual bool       IsEnabled() const MOZ_OVERRIDE;
 
 
     NS_IMETHOD         PlaceBehind(nsTopLevelWidgetZPlacement  aPlacement,
                                    nsIWidget                  *aWidget,
-                                   bool                        aActivate);
-    void               SetZIndex(int32_t aZIndex);
-    NS_IMETHOD         SetSizeMode(int32_t aMode);
-    NS_IMETHOD         Enable(bool aState);
-    NS_IMETHOD         SetFocus(bool aRaise = false);
-    NS_IMETHOD         GetScreenBounds(nsIntRect &aRect);
-    NS_IMETHOD         GetClientBounds(nsIntRect &aRect);
-    virtual nsIntPoint GetClientOffset();
-    NS_IMETHOD         SetCursor(nsCursor aCursor);
+                                   bool                        aActivate) MOZ_OVERRIDE;
+    void               SetZIndex(int32_t aZIndex) MOZ_OVERRIDE;
+    NS_IMETHOD         SetSizeMode(int32_t aMode) MOZ_OVERRIDE;
+    NS_IMETHOD         Enable(bool aState) MOZ_OVERRIDE;
+    NS_IMETHOD         SetFocus(bool aRaise = false) MOZ_OVERRIDE;
+    NS_IMETHOD         GetScreenBounds(nsIntRect &aRect) MOZ_OVERRIDE;
+    NS_IMETHOD         GetClientBounds(nsIntRect &aRect) MOZ_OVERRIDE;
+    virtual nsIntPoint GetClientOffset() MOZ_OVERRIDE;
+    NS_IMETHOD         SetCursor(nsCursor aCursor) MOZ_OVERRIDE;
     NS_IMETHOD         SetCursor(imgIContainer* aCursor,
-                                 uint32_t aHotspotX, uint32_t aHotspotY);
-    NS_IMETHOD         Invalidate(const nsIntRect &aRect);
-    virtual void*      GetNativeData(uint32_t aDataType);
-    NS_IMETHOD         SetTitle(const nsAString& aTitle);
-    NS_IMETHOD         SetIcon(const nsAString& aIconSpec);
-    NS_IMETHOD         SetWindowClass(const nsAString& xulWinType);
-    virtual nsIntPoint WidgetToScreenOffset();
-    NS_IMETHOD         EnableDragDrop(bool aEnable);
-    NS_IMETHOD         CaptureMouse(bool aCapture);
+                                 uint32_t aHotspotX, uint32_t aHotspotY) MOZ_OVERRIDE;
+    NS_IMETHOD         Invalidate(const nsIntRect &aRect) MOZ_OVERRIDE;
+    virtual void*      GetNativeData(uint32_t aDataType) MOZ_OVERRIDE;
+    NS_IMETHOD         SetTitle(const nsAString& aTitle) MOZ_OVERRIDE;
+    NS_IMETHOD         SetIcon(const nsAString& aIconSpec) MOZ_OVERRIDE;
+    NS_IMETHOD         SetWindowClass(const nsAString& xulWinType) MOZ_OVERRIDE;
+    virtual nsIntPoint WidgetToScreenOffset() MOZ_OVERRIDE;
+    NS_IMETHOD         EnableDragDrop(bool aEnable) MOZ_OVERRIDE;
+    NS_IMETHOD         CaptureMouse(bool aCapture) MOZ_OVERRIDE;
     NS_IMETHOD         CaptureRollupEvents(nsIRollupListener *aListener,
-                                           bool aDoCapture);
-    NS_IMETHOD         GetAttention(int32_t aCycleCount);
+                                           bool aDoCapture) MOZ_OVERRIDE;
+    NS_IMETHOD         GetAttention(int32_t aCycleCount) MOZ_OVERRIDE;
+    virtual nsresult   SetWindowClipRegion(const nsTArray<nsIntRect>& aRects,
+                                           bool aIntersectWithExisting) MOZ_OVERRIDE;
+    virtual bool       HasPendingInputEvent() MOZ_OVERRIDE;
 
-    virtual bool       HasPendingInputEvent();
-
-    NS_IMETHOD         MakeFullScreen(bool aFullScreen);
-    NS_IMETHOD         HideWindowChrome(bool aShouldHide);
+    NS_IMETHOD         MakeFullScreen(bool aFullScreen,
+                                      nsIScreen* aTargetScreen = nullptr) MOZ_OVERRIDE;
+    NS_IMETHOD         HideWindowChrome(bool aShouldHide) MOZ_OVERRIDE;
 
     /**
      * GetLastUserInputTime returns a timestamp for the most recent user input
@@ -241,8 +240,8 @@ public:
 
     NS_IMETHOD         BeginResizeDrag(mozilla::WidgetGUIEvent* aEvent,
                                        int32_t aHorizontal,
-                                       int32_t aVertical);
-    NS_IMETHOD         BeginMoveDrag(mozilla::WidgetMouseEvent* aEvent);
+                                       int32_t aVertical) MOZ_OVERRIDE;
+    NS_IMETHOD         BeginMoveDrag(mozilla::WidgetMouseEvent* aEvent) MOZ_OVERRIDE;
 
     MozContainer*      GetMozContainer() { return mContainer; }
     // GetMozContainerWidget returns the MozContainer even for undestroyed
@@ -261,46 +260,53 @@ public:
     bool               DispatchKeyDownEvent(GdkEventKey *aEvent,
                                             bool *aIsCancelled);
 
-    NS_IMETHOD NotifyIME(const IMENotification& aIMENotification) MOZ_OVERRIDE;
     NS_IMETHOD_(void) SetInputContext(const InputContext& aContext,
-                                      const InputContextAction& aAction);
-    NS_IMETHOD_(InputContext) GetInputContext();
+                                      const InputContextAction& aAction) MOZ_OVERRIDE;
+    NS_IMETHOD_(InputContext) GetInputContext() MOZ_OVERRIDE;
+    virtual nsIMEUpdatePreference GetIMEUpdatePreference() MOZ_OVERRIDE;
+    bool ExecuteNativeKeyBindingRemapped(
+                        NativeKeyBindingsType aType,
+                        const mozilla::WidgetKeyboardEvent& aEvent,
+                        DoCommandCallback aCallback,
+                        void* aCallbackData,
+                        uint32_t aGeckoKeyCode,
+                        uint32_t aNativeKeyCode);
     NS_IMETHOD_(bool) ExecuteNativeKeyBinding(
                         NativeKeyBindingsType aType,
                         const mozilla::WidgetKeyboardEvent& aEvent,
                         DoCommandCallback aCallback,
                         void* aCallbackData) MOZ_OVERRIDE;
-    NS_IMETHOD GetToggledKeyState(uint32_t aKeyCode, bool* aLEDState);
+    NS_IMETHOD GetToggledKeyState(uint32_t aKeyCode,
+                                  bool* aLEDState) MOZ_OVERRIDE;
 
     // These methods are for toplevel windows only.
     void               ResizeTransparencyBitmap();
     void               ApplyTransparencyBitmap();
     void               ClearTransparencyBitmap();
 
-   virtual void        SetTransparencyMode(nsTransparencyMode aMode);
-   virtual nsTransparencyMode GetTransparencyMode();
-   virtual nsresult    ConfigureChildren(const nsTArray<Configuration>& aConfigurations);
+   virtual void        SetTransparencyMode(nsTransparencyMode aMode) MOZ_OVERRIDE;
+   virtual nsTransparencyMode GetTransparencyMode() MOZ_OVERRIDE;
+   virtual nsresult    ConfigureChildren(const nsTArray<Configuration>& aConfigurations) MOZ_OVERRIDE;
    nsresult            UpdateTranslucentWindowAlphaInternal(const nsIntRect& aRect,
                                                             uint8_t* aAlphas, int32_t aStride);
+    virtual gfxASurface *GetThebesSurface();
 
 #if (MOZ_WIDGET_GTK == 2)
-    gfxASurface       *GetThebesSurface();
-
     static already_AddRefed<gfxASurface> GetSurfaceForGdkDrawable(GdkDrawable* aDrawable,
                                                                   const nsIntSize& aSize);
-#else
-    gfxASurface       *GetThebesSurface(cairo_t *cr);
 #endif
-    NS_IMETHOD         ReparentNativeWidget(nsIWidget* aNewParent);
+    NS_IMETHOD         ReparentNativeWidget(nsIWidget* aNewParent) MOZ_OVERRIDE;
 
     virtual nsresult SynthesizeNativeMouseEvent(nsIntPoint aPoint,
                                                 uint32_t aNativeMessage,
-                                                uint32_t aModifierFlags);
+                                                uint32_t aModifierFlags) MOZ_OVERRIDE;
 
-    virtual nsresult SynthesizeNativeMouseMove(nsIntPoint aPoint)
+    virtual nsresult SynthesizeNativeMouseMove(nsIntPoint aPoint) MOZ_OVERRIDE
     { return SynthesizeNativeMouseEvent(aPoint, GDK_MOTION_NOTIFY, 0); }
 
 protected:
+    virtual ~nsWindow();
+
     // event handling code
     void DispatchActivateEvent(void);
     void DispatchDeactivateEvent(void);
@@ -311,6 +317,10 @@ protected:
                                       GtkWidget* aNewContainer,
                                       GdkWindow* aNewParentWindow,
                                       GtkWidget* aOldContainer);
+
+    virtual nsresult NotifyIMEInternal(
+                         const IMENotification& aIMENotification) MOZ_OVERRIDE;
+
     nsCOMPtr<nsIWidget> mParent;
     // Is this a toplevel window?
     bool                mIsTopLevel;
@@ -344,8 +354,6 @@ private:
                                        GdkEventButton* aGdkEvent);
     bool               DispatchCommandEvent(nsIAtom* aCommand);
     bool               DispatchContentCommandEvent(int32_t aMsg);
-    void               SetWindowClipRegion(const nsTArray<nsIntRect>& aRects,
-                                           bool aIntersectWithExisting);
     bool               CheckForRollup(gdouble aMouseX, gdouble aMouseY,
                                       bool aIsWheel, bool aAlwaysRollup);
     bool               GetDragInfo(mozilla::WidgetMouseEvent* aMouseEvent,
@@ -365,6 +373,11 @@ private:
 
     int32_t             mTransparencyBitmapWidth;
     int32_t             mTransparencyBitmapHeight;
+
+#if GTK_CHECK_VERSION(3,4,0)
+    // This field omits duplicate scroll events caused by GNOME bug 726878.
+    guint32             mLastScrollEventTime;
+#endif
 
 #ifdef MOZ_HAVE_SHMIMAGE
     // If we're using xshm rendering, mThebesSurface wraps mShmImage
@@ -446,6 +459,9 @@ private:
                                           LayersBackend aBackendHint = mozilla::layers::LayersBackend::LAYERS_NONE,
                                           LayerManagerPersistence aPersistence = LAYER_MANAGER_CURRENT,
                                           bool* aAllowRetaining = nullptr) MOZ_OVERRIDE;
+#if (MOZ_WIDGET_GTK == 3)
+    gfxASurface* GetThebesSurface(cairo_t *cr);
+#endif
 
     void CleanLayerManagerRecursive();
 
@@ -463,6 +479,20 @@ private:
      * however, IME doesn't work at that time.
      */
     nsRefPtr<nsGtkIMModule> mIMModule;
+
+    // HiDPI scale conversion
+    gint GdkScaleFactor();
+
+    // To GDK
+    gint DevicePixelsToGdkCoordRoundUp(int pixels);
+    gint DevicePixelsToGdkCoordRoundDown(int pixels);
+    GdkPoint DevicePixelsToGdkPointRoundDown(nsIntPoint point);
+    GdkRectangle DevicePixelsToGdkRectRoundOut(nsIntRect rect);
+
+    // From GDK
+    int GdkCoordToDevicePixels(gint coord);
+    nsIntPoint GdkPointToDevicePixels(GdkPoint point);
+    nsIntRect GdkRectToDevicePixels(GdkRectangle rect);
 };
 
 class nsChildWindow : public nsWindow {

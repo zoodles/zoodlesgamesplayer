@@ -62,7 +62,11 @@ int NR_LOG_TURN = 0;
                                                   but this is silly since the transaction
                                                   times out after about 5. */
 #define TURN_PERMISSION_LIFETIME_SECONDS 300   /* 5 minutes. From RFC 5766 2.3 */
-#define TURN_CONNECT_TIMEOUT 1500  /* 1.5 seconds */
+
+// Set to enable a temporary fix that will run the TURN reservation keep-alive
+// logic when data is received via a TURN relayed path: a DATA_INDICATION packet is received.
+// TODO(pkerr@mozilla.com) This should be replace/removed when bug 935806 is implemented.
+#define REFRESH_RESERVATION_ON_RECV 1
 
 static int nr_turn_stun_ctx_create(nr_turn_client_ctx *tctx, int type,
                                    NR_async_cb success_cb,
@@ -70,9 +74,6 @@ static int nr_turn_stun_ctx_create(nr_turn_client_ctx *tctx, int type,
                                    nr_turn_stun_ctx **ctxp);
 static int nr_turn_stun_ctx_destroy(nr_turn_stun_ctx **ctxp);
 static void nr_turn_stun_ctx_cb(NR_SOCKET s, int how, void *arg);
-static int nr_turn_client_connect(nr_turn_client_ctx *ctx);
-static void nr_turn_client_connect_timeout_cb(NR_SOCKET s, int how, void *cb_arg);
-static void nr_turn_client_connected_cb(NR_SOCKET s, int how, void *cb_arg);
 static int nr_turn_stun_set_auth_params(nr_turn_stun_ctx *ctx,
                                         char *realm, char *nonce);
 static void nr_turn_client_refresh_timer_cb(NR_SOCKET s, int how, void *arg);
@@ -337,14 +338,9 @@ int nr_turn_client_ctx_create(const char *label, nr_socket *sock,
   if ((r=nr_transport_addr_copy(&ctx->turn_server_addr, addr)))
     ABORT(r);
 
-  if (addr->protocol == IPPROTO_UDP) {
-    ctx->state = NR_TURN_CLIENT_STATE_CONNECTED;
-  }
-  else {
-    assert(addr->protocol == IPPROTO_TCP);
-    ctx->state = NR_TURN_CLIENT_STATE_INITTED;
-
-    if (r=nr_turn_client_connect(ctx)) {
+  ctx->state = NR_TURN_CLIENT_STATE_INITTED;
+  if (addr->protocol == IPPROTO_TCP) {
+    if ((r=nr_socket_connect(ctx->sock, &ctx->turn_server_addr))) {
       if (r != R_WOULDBLOCK)
         ABORT(r);
     }
@@ -407,76 +403,6 @@ nr_turn_client_ctx_destroy(nr_turn_client_ctx **ctxp)
   return(0);
 }
 
-static int nr_turn_client_connect(nr_turn_client_ctx *ctx)
-{
-  int r,_status;
-
-  if (ctx->turn_server_addr.protocol != IPPROTO_TCP)
-    ABORT(R_INTERNAL);
-
-  r = nr_socket_connect(ctx->sock, &ctx->turn_server_addr);
-
-  if (r == R_WOULDBLOCK) {
-    NR_SOCKET fd;
-
-    if (r=nr_socket_getfd(ctx->sock, &fd))
-      ABORT(r);
-
-    NR_ASYNC_WAIT(fd, NR_ASYNC_WAIT_WRITE, nr_turn_client_connected_cb, ctx);
-    NR_ASYNC_TIMER_SET(TURN_CONNECT_TIMEOUT,
-                       nr_turn_client_connect_timeout_cb, ctx,
-                       &ctx->connected_timer_handle);
-    ABORT(R_WOULDBLOCK);
-  }
-  if (r) {
-    ABORT(R_IO_ERROR);
-  }
-
-  ctx->state = NR_TURN_CLIENT_STATE_CONNECTED;
-
-  _status = 0;
-abort:
-  return(_status);
-}
-
-static void nr_turn_client_connect_timeout_cb(NR_SOCKET s, int how, void *cb_arg)
-{
-  nr_turn_client_ctx *ctx = (nr_turn_client_ctx *)cb_arg;
-
-  r_log(NR_LOG_TURN, LOG_INFO, "TURN(%s): connect timeout", ctx->label);
-
-  ctx->connected_timer_handle = 0;
-
-  /* This also cancels waiting on the file descriptor */
-  nr_turn_client_failed(ctx);
-}
-
-static void nr_turn_client_connected_cb(NR_SOCKET s, int how, void *cb_arg)
-{
-  int r, _status;
-  nr_turn_client_ctx *ctx = (nr_turn_client_ctx *)cb_arg;
-
-  /* Cancel the connection failure timer */
-  NR_async_timer_cancel(ctx->connected_timer_handle);
-  ctx->connected_timer_handle=0;
-
-  /* Assume we connected successfully */
-  if (ctx->state == NR_TURN_CLIENT_STATE_ALLOCATION_WAIT) {
-    if ((r=nr_turn_stun_ctx_start(STAILQ_FIRST(&ctx->stun_ctxs))))
-      ABORT(r);
-    ctx->state = NR_TURN_CLIENT_STATE_ALLOCATING;
-  }
-  else {
-    ctx->state = NR_TURN_CLIENT_STATE_CONNECTED;
-  }
-
-  _status = 0;
-abort:
-  if (_status) {
-    nr_turn_client_failed(ctx);
-  }
-}
-
 int nr_turn_client_cancel(nr_turn_client_ctx *ctx)
 {
   nr_turn_stun_ctx *stun = 0;
@@ -487,24 +413,6 @@ int nr_turn_client_cancel(nr_turn_client_ctx *ctx)
 
   if (ctx->label)
     r_log(NR_LOG_TURN, LOG_INFO, "TURN(%s): cancelling", ctx->label);
-
-  /* If we are waiting for connect, we need to stop
-     waiting for writability */
-  if (ctx->state == NR_TURN_CLIENT_STATE_INITTED ||
-      ctx->state == NR_TURN_CLIENT_STATE_ALLOCATION_WAIT) {
-    NR_SOCKET fd;
-    int r;
-
-    r = nr_socket_getfd(ctx->sock, &fd);
-    if (r) {
-      /* We should be able to get the fd, but if we get an
-         error, we shouldn't cancel. */
-      r_log(NR_LOG_TURN, LOG_ERR, "TURN: Couldn't get internal fd");
-    }
-    else {
-      NR_ASYNC_CANCEL(fd, NR_ASYNC_WAIT_WRITE);
-    }
-  }
 
   /* Cancel the STUN client ctxs */
   stun = STAILQ_FIRST(&ctx->stun_ctxs);
@@ -629,8 +537,7 @@ int nr_turn_client_allocate(nr_turn_client_ctx *ctx,
   nr_turn_stun_ctx *stun = 0;
   int r,_status;
 
-  assert(ctx->state == NR_TURN_CLIENT_STATE_INITTED ||
-         ctx->state == NR_TURN_CLIENT_STATE_CONNECTED);
+  assert(ctx->state == NR_TURN_CLIENT_STATE_INITTED);
 
   ctx->finished_cb=finished_cb;
   ctx->cb_arg=cb_arg;
@@ -643,17 +550,11 @@ int nr_turn_client_allocate(nr_turn_client_ctx *ctx,
   stun->stun->params.allocate_request.lifetime_secs =
       TURN_LIFETIME_REQUEST_SECONDS;
 
-  switch(ctx->state) {
-    case NR_TURN_CLIENT_STATE_INITTED:
-      /* We are waiting for connect before we can allocate */
-      ctx->state = NR_TURN_CLIENT_STATE_ALLOCATION_WAIT;
-      break;
-    case NR_TURN_CLIENT_STATE_CONNECTED:
+  if (ctx->state == NR_TURN_CLIENT_STATE_INITTED) {
       if ((r=nr_turn_stun_ctx_start(stun)))
         ABORT(r);
       ctx->state = NR_TURN_CLIENT_STATE_ALLOCATING;
-      break;
-    default:
+  } else {
       ABORT(R_ALREADY);
   }
 
@@ -845,7 +746,7 @@ int nr_turn_client_send_indication(nr_turn_client_ctx *ctx,
 
   _status=0;
 abort:
-  RFREE(ind);
+  nr_stun_message_destroy(&ind);
   return(_status);
 }
 
@@ -893,6 +794,12 @@ int nr_turn_client_parse_data_indication(nr_turn_client_ctx *ctx,
   if ((r=nr_transport_addr_copy(remote_addr,
                                 &attr->u.xor_mapped_address.unmasked)))
     ABORT(r);
+
+#if REFRESH_RESERVATION_ON_RECV
+  if ((r=nr_turn_client_ensure_perm(ctx, remote_addr))) {
+    ABORT(r);
+  }
+#endif
 
   if (!nr_stun_message_has_attribute(ind, NR_STUN_ATTR_DATA, &attr)) {
     ABORT(R_BAD_DATA);

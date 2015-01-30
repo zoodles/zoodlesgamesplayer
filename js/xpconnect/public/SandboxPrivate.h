@@ -1,6 +1,8 @@
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* vim: set ts=8 sts=4 et sw=4 tw=99: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this file,
- * You can obtain one at http://mozilla.org/MPL/2.0/. */
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef __SANDBOXPRIVATE_H__
 #define __SANDBOXPRIVATE_H__
@@ -25,20 +27,20 @@ public:
     SandboxPrivate(nsIPrincipal *principal, JSObject *global)
         : mPrincipal(principal)
     {
+        SetIsNotDOMBinding();
         SetWrapper(global);
     }
-    virtual ~SandboxPrivate() { }
 
     NS_DECL_CYCLE_COLLECTING_ISUPPORTS
     NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_AMBIGUOUS(SandboxPrivate,
                                                            nsIGlobalObject)
 
-    nsIPrincipal *GetPrincipal()
+    nsIPrincipal *GetPrincipal() MOZ_OVERRIDE
     {
         return mPrincipal;
     }
 
-    JSObject *GetGlobalJSObject()
+    JSObject *GetGlobalJSObject() MOZ_OVERRIDE
     {
         return GetWrapper();
     }
@@ -47,7 +49,20 @@ public:
     {
         ClearWrapper();
     }
+
+    virtual JSObject* WrapObject(JSContext* cx) MOZ_OVERRIDE
+    {
+        MOZ_CRASH("SandboxPrivate doesn't use DOM bindings!");
+    }
+
+    void ObjectMoved(JSObject *obj, const JSObject *old)
+    {
+        UpdateWrapper(obj, old);
+    }
+
 private:
+    virtual ~SandboxPrivate() { }
+
     nsCOMPtr<nsIPrincipal> mPrincipal;
 };
 

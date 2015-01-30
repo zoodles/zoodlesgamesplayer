@@ -21,12 +21,13 @@
 #include <linux/android_alarm.h>
 #include <math.h>
 #include <regex.h>
+#include <sched.h>
 #include <stdio.h>
 #include <sys/klog.h>
 #include <sys/syscall.h>
 #include <sys/resource.h>
 #include <time.h>
-#include <asm/page.h>
+#include <unistd.h>
 
 #include "mozilla/DebugOnly.h"
 
@@ -38,13 +39,16 @@
 #include "hardware_legacy/vibrator.h"
 #include "hardware_legacy/power.h"
 #include "libdisplay/GonkDisplay.h"
+#include "utils/threads.h"
 
 #include "base/message_loop.h"
 
 #include "Hal.h"
 #include "HalImpl.h"
+#include "HalLog.h"
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/dom/battery/Constants.h"
+#include "mozilla/DebugOnly.h"
 #include "mozilla/FileUtils.h"
 #include "mozilla/Monitor.h"
 #include "mozilla/RefPtr.h"
@@ -64,9 +68,9 @@
 #include "nsXULAppAPI.h"
 #include "OrientationObserver.h"
 #include "UeventPoller.h"
+#include "nsIWritablePropertyBag2.h"
 #include <algorithm>
 
-#define LOG(args...)  __android_log_print(ANDROID_LOG_INFO, "Gonk", args)
 #define NsecPerMsec  1000000LL
 #define NsecPerSec   1000000000
 
@@ -102,9 +106,160 @@
 
 using namespace mozilla;
 using namespace mozilla::hal;
+using namespace mozilla::dom;
 
 namespace mozilla {
 namespace hal_impl {
+
+/**
+ * These are defined by libhardware, specifically, hardware/libhardware/include/hardware/lights.h
+ * in the gonk subsystem.
+ * If these change and are exposed to JS, make sure nsIHal.idl is updated as well.
+ */
+enum LightType {
+  eHalLightID_Backlight     = 0,
+  eHalLightID_Keyboard      = 1,
+  eHalLightID_Buttons       = 2,
+  eHalLightID_Battery       = 3,
+  eHalLightID_Notifications = 4,
+  eHalLightID_Attention     = 5,
+  eHalLightID_Bluetooth     = 6,
+  eHalLightID_Wifi          = 7,
+  eHalLightID_Count  // This should stay at the end
+};
+enum LightMode {
+  eHalLightMode_User   = 0,  // brightness is managed by user setting
+  eHalLightMode_Sensor = 1,  // brightness is managed by a light sensor
+  eHalLightMode_Count
+};
+enum FlashMode {
+  eHalLightFlash_None     = 0,
+  eHalLightFlash_Timed    = 1,  // timed flashing.  Use flashOnMS and flashOffMS for timing
+  eHalLightFlash_Hardware = 2,  // hardware assisted flashing
+  eHalLightFlash_Count
+};
+
+struct LightConfiguration {
+  LightType light;
+  LightMode mode;
+  FlashMode flash;
+  uint32_t flashOnMS;
+  uint32_t flashOffMS;
+  uint32_t color;
+};
+
+static light_device_t* sLights[eHalLightID_Count]; // will be initialized to nullptr
+
+static light_device_t*
+GetDevice(hw_module_t* module, char const* name)
+{
+  int err;
+  hw_device_t* device;
+  err = module->methods->open(module, name, &device);
+  if (err == 0) {
+    return (light_device_t*)device;
+  } else {
+    return nullptr;
+  }
+}
+
+static void
+InitLights()
+{
+  // assume that if backlight is nullptr, nothing has been set yet
+  // if this is not true, the initialization will occur everytime a light is read or set!
+  if (!sLights[eHalLightID_Backlight]) {
+    int err;
+    hw_module_t* module;
+
+    err = hw_get_module(LIGHTS_HARDWARE_MODULE_ID, (hw_module_t const**)&module);
+    if (err == 0) {
+      sLights[eHalLightID_Backlight]
+             = GetDevice(module, LIGHT_ID_BACKLIGHT);
+      sLights[eHalLightID_Keyboard]
+             = GetDevice(module, LIGHT_ID_KEYBOARD);
+      sLights[eHalLightID_Buttons]
+             = GetDevice(module, LIGHT_ID_BUTTONS);
+      sLights[eHalLightID_Battery]
+             = GetDevice(module, LIGHT_ID_BATTERY);
+      sLights[eHalLightID_Notifications]
+             = GetDevice(module, LIGHT_ID_NOTIFICATIONS);
+      sLights[eHalLightID_Attention]
+             = GetDevice(module, LIGHT_ID_ATTENTION);
+      sLights[eHalLightID_Bluetooth]
+             = GetDevice(module, LIGHT_ID_BLUETOOTH);
+      sLights[eHalLightID_Wifi]
+             = GetDevice(module, LIGHT_ID_WIFI);
+        }
+    }
+}
+
+/**
+ * The state last set for the lights until liblights supports
+ * getting the light state.
+ */
+static light_state_t sStoredLightState[eHalLightID_Count];
+
+/**
+* Set the value of a light to a particular color, with a specific flash pattern.
+* light specifices which light.  See Hal.idl for the list of constants
+* mode specifies user set or based on ambient light sensor
+* flash specifies whether or how to flash the light
+* flashOnMS and flashOffMS specify the pattern for XXX flash mode
+* color specifies the color.  If the light doesn't support color, the given color is
+* transformed into a brightness, or just an on/off if that is all the light is capable of.
+* returns true if successful and false if failed.
+*/
+static bool
+SetLight(LightType light, const LightConfiguration& aConfig)
+{
+  light_state_t state;
+
+  InitLights();
+
+  if (light < 0 || light >= eHalLightID_Count ||
+      sLights[light] == nullptr) {
+    return false;
+  }
+
+  memset(&state, 0, sizeof(light_state_t));
+  state.color = aConfig.color;
+  state.flashMode = aConfig.flash;
+  state.flashOnMS = aConfig.flashOnMS;
+  state.flashOffMS = aConfig.flashOffMS;
+  state.brightnessMode = aConfig.mode;
+
+  sLights[light]->set_light(sLights[light], &state);
+  sStoredLightState[light] = state;
+  return true;
+}
+
+/**
+* GET the value of a light returning a particular color, with a specific flash pattern.
+* returns true if successful and false if failed.
+*/
+static bool
+GetLight(LightType light, LightConfiguration* aConfig)
+{
+  light_state_t state;
+
+  if (light < 0 || light >= eHalLightID_Count ||
+      sLights[light] == nullptr) {
+    return false;
+  }
+
+  memset(&state, 0, sizeof(light_state_t));
+  state = sStoredLightState[light];
+
+  aConfig->light = light;
+  aConfig->color = state.color;
+  aConfig->flash = FlashMode(state.flashMode);
+  aConfig->flashOnMS = state.flashOnMS;
+  aConfig->flashOffMS = state.flashOffMS;
+  aConfig->mode = LightMode(state.brightnessMode);
+
+  return true;
+}
 
 namespace {
 
@@ -112,7 +267,7 @@ namespace {
  * This runnable runs for the lifetime of the program, once started.  It's
  * responsible for "playing" vibration patterns.
  */
-class VibratorRunnable
+class VibratorRunnable MOZ_FINAL
   : public nsIRunnable
   , public nsIObserver
 {
@@ -155,7 +310,7 @@ private:
   static bool sShuttingDown;
 };
 
-NS_IMPL_ISUPPORTS2(VibratorRunnable, nsIRunnable, nsIObserver);
+NS_IMPL_ISUPPORTS(VibratorRunnable, nsIRunnable, nsIObserver);
 
 bool VibratorRunnable::sShuttingDown = false;
 
@@ -279,26 +434,46 @@ public:
       color = BATTERY_CHARGING_ARGB;
     } // else turn off battery indicator.
 
-    hal::LightConfiguration aConfig(hal::eHalLightID_Battery,
-                                    hal::eHalLightMode_User,
-                                    hal::eHalLightFlash_None,
-                                    0,
-                                    0,
-                                    color);
-    hal_impl::SetLight(hal::eHalLightID_Battery, aConfig);
+    LightConfiguration aConfig;
+    aConfig.light = eHalLightID_Battery;
+    aConfig.mode = eHalLightMode_User;
+    aConfig.flash = eHalLightFlash_None;
+    aConfig.flashOnMS = aConfig.flashOffMS = 0;
+    aConfig.color = color;
+
+    SetLight(eHalLightID_Battery, aConfig);
 
     hal::NotifyBatteryChange(info);
+
+    {
+      // bug 975667
+      // Gecko gonk hal is required to emit battery charging/level notification via nsIObserverService.
+      // This is useful for XPCOM components that are not statically linked to Gecko and cannot call
+      // hal::EnableBatteryNotifications
+      nsCOMPtr<nsIObserverService> obsService = mozilla::services::GetObserverService();
+      nsCOMPtr<nsIWritablePropertyBag2> propbag =
+        do_CreateInstance("@mozilla.org/hash-property-bag;1");
+      if (obsService && propbag) {
+        propbag->SetPropertyAsBool(NS_LITERAL_STRING("charging"),
+                                   info.charging());
+        propbag->SetPropertyAsDouble(NS_LITERAL_STRING("level"),
+                                   info.level());
+
+        obsService->NotifyObservers(propbag, "gonkhal-battery-notifier", nullptr);
+      }
+    }
+
     return NS_OK;
   }
 };
 
 } // anonymous namespace
 
-class BatteryObserver : public IUeventObserver,
-                        public RefCounted<BatteryObserver>
+class BatteryObserver : public IUeventObserver
 {
 public:
-  MOZ_DECLARE_REFCOUNTED_TYPENAME(BatteryObserver)
+  NS_INLINE_DECL_REFCOUNTING(BatteryObserver)
+
   BatteryObserver()
     :mUpdater(new BatteryUpdater())
   {
@@ -373,7 +548,7 @@ GetCurrentBatteryCharge(int* aCharge)
 
   #ifdef DEBUG
   if ((*aCharge < 0) || (*aCharge > 100)) {
-    HAL_LOG(("charge level contains unknown value: %d", *aCharge));
+    HAL_LOG("charge level contains unknown value: %d", *aCharge);
   }
   #endif
 
@@ -383,7 +558,7 @@ GetCurrentBatteryCharge(int* aCharge)
 static bool
 GetCurrentBatteryCharging(int* aCharging)
 {
-  static const int BATTERY_NOT_CHARGING = 0;
+  static const DebugOnly<int> BATTERY_NOT_CHARGING = 0;
   static const int BATTERY_CHARGING_USB = 1;
   static const int BATTERY_CHARGING_AC  = 2;
 
@@ -398,7 +573,7 @@ GetCurrentBatteryCharging(int* aCharging)
     if (chargingSrc != BATTERY_NOT_CHARGING &&
         chargingSrc != BATTERY_CHARGING_USB &&
         chargingSrc != BATTERY_CHARGING_AC) {
-      HAL_LOG(("charging_source contained unknown value: %d", chargingSrc));
+      HAL_LOG("charging_source contained unknown value: %d", chargingSrc);
     }
     #endif
 
@@ -462,13 +637,13 @@ bool ReadFromFile(const char *filename, char (&buf)[n])
   int fd = open(filename, O_RDONLY);
   ScopedClose autoClose(fd);
   if (fd < 0) {
-    HAL_LOG(("Unable to open file %s.", filename));
+    HAL_LOG("Unable to open file %s.", filename);
     return false;
   }
 
   ssize_t numRead = read(fd, buf, n);
   if (numRead < 0) {
-    HAL_LOG(("Error reading from file %s.", filename));
+    HAL_LOG("Error reading from file %s.", filename);
     return false;
   }
 
@@ -481,12 +656,12 @@ bool WriteToFile(const char *filename, const char *toWrite)
   int fd = open(filename, O_WRONLY);
   ScopedClose autoClose(fd);
   if (fd < 0) {
-    HAL_LOG(("Unable to open file %s.", filename));
+    HAL_LOG("Unable to open file %s.", filename);
     return false;
   }
 
   if (write(fd, toWrite, strlen(toWrite)) < 0) {
-    HAL_LOG(("Unable to write to file %s.", filename));
+    HAL_LOG("Unable to write to file %s.", filename);
     return false;
   }
 
@@ -518,21 +693,53 @@ GetScreenEnabled()
 }
 
 void
-SetScreenEnabled(bool enabled)
+SetScreenEnabled(bool aEnabled)
 {
-  GetGonkDisplay()->SetEnabled(enabled);
-  sScreenEnabled = enabled;
+  GetGonkDisplay()->SetEnabled(aEnabled);
+  sScreenEnabled = aEnabled;
+}
+
+bool
+GetKeyLightEnabled()
+{
+  LightConfiguration config;
+  GetLight(eHalLightID_Buttons, &config);
+  return (config.color != 0x00000000);
+}
+
+void
+SetKeyLightEnabled(bool aEnabled)
+{
+  LightConfiguration config;
+  config.mode = eHalLightMode_User;
+  config.flash = eHalLightFlash_None;
+  config.flashOnMS = config.flashOffMS = 0;
+  config.color = 0x00000000;
+
+  if (aEnabled) {
+    // Convert the value in [0, 1] to an int between 0 and 255 and then convert
+    // it to a color. Note that the high byte is FF, corresponding to the alpha
+    // channel.
+    double brightness = GetScreenBrightness();
+    uint32_t val = static_cast<int>(round(brightness * 255.0));
+    uint32_t color = (0xff<<24) + (val<<16) + (val<<8) + val;
+
+    config.color = color;
+  }
+
+  SetLight(eHalLightID_Buttons, config);
+  SetLight(eHalLightID_Keyboard, config);
 }
 
 double
 GetScreenBrightness()
 {
-  hal::LightConfiguration aConfig;
-  hal::LightType light = hal::eHalLightID_Backlight;
+  LightConfiguration config;
+  LightType light = eHalLightID_Backlight;
 
-  hal::GetLight(light, &aConfig);
+  GetLight(light, &config);
   // backlight is brightness only, so using one of the RGB elements as value.
-  int brightness = aConfig.color() & 0xFF;
+  int brightness = config.color & 0xFF;
   return brightness / 255.0;
 }
 
@@ -542,23 +749,25 @@ SetScreenBrightness(double brightness)
   // Don't use De Morgan's law to push the ! into this expression; we want to
   // catch NaN too.
   if (!(0 <= brightness && brightness <= 1)) {
-    HAL_LOG(("SetScreenBrightness: Dropping illegal brightness %f.",
-             brightness));
+    HAL_LOG("SetScreenBrightness: Dropping illegal brightness %f.", brightness);
     return;
   }
 
   // Convert the value in [0, 1] to an int between 0 and 255 and convert to a color
   // note that the high byte is FF, corresponding to the alpha channel.
-  int val = static_cast<int>(round(brightness * 255));
+  uint32_t val = static_cast<int>(round(brightness * 255.0));
   uint32_t color = (0xff<<24) + (val<<16) + (val<<8) + val;
 
-  hal::LightConfiguration aConfig;
-  aConfig.mode() = hal::eHalLightMode_User;
-  aConfig.flash() = hal::eHalLightFlash_None;
-  aConfig.flashOnMS() = aConfig.flashOffMS() = 0;
-  aConfig.color() = color;
-  hal::SetLight(hal::eHalLightID_Backlight, aConfig);
-  hal::SetLight(hal::eHalLightID_Buttons, aConfig);
+  LightConfiguration config;
+  config.mode = eHalLightMode_User;
+  config.flash = eHalLightFlash_None;
+  config.flashOnMS = config.flashOffMS = 0;
+  config.color = color;
+  SetLight(eHalLightID_Backlight, config);
+  if (GetKeyLightEnabled()) {
+    SetLight(eHalLightID_Buttons, config);
+    SetLight(eHalLightID_Keyboard, config);
+  }
 }
 
 static Monitor* sInternalLockCpuMonitor = nullptr;
@@ -599,113 +808,6 @@ SetCpuSleepAllowed(bool aAllowed)
   UpdateCpuSleepState();
 }
 
-static light_device_t* sLights[hal::eHalLightID_Count];	// will be initialized to nullptr
-
-light_device_t* GetDevice(hw_module_t* module, char const* name)
-{
-  int err;
-  hw_device_t* device;
-  err = module->methods->open(module, name, &device);
-  if (err == 0) {
-    return (light_device_t*)device;
-  } else {
-    return nullptr;
-  }
-}
-
-void
-InitLights()
-{
-  // assume that if backlight is nullptr, nothing has been set yet
-  // if this is not true, the initialization will occur everytime a light is read or set!
-  if (!sLights[hal::eHalLightID_Backlight]) {
-    int err;
-    hw_module_t* module;
-
-    err = hw_get_module(LIGHTS_HARDWARE_MODULE_ID, (hw_module_t const**)&module);
-    if (err == 0) {
-      sLights[hal::eHalLightID_Backlight]
-             = GetDevice(module, LIGHT_ID_BACKLIGHT);
-      sLights[hal::eHalLightID_Keyboard]
-             = GetDevice(module, LIGHT_ID_KEYBOARD);
-      sLights[hal::eHalLightID_Buttons]
-             = GetDevice(module, LIGHT_ID_BUTTONS);
-      sLights[hal::eHalLightID_Battery]
-             = GetDevice(module, LIGHT_ID_BATTERY);
-      sLights[hal::eHalLightID_Notifications]
-             = GetDevice(module, LIGHT_ID_NOTIFICATIONS);
-      sLights[hal::eHalLightID_Attention]
-             = GetDevice(module, LIGHT_ID_ATTENTION);
-      sLights[hal::eHalLightID_Bluetooth]
-             = GetDevice(module, LIGHT_ID_BLUETOOTH);
-      sLights[hal::eHalLightID_Wifi]
-             = GetDevice(module, LIGHT_ID_WIFI);
-        }
-    }
-}
-
-/**
- * The state last set for the lights until liblights supports
- * getting the light state.
- */
-static light_state_t sStoredLightState[hal::eHalLightID_Count];
-
-bool
-SetLight(hal::LightType light, const hal::LightConfiguration& aConfig)
-{
-  light_state_t state;
-
-  InitLights();
-
-  if (light < 0 || light >= hal::eHalLightID_Count ||
-      sLights[light] == nullptr) {
-    return false;
-  }
-
-  memset(&state, 0, sizeof(light_state_t));
-  state.color = aConfig.color();
-  state.flashMode = aConfig.flash();
-  state.flashOnMS = aConfig.flashOnMS();
-  state.flashOffMS = aConfig.flashOffMS();
-  state.brightnessMode = aConfig.mode();
-
-  sLights[light]->set_light(sLights[light], &state);
-  sStoredLightState[light] = state;
-  return true;
-}
-
-bool
-GetLight(hal::LightType light, hal::LightConfiguration* aConfig)
-{
-  light_state_t state;
-
-#ifdef HAVEGETLIGHT
-  InitLights();
-#endif
-
-  if (light < 0 || light >= hal::eHalLightID_Count ||
-      sLights[light] == nullptr) {
-    return false;
-  }
-
-  memset(&state, 0, sizeof(light_state_t));
-
-#ifdef HAVEGETLIGHT
-  sLights[light]->get_light(sLights[light], &state);
-#else
-  state = sStoredLightState[light];
-#endif
-
-  aConfig->light() = light;
-  aConfig->color() = state.color;
-  aConfig->flash() = hal::FlashMode(state.flashMode);
-  aConfig->flashOnMS() = state.flashOnMS;
-  aConfig->flashOffMS() = state.flashOffMS;
-  aConfig->mode() = hal::LightMode(state.brightnessMode);
-
-  return true;
-}
-
 void
 AdjustSystemClock(int64_t aDeltaMilliseconds)
 {
@@ -736,12 +838,12 @@ AdjustSystemClock(int64_t aDeltaMilliseconds)
   } while (fd == -1 && errno == EINTR);
   ScopedClose autoClose(fd);
   if (fd < 0) {
-    HAL_LOG(("Failed to open /dev/alarm: %s", strerror(errno)));
+    HAL_LOG("Failed to open /dev/alarm: %s", strerror(errno));
     return;
   }
 
   if (ioctl(fd, ANDROID_ALARM_SET_RTC, &now) < 0) {
-    HAL_LOG(("ANDROID_ALARM_SET_RTC failed: %s", strerror(errno)));
+    HAL_LOG("ANDROID_ALARM_SET_RTC failed: %s", strerror(errno));
   }
 
   hal::NotifySystemClockChange(aDeltaMilliseconds);
@@ -967,7 +1069,7 @@ EnableAlarm()
 
   int alarmFd = open("/dev/alarm", O_RDWR);
   if (alarmFd < 0) {
-    HAL_LOG(("Failed to open alarm device: %s.", strerror(errno)));
+    HAL_LOG("Failed to open alarm device: %s.", strerror(errno));
     return false;
   }
 
@@ -979,7 +1081,7 @@ EnableAlarm()
   actions.sa_flags = 0;
   actions.sa_handler = ShutDownAlarm;
   if (sigaction(SIGUSR1, &actions, nullptr)) {
-    HAL_LOG(("Failed to set SIGUSR1 signal for alarm-watcher thread."));
+    HAL_LOG("Failed to set SIGUSR1 signal for alarm-watcher thread.");
     return false;
   }
 
@@ -995,7 +1097,7 @@ EnableAlarm()
   if (status) {
     alarmData = nullptr;
     delete sInternalLockCpuMonitor;
-    HAL_LOG(("Failed to create alarm-watcher thread. Status: %d.", status));
+    HAL_LOG("Failed to create alarm-watcher thread. Status: %d.", status);
     return false;
   }
 
@@ -1026,7 +1128,7 @@ bool
 SetAlarm(int32_t aSeconds, int32_t aNanoseconds)
 {
   if (!sAlarmData) {
-    HAL_LOG(("We should have enabled the alarm."));
+    HAL_LOG("We should have enabled the alarm.");
     return false;
   }
 
@@ -1039,7 +1141,7 @@ SetAlarm(int32_t aSeconds, int32_t aNanoseconds)
                            ANDROID_ALARM_SET(ANDROID_ALARM_RTC_WAKEUP), &ts);
 
   if (result < 0) {
-    HAL_LOG(("Unable to set alarm: %s.", strerror(errno)));
+    HAL_LOG("Unable to set alarm: %s.", strerror(errno));
     return false;
   }
 
@@ -1091,7 +1193,7 @@ private:
   double mLastLineChecked;
   ScopedFreePtr<regex_t> mRegexes;
 };
-NS_IMPL_ISUPPORTS1(OomVictimLogger, nsIObserver);
+NS_IMPL_ISUPPORTS(OomVictimLogger, nsIObserver);
 
 NS_IMETHODIMP
 OomVictimLogger::Observe(
@@ -1108,8 +1210,17 @@ OomVictimLogger::Observe(
   const char* const regexes_raw[] = {
     ".*select.*to kill.*",
     ".*send sigkill to.*",
-    ".*lowmem_shrink.*, return",
-    ".*lowmem_shrink.*, ofree.*"};
+    ".*lowmem_shrink.*",
+    ".*[Oo]ut of [Mm]emory.*",
+    ".*[Kk]ill [Pp]rocess.*",
+    ".*[Kk]illed [Pp]rocess.*",
+    ".*oom-killer.*",
+    // The regexes below are for the output of dump_task from oom_kill.c
+    // 1st - title 2nd - body lines (8 ints and a string)
+    // oom_adj and oom_score_adj can be negative
+    "\\[ pid \\]   uid  tgid total_vm      rss cpu oom_adj oom_score_adj name",
+    "\\[.*[0-9][0-9]*\\][ ]*[0-9][0-9]*[ ]*[0-9][0-9]*[ ]*[0-9][0-9]*[ ]*[0-9][0-9]*[ ]*[0-9][0-9]*[ ]*.[0-9][0-9]*[ ]*.[0-9][0-9]*.*"
+  };
   const size_t regex_count = ArrayLength(regexes_raw);
 
   // Compile our regex just in time
@@ -1130,11 +1241,9 @@ OomVictimLogger::Observe(
   // deprecated the old klog defs.
   // Our current bionic does not hit this
   // change yet so handle the future change.
+  // (ICS doesn't have KLOG_SIZE_BUFFER but 
+  // JB and onwards does.)
   #define KLOG_SIZE_BUFFER KLOG_WRITE
-#else
-  // Once the change hits our bionic this ifndef
-  // can be removed.
-  #warning "Please remove KLOG_UNREAD_SIZE compatability def"
 #endif
   // Retreive kernel log
   int msg_buf_size = klogctl(KLOG_SIZE_BUFFER, NULL, 0);
@@ -1212,7 +1321,7 @@ EnsureKernelLowMemKillerParamsSet()
   }
   kernelLowMemKillerParamsSet = true;
 
-  HAL_LOG(("Setting kernel's low-mem killer parameters."));
+  HAL_LOG("Setting kernel's low-mem killer parameters.");
 
   // Set /sys/module/lowmemorykiller/parameters/{adj,minfree,notify_trigger}
   // according to our prefs.  These files let us tune when the kernel kills
@@ -1233,9 +1342,11 @@ EnsureKernelLowMemKillerParamsSet()
   nsAutoCString adjParams;
   nsAutoCString minfreeParams;
 
-  int32_t lowerBoundOfNextOomScoreAdj = OOM_SCORE_ADJ_MIN - 1;
-  int32_t lowerBoundOfNextKillUnderKB = 0;
+  DebugOnly<int32_t> lowerBoundOfNextOomScoreAdj = OOM_SCORE_ADJ_MIN - 1;
+  DebugOnly<int32_t> lowerBoundOfNextKillUnderKB = 0;
   int32_t countOfLowmemorykillerParametersSets = 0;
+
+  long page_size = sysconf(_SC_PAGESIZE);
 
   for (int i = NUM_PROCESS_PRIORITY - 1; i >= 0; i--) {
     // The system doesn't function correctly if we're missing these prefs, so
@@ -1274,7 +1385,7 @@ EnsureKernelLowMemKillerParamsSet()
     adjParams.AppendPrintf("%d,", OomAdjOfOomScoreAdj(oomScoreAdj));
 
     // minfree is in pages.
-    minfreeParams.AppendPrintf("%d,", killUnderKB * 1024 / PAGE_SIZE);
+    minfreeParams.AppendPrintf("%ld,", killUnderKB * 1024 / page_size);
 
     lowerBoundOfNextOomScoreAdj = oomScoreAdj;
     lowerBoundOfNextKillUnderKB = killUnderKB;
@@ -1297,7 +1408,7 @@ EnsureKernelLowMemKillerParamsSet()
 
     // notify_trigger is in pages.
     WriteToFile("/sys/module/lowmemorykiller/parameters/notify_trigger",
-      nsPrintfCString("%d", lowMemNotifyThresholdKB * 1024 / PAGE_SIZE).get());
+      nsPrintfCString("%ld", lowMemNotifyThresholdKB * 1024 / page_size).get());
   }
 
   // Ensure OOM events appear in logcat
@@ -1314,15 +1425,15 @@ SetNiceForPid(int aPid, int aNice)
   errno = 0;
   int origProcPriority = getpriority(PRIO_PROCESS, aPid);
   if (errno) {
-    LOG("Unable to get nice for pid=%d; error %d.  SetNiceForPid bailing.",
-        aPid, errno);
+    HAL_LOG("Unable to get nice for pid=%d; error %d.  SetNiceForPid bailing.",
+            aPid, errno);
     return;
   }
 
   int rv = setpriority(PRIO_PROCESS, aPid, aNice);
   if (rv) {
-    LOG("Unable to set nice for pid=%d; error %d.  SetNiceForPid bailing.",
-        aPid, errno);
+    HAL_LOG("Unable to set nice for pid=%d; error %d.  SetNiceForPid bailing.",
+            aPid, errno);
     return;
   }
 
@@ -1336,7 +1447,7 @@ SetNiceForPid(int aPid, int aNice)
 
   DIR* tasksDir = opendir(nsPrintfCString("/proc/%d/task/", aPid).get());
   if (!tasksDir) {
-    LOG("Unable to open /proc/%d/task.  SetNiceForPid bailing.", aPid);
+    HAL_LOG("Unable to open /proc/%d/task.  SetNiceForPid bailing.", aPid);
     return;
   }
 
@@ -1357,32 +1468,97 @@ SetNiceForPid(int aPid, int aNice)
 
     int tid = static_cast<int>(tidlong);
 
+    // Do not set the priority of threads running with a real-time policy
+    // as part of the bulk process adjustment.  These threads need to run
+    // at their specified priority in order to meet timing guarantees.
+    int schedPolicy = sched_getscheduler(tid);
+    if (schedPolicy == SCHED_FIFO || schedPolicy == SCHED_RR) {
+      continue;
+    }
+
     errno = 0;
     // Get and set the task's new priority.
     int origtaskpriority = getpriority(PRIO_PROCESS, tid);
     if (errno) {
-      LOG("Unable to get nice for tid=%d (pid=%d); error %d.  This isn't "
-          "necessarily a problem; it could be a benign race condition.",
-          tid, aPid, errno);
+      HAL_LOG("Unable to get nice for tid=%d (pid=%d); error %d.  This isn't "
+              "necessarily a problem; it could be a benign race condition.",
+              tid, aPid, errno);
       continue;
     }
 
     int newtaskpriority =
       std::max(origtaskpriority - origProcPriority + aNice, aNice);
+
+    // Do not reduce priority of threads already running at priorities greater
+    // than normal.  These threads are likely special service threads that need
+    // elevated priorities to process audio, display composition, etc.
+    if (newtaskpriority > origtaskpriority &&
+        origtaskpriority < ANDROID_PRIORITY_NORMAL) {
+      continue;
+    }
+
     rv = setpriority(PRIO_PROCESS, tid, newtaskpriority);
 
     if (rv) {
-      LOG("Unable to set nice for tid=%d (pid=%d); error %d.  This isn't "
-          "necessarily a problem; it could be a benign race condition.",
-          tid, aPid, errno);
+      HAL_LOG("Unable to set nice for tid=%d (pid=%d); error %d.  This isn't "
+              "necessarily a problem; it could be a benign race condition.",
+              tid, aPid, errno);
       continue;
     }
   }
 
-  LOG("Changed nice for pid %d from %d to %d.",
-      aPid, origProcPriority, aNice);
+  HAL_LOG("Changed nice for pid %d from %d to %d.",
+          aPid, origProcPriority, aNice);
 
   closedir(tasksDir);
+}
+
+/*
+ * Used to store the nice value adjustments and oom_adj values for the various
+ * process priority levels.
+ */
+struct ProcessPriorityPrefs {
+  bool initialized;
+  int lowPriorityNice;
+  struct {
+    int nice;
+    int oomScoreAdj;
+  } priorities[NUM_PROCESS_PRIORITY];
+};
+
+/*
+ * Reads the preferences for the various process priority levels and sets up
+ * watchers so that if they're dynamically changed the change is reflected on
+ * the appropriate variables.
+ */
+void
+EnsureProcessPriorityPrefs(ProcessPriorityPrefs* prefs)
+{
+  if (prefs->initialized) {
+    return;
+  }
+
+  // Read the preferences for process priority levels
+  for (int i = PROCESS_PRIORITY_BACKGROUND; i < NUM_PROCESS_PRIORITY; i++) {
+    ProcessPriority priority = static_cast<ProcessPriority>(i);
+
+    // Read the nice values
+    const char* processPriorityStr = ProcessPriorityToString(priority);
+    nsPrintfCString niceStr("hal.processPriorityManager.gonk.%s.Nice",
+                            processPriorityStr);
+    Preferences::AddIntVarCache(&prefs->priorities[i].nice, niceStr.get());
+
+    // Read the oom_adj scores
+    nsPrintfCString oomStr("hal.processPriorityManager.gonk.%s.OomScoreAdjust",
+                           processPriorityStr);
+    Preferences::AddIntVarCache(&prefs->priorities[i].oomScoreAdj,
+                                oomStr.get());
+  }
+
+  Preferences::AddIntVarCache(&prefs->lowPriorityNice,
+                              "hal.processPriorityManager.gonk.LowCPUNice");
+
+  prefs->initialized = true;
 }
 
 void
@@ -1391,8 +1567,8 @@ SetProcessPriority(int aPid,
                    ProcessCPUPriority aCPUPriority,
                    uint32_t aBackgroundLRU)
 {
-  HAL_LOG(("SetProcessPriority(pid=%d, priority=%d, cpuPriority=%d, LRU=%u)",
-           aPid, aPriority, aCPUPriority, aBackgroundLRU));
+  HAL_LOG("SetProcessPriority(pid=%d, priority=%d, cpuPriority=%d, LRU=%u)",
+          aPid, aPriority, aCPUPriority, aBackgroundLRU);
 
   // If this is the first time SetProcessPriority was called, set the kernel's
   // OOM parameters according to our prefs.
@@ -1403,68 +1579,223 @@ SetProcessPriority(int aPid,
   // SetProcessPriority being called early in startup.
   EnsureKernelLowMemKillerParamsSet();
 
-  int32_t oomScoreAdj = 0;
-  nsresult rv = Preferences::GetInt(nsPrintfCString(
-    "hal.processPriorityManager.gonk.%s.OomScoreAdjust",
-    ProcessPriorityToString(aPriority)).get(), &oomScoreAdj);
+  static ProcessPriorityPrefs prefs = { 0 };
+  EnsureProcessPriorityPrefs(&prefs);
+
+  int oomScoreAdj = prefs.priorities[aPriority].oomScoreAdj;
 
   RoundOomScoreAdjUpWithBackroundLRU(oomScoreAdj, aBackgroundLRU);
 
-  if (NS_SUCCEEDED(rv)) {
-    int clampedOomScoreAdj = clamped<int>(oomScoreAdj, OOM_SCORE_ADJ_MIN,
-                                                       OOM_SCORE_ADJ_MAX);
-    if(clampedOomScoreAdj != oomScoreAdj) {
-      HAL_LOG(("Clamping OOM adjustment for pid %d to %d",
-               aPid, clampedOomScoreAdj));
-    } else {
-      HAL_LOG(("Setting OOM adjustment for pid %d to %d",
-               aPid, clampedOomScoreAdj));
-    }
-
-    // We try the newer interface first, and fall back to the older interface
-    // on failure.
-
-    if (!WriteToFile(nsPrintfCString("/proc/%d/oom_score_adj", aPid).get(),
-                     nsPrintfCString("%d", clampedOomScoreAdj).get()))
-    {
-      int oomAdj = OomAdjOfOomScoreAdj(clampedOomScoreAdj);
-
-      WriteToFile(nsPrintfCString("/proc/%d/oom_adj", aPid).get(),
-                  nsPrintfCString("%d", oomAdj).get());
-    }
+  int clampedOomScoreAdj = clamped<int>(oomScoreAdj, OOM_SCORE_ADJ_MIN,
+                                                     OOM_SCORE_ADJ_MAX);
+  if (clampedOomScoreAdj != oomScoreAdj) {
+    HAL_LOG("Clamping OOM adjustment for pid %d to %d", aPid,
+            clampedOomScoreAdj);
   } else {
-    LOG("Unable to read oom_score_adj pref for priority %s; "
-        "are the prefs messed up?",
-        ProcessPriorityToString(aPriority));
-    MOZ_ASSERT(false);
+    HAL_LOG("Setting OOM adjustment for pid %d to %d", aPid,
+            clampedOomScoreAdj);
   }
 
-  int32_t nice = 0;
+  // We try the newer interface first, and fall back to the older interface
+  // on failure.
+
+  if (!WriteToFile(nsPrintfCString("/proc/%d/oom_score_adj", aPid).get(),
+                   nsPrintfCString("%d", clampedOomScoreAdj).get()))
+  {
+    int oomAdj = OomAdjOfOomScoreAdj(clampedOomScoreAdj);
+
+    WriteToFile(nsPrintfCString("/proc/%d/oom_adj", aPid).get(),
+                nsPrintfCString("%d", oomAdj).get());
+  }
+
+  int nice = 0;
 
   if (aCPUPriority == PROCESS_CPU_PRIORITY_NORMAL) {
-    rv = Preferences::GetInt(
-      nsPrintfCString("hal.processPriorityManager.gonk.%s.Nice",
-                      ProcessPriorityToString(aPriority)).get(),
-      &nice);
+    nice = prefs.priorities[aPriority].nice;
   } else if (aCPUPriority == PROCESS_CPU_PRIORITY_LOW) {
-    rv = Preferences::GetInt("hal.processPriorityManager.gonk.LowCPUNice",
-                             &nice);
+    nice = prefs.lowPriorityNice;
   } else {
-    LOG("Unable to read niceness pref for priority %s; "
-        "are the prefs messed up?",
-        ProcessPriorityToString(aPriority));
+    HAL_ERR("Unknown aCPUPriority value %d", aCPUPriority);
     MOZ_ASSERT(false);
-    rv = NS_ERROR_FAILURE;
+    return;
   }
 
-  if (NS_SUCCEEDED(rv)) {
-    LOG("Setting nice for pid %d to %d", aPid, nice);
-    SetNiceForPid(aPid, nice);
+  HAL_LOG("Setting nice for pid %d to %d", aPid, nice);
+  SetNiceForPid(aPid, nice);
+}
+
+static bool
+IsValidRealTimePriority(int aValue, int aSchedulePolicy)
+{
+  return (aValue >= sched_get_priority_min(aSchedulePolicy)) &&
+         (aValue <= sched_get_priority_max(aSchedulePolicy));
+}
+
+static void
+SetThreadNiceValue(pid_t aTid, ThreadPriority aThreadPriority, int aValue)
+{
+  MOZ_ASSERT(aThreadPriority < NUM_THREAD_PRIORITY);
+  MOZ_ASSERT(aThreadPriority >= 0);
+
+  HAL_LOG("Setting thread %d to priority level %s; nice level %d",
+          aTid, ThreadPriorityToString(aThreadPriority), aValue);
+  int rv = setpriority(PRIO_PROCESS, aTid, aValue);
+
+  if (rv) {
+    HAL_LOG("Failed to set thread %d to priority level %s; error %s", aTid,
+            ThreadPriorityToString(aThreadPriority), strerror(errno));
+  }
+}
+
+static void
+SetRealTimeThreadPriority(pid_t aTid,
+                          ThreadPriority aThreadPriority,
+                          int aValue)
+{
+  int policy = SCHED_FIFO;
+
+  MOZ_ASSERT(aThreadPriority < NUM_THREAD_PRIORITY);
+  MOZ_ASSERT(aThreadPriority >= 0);
+  MOZ_ASSERT(IsValidRealTimePriority(aValue, policy), "Invalid real time priority");
+
+  // Setting real time priorities requires using sched_setscheduler
+  HAL_LOG("Setting thread %d to priority level %s; Real Time priority %d, "
+          "Schedule FIFO", aTid, ThreadPriorityToString(aThreadPriority),
+          aValue);
+  sched_param schedParam;
+  schedParam.sched_priority = aValue;
+  int rv = sched_setscheduler(aTid, policy, &schedParam);
+
+  if (rv) {
+    HAL_LOG("Failed to set thread %d to real time priority level %s; error %s",
+            aTid, ThreadPriorityToString(aThreadPriority), strerror(errno));
+  }
+}
+
+/*
+ * Used to store the nice value adjustments and real time priorities for the
+ * various thread priority levels.
+ */
+struct ThreadPriorityPrefs {
+  bool initialized;
+  struct {
+    int nice;
+    int realTime;
+  } priorities[NUM_THREAD_PRIORITY];
+};
+
+/*
+ * Reads the preferences for the various process priority levels and sets up
+ * watchers so that if they're dynamically changed the change is reflected on
+ * the appropriate variables.
+ */
+void
+EnsureThreadPriorityPrefs(ThreadPriorityPrefs* prefs)
+{
+  if (prefs->initialized) {
+    return;
+  }
+
+  for (int i = THREAD_PRIORITY_COMPOSITOR; i < NUM_THREAD_PRIORITY; i++) {
+    ThreadPriority priority = static_cast<ThreadPriority>(i);
+
+    // Read the nice values
+    const char* threadPriorityStr = ThreadPriorityToString(priority);
+    nsPrintfCString niceStr("hal.gonk.%s.nice", threadPriorityStr);
+    Preferences::AddIntVarCache(&prefs->priorities[i].nice, niceStr.get());
+
+    // Read the real-time priorities
+    nsPrintfCString realTimeStr("hal.gonk.%s.rt_priority", threadPriorityStr);
+    Preferences::AddIntVarCache(&prefs->priorities[i].realTime,
+                                realTimeStr.get());
+  }
+
+  prefs->initialized = true;
+}
+
+static void
+SetThreadPriority(pid_t aTid, hal::ThreadPriority aThreadPriority)
+{
+  // See bug 999115, we can only read preferences on the main thread otherwise
+  // we create a race condition in HAL
+  MOZ_ASSERT(NS_IsMainThread(), "Can only set thread priorities on main thread");
+  MOZ_ASSERT(aThreadPriority >= 0);
+
+  static ThreadPriorityPrefs prefs = { 0 };
+  EnsureThreadPriorityPrefs(&prefs);
+
+  switch (aThreadPriority) {
+    case THREAD_PRIORITY_COMPOSITOR:
+      break;
+    default:
+      HAL_ERR("Unrecognized thread priority %d; Doing nothing",
+              aThreadPriority);
+      return;
+  }
+
+  int realTimePriority = prefs.priorities[aThreadPriority].realTime;
+
+  if (IsValidRealTimePriority(realTimePriority, SCHED_FIFO)) {
+    SetRealTimeThreadPriority(aTid, aThreadPriority, realTimePriority);
+    return;
+  }
+
+  SetThreadNiceValue(aTid, aThreadPriority,
+                     prefs.priorities[aThreadPriority].nice);
+}
+
+namespace {
+
+/**
+ * This class sets the priority of threads given the kernel thread's id and a
+ * value taken from hal::ThreadPriority.
+ *
+ * This runnable must always be dispatched to the main thread otherwise it will fail.
+ * We have to run this from the main thread since preferences can only be read on
+ * main thread.
+ */
+class SetThreadPriorityRunnable : public nsRunnable
+{
+public:
+  SetThreadPriorityRunnable(pid_t aThreadId, hal::ThreadPriority aThreadPriority)
+    : mThreadId(aThreadId)
+    , mThreadPriority(aThreadPriority)
+  { }
+
+  NS_IMETHOD Run()
+  {
+    NS_ASSERTION(NS_IsMainThread(), "Can only set thread priorities on main thread");
+    hal_impl::SetThreadPriority(mThreadId, mThreadPriority);
+    return NS_OK;
+  }
+
+private:
+  pid_t mThreadId;
+  hal::ThreadPriority mThreadPriority;
+};
+
+} // anonymous namespace
+
+void
+SetCurrentThreadPriority(ThreadPriority aThreadPriority)
+{
+  switch (aThreadPriority) {
+    case THREAD_PRIORITY_COMPOSITOR: {
+      pid_t threadId = gettid();
+      nsCOMPtr<nsIRunnable> runnable =
+        new SetThreadPriorityRunnable(threadId, aThreadPriority);
+      NS_DispatchToMainThread(runnable);
+      break;
+    }
+    default:
+      HAL_LOG("Unrecognized thread priority %d; Doing nothing",
+              aThreadPriority);
+      return;
   }
 }
 
 void
-FactoryReset()
+FactoryReset(FactoryResetReason& aReason)
 {
   nsCOMPtr<nsIRecoveryService> recoveryService =
     do_GetService("@mozilla.org/recovery-service;1");
@@ -1473,7 +1804,13 @@ FactoryReset()
     return;
   }
 
-  recoveryService->FactoryReset();
+  if (aReason == FactoryResetReason::Wipe) {
+    recoveryService->FactoryReset("wipe");
+  } else if (aReason == FactoryResetReason::Root) {
+    recoveryService->FactoryReset("root");
+  } else {
+    recoveryService->FactoryReset("normal");
+  }
 }
 
 } // hal_impl

@@ -1,11 +1,13 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 package org.mozilla.gecko.tests;
 
-import android.os.Build;
-
-import org.json.JSONArray;
 import org.json.JSONObject;
+import org.mozilla.gecko.PaintedSurface;
 
-import org.mozilla.gecko.*;
+import android.os.Build;
 
 /**
  * Tests that Flash is working
@@ -13,11 +15,6 @@ import org.mozilla.gecko.*;
  * - verifies it rendered properly
  */
 public class testAdobeFlash extends PixelTest {
-    @Override
-    protected int getTestType() {
-        return TEST_MOCHITEST;
-    }
-
     public void testLoad() {
         // This test only works on ICS and higher
         if (Build.VERSION.SDK_INT < 15) {

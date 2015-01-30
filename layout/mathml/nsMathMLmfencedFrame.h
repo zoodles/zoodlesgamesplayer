@@ -9,11 +9,13 @@
 #include "mozilla/Attributes.h"
 #include "nsMathMLContainerFrame.h"
 
+class nsFontMetrics;
+
 //
 // <mfenced> -- surround content with a pair of fences
 //
 
-class nsMathMLmfencedFrame : public nsMathMLContainerFrame {
+class nsMathMLmfencedFrame MOZ_FINAL : public nsMathMLContainerFrame {
 public:
   NS_DECL_FRAMEARENA_HELPERS
 
@@ -28,11 +30,11 @@ public:
   NS_IMETHOD
   InheritAutomaticData(nsIFrame* aParent) MOZ_OVERRIDE;
 
-  virtual nsresult
+  virtual void
   SetInitialChildList(ChildListID     aListID,
                       nsFrameList&    aChildList) MOZ_OVERRIDE;
 
-  virtual nsresult
+  virtual void
   Reflow(nsPresContext*          aPresContext,
          nsHTMLReflowMetrics&     aDesiredSize,
          const nsHTMLReflowState& aReflowState,
@@ -43,7 +45,7 @@ public:
                                 const nsDisplayListSet& aLists) MOZ_OVERRIDE;
 
   virtual void
-  GetIntrinsicWidthMetrics(nsRenderingContext* aRenderingContext,
+  GetIntrinsicISizeMetrics(nsRenderingContext* aRenderingContext,
                            nsHTMLReflowMetrics& aDesiredSize) MOZ_OVERRIDE;
 
   virtual nsresult
@@ -63,6 +65,8 @@ public:
   static nsresult
   ReflowChar(nsPresContext*      aPresContext,
              nsRenderingContext& aRenderingContext,
+             nsFontMetrics&       aFontMetrics,
+             float                aFontSizeInflation,
              nsMathMLChar*        aMathMLChar,
              nsOperatorFlags      aForm,
              int32_t              aScriptLevel,
@@ -80,8 +84,19 @@ public:
             nsBoundingMetrics& bm,
             nscoord&           dx);
 
+  virtual bool
+  IsMrowLike() MOZ_OVERRIDE
+  {
+    // Always treated as an mrow with > 1 child as
+    // <mfenced> <mo>%</mo> </mfenced>
+    // renders equivalently to
+    // <mrow> <mo> ( </mo> <mo>%</mo> <mo> ) </mo> </mrow>
+    // This also holds with multiple children.  (MathML3 3.3.8.1)
+    return true;
+  }
+
 protected:
-  nsMathMLmfencedFrame(nsStyleContext* aContext) : nsMathMLContainerFrame(aContext) {}
+  explicit nsMathMLmfencedFrame(nsStyleContext* aContext) : nsMathMLContainerFrame(aContext) {}
   virtual ~nsMathMLmfencedFrame();
   
   nsMathMLChar* mOpenChar;

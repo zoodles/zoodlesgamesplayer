@@ -28,12 +28,10 @@ public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(MessageChannel)
 
-  static bool PrefEnabled();
+  static bool Enabled(JSContext* aCx, JSObject* aGlobal);
 
 public:
-  MessageChannel(nsPIDOMWindow* aWindow);
-
-  ~MessageChannel();
+  explicit MessageChannel(nsPIDOMWindow* aWindow);
 
   nsPIDOMWindow*
   GetParentObject() const
@@ -42,7 +40,7 @@ public:
   }
 
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   static already_AddRefed<MessageChannel>
   Constructor(const GlobalObject& aGlobal, ErrorResult& aRv);
@@ -60,6 +58,8 @@ public:
   }
 
 private:
+  ~MessageChannel();
+
   nsCOMPtr<nsPIDOMWindow> mWindow;
 
   nsRefPtr<MessagePort> mPort1;

@@ -6,23 +6,21 @@ package org.mozilla.gecko.tests;
 
 import org.mozilla.gecko.Actions;
 import org.mozilla.gecko.Assert;
+import org.mozilla.gecko.BrowserApp;
 import org.mozilla.gecko.Driver;
-import org.mozilla.gecko.FennecInstrumentationTestRunner;
-import org.mozilla.gecko.FennecMochitestAssert;
-import org.mozilla.gecko.FennecNativeActions;
-import org.mozilla.gecko.FennecNativeDriver;
-import org.mozilla.gecko.FennecTalosAssert;
-import org.mozilla.gecko.tests.components.*;
+import org.mozilla.gecko.GeckoAppShell;
+import org.mozilla.gecko.GeckoEvent;
+import org.mozilla.gecko.tests.components.AboutHomeComponent;
+import org.mozilla.gecko.tests.components.AppMenuComponent;
+import org.mozilla.gecko.tests.components.BaseComponent;
+import org.mozilla.gecko.tests.components.GeckoViewComponent;
+import org.mozilla.gecko.tests.components.ToolbarComponent;
 import org.mozilla.gecko.tests.helpers.HelperInitializer;
 
-import com.jayway.android.robotium.solo.Solo;
-
-import android.app.Activity;
 import android.content.Intent;
-import android.test.ActivityInstrumentationTestCase2;
 import android.text.TextUtils;
 
-import java.util.HashMap;
+import com.jayway.android.robotium.solo.Solo;
 
 /**
  * A base test class for Robocop (UI-centric) tests. This and the related classes attempt to
@@ -33,94 +31,61 @@ import java.util.HashMap;
  * For documentation on writing tests and extending the framework, see
  * https://wiki.mozilla.org/Mobile/Fennec/Android/UITest
  */
-abstract class UITest extends ActivityInstrumentationTestCase2<Activity>
+abstract class UITest extends BaseRobocopTest
                       implements UITestContext {
-
-    protected enum Type {
-        MOCHITEST,
-        TALOS
-    }
-
-    private static final String LAUNCHER_ACTIVITY = TestConstants.ANDROID_PACKAGE_NAME + ".App";
-    private static final String TARGET_PACKAGE_ID = "org.mozilla.gecko";
 
     private static final String JUNIT_FAILURE_MSG = "A JUnit method was called. Make sure " +
         "you are using AssertionHelper to make assertions. Try `fAssert*(...);`";
-
-    private final static Class<Activity> sLauncherActivityClass;
-
-    private Activity mActivity;
-    private Solo mSolo;
-    private Driver mDriver;
-    private Actions mActions;
-    private Assert mAsserter;
-
-    // Base to build hostname URLs
-    private String mBaseHostnameUrl;
-    // Base to build IP URLs
-    private String mBaseIpUrl;
 
     protected AboutHomeComponent mAboutHome;
     protected AppMenuComponent mAppMenu;
     protected GeckoViewComponent mGeckoView;
     protected ToolbarComponent mToolbar;
 
-    static {
-        try {
-            sLauncherActivityClass = (Class<Activity>) Class.forName(LAUNCHER_ACTIVITY);
-        } catch (ClassNotFoundException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    public UITest() {
-        super(sLauncherActivityClass);
-    }
-
     @Override
     protected void setUp() throws Exception {
         super.setUp();
 
-        final String rootPath = FennecInstrumentationTestRunner.getFennecArguments().getString("deviceroot");
-        final HashMap config = loadConfigTable(rootPath);
-        final Intent intent = createActivityIntent(config);
-        setActivityIntent(intent);
-
-        // Start the activity.
-        mActivity = getActivity();
-
-        if (getTestType() == Type.TALOS) {
-            mAsserter = new FennecTalosAssert();
-        } else {
-            mAsserter = new FennecMochitestAssert();
-        }
-
-        final String logFile = (String) config.get("logfile");
-        mAsserter.setLogFile(logFile);
-        mAsserter.setTestName(this.getClass().getName());
-
-        mSolo = new Solo(getInstrumentation(), mActivity);
-        mDriver = new FennecNativeDriver(mActivity, mSolo, rootPath);
-        mActions = new FennecNativeActions(mActivity, mSolo, getInstrumentation(), mAsserter);
-
-        mBaseHostnameUrl = ((String) config.get("host")).replaceAll("(/$)", "");
-        mBaseIpUrl = ((String) config.get("rawhost")).replaceAll("(/$)", "");
-
         // Helpers depend on components so initialize them first.
         initComponents();
         initHelpers();
+
+        // Ensure Robocop tests have access to network, and are run with Display powered on.
+        throwIfHttpGetFails();
+        throwIfScreenNotOn();
     }
 
     @Override
     public void tearDown() throws Exception {
         try {
             mAsserter.endTest();
+            // request a force quit of the browser and wait for it to take effect
+            GeckoAppShell.sendEventToGecko(GeckoEvent.createBroadcastEvent("Robocop:Quit", null));
+            mSolo.sleep(120000);
+            // if still running, finish activities as recommended by Robotium
             mSolo.finishOpenedActivities();
         } catch (Throwable e) {
             e.printStackTrace();
         }
 
         super.tearDown();
+    }
+
+    @Override
+    protected void runTest() throws Throwable {
+        try {
+            super.runTest();
+        } catch (Throwable t) {
+            // save screenshot -- written to /mnt/sdcard/Robotium-Screenshots
+            // as <filename>.jpg
+            mSolo.takeScreenshot("robocop-screenshot");
+            if (mAsserter != null) {
+                mAsserter.dumpLog("Exception caught during test!", t);
+                mAsserter.ok(false, "Exception caught", t.toString());
+            }
+            // re-throw to continue bail-out
+            throw t;
+        }
     }
 
     private void initComponents() {
@@ -189,6 +154,7 @@ abstract class UITest extends ActivityInstrumentationTestCase2<Activity>
      * Returns the test type. By default this returns MOCHITEST, but tests can override this
      * method in order to change the type of the test.
      */
+    @Override
     protected Type getTestType() {
         return Type.MOCHITEST;
     }
@@ -207,18 +173,15 @@ abstract class UITest extends ActivityInstrumentationTestCase2<Activity>
         return baseUrl + "/" + url.replaceAll("(^/)", "");
     }
 
-    private static HashMap loadConfigTable(final String rootPath) {
-        final String configFile = FennecNativeDriver.getFile(rootPath + "/robotium.config");
-        return FennecNativeDriver.convertTextToTable(configFile);
-    }
-
-    private static Intent createActivityIntent(final HashMap config) {
+    @Override
+    protected Intent createActivityIntent() {
         final Intent intent = new Intent(Intent.ACTION_MAIN);
 
-        final String profile = (String) config.get("profile");
-        intent.putExtra("args", "-no-remote -profile " + profile);
+        // Don't show the first run experience.
+        intent.putExtra(BrowserApp.EXTRA_SKIP_STARTPANE, true);
+        intent.putExtra("args", "-no-remote -profile " + mProfile);
 
-        final String envString = (String) config.get("envvars");
+        final String envString = mConfig.get("envvars");
         if (!TextUtils.isEmpty(envString)) {
             final String[] envStrings = envString.split(",");
 

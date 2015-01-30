@@ -7,6 +7,7 @@
 #ifndef nsDragService_h__
 #define nsDragService_h__
 
+#include "nsAutoPtr.h"
 #include "nsBaseDragService.h"
 #include "nsIObserver.h"
 #include "nsAutoRef.h"
@@ -47,12 +48,11 @@ class nsAutoRefTraits<GdkDragContext> :
  * Native GTK DragService wrapper
  */
 
-class nsDragService : public nsBaseDragService,
-                      public nsIObserver
+class nsDragService MOZ_FINAL : public nsBaseDragService,
+                                public nsIObserver
 {
 public:
     nsDragService();
-    virtual ~nsDragService();
 
     NS_DECL_ISUPPORTS_INHERITED
 
@@ -62,17 +62,18 @@ public:
     NS_IMETHOD InvokeDragSession (nsIDOMNode *aDOMNode,
                                   nsISupportsArray * anArrayTransferables,
                                   nsIScriptableRegion * aRegion,
-                                  uint32_t aActionType);
-    NS_IMETHOD StartDragSession();
-    NS_IMETHOD EndDragSession(bool aDoneDrag);
+                                  uint32_t aActionType) MOZ_OVERRIDE;
+    NS_IMETHOD StartDragSession() MOZ_OVERRIDE;
+    NS_IMETHOD EndDragSession(bool aDoneDrag) MOZ_OVERRIDE;
 
     // nsIDragSession
-    NS_IMETHOD SetCanDrop            (bool             aCanDrop);
-    NS_IMETHOD GetCanDrop            (bool            *aCanDrop);
-    NS_IMETHOD GetNumDropItems       (uint32_t * aNumItems);
+    NS_IMETHOD SetCanDrop            (bool             aCanDrop) MOZ_OVERRIDE;
+    NS_IMETHOD GetCanDrop            (bool            *aCanDrop) MOZ_OVERRIDE;
+    NS_IMETHOD GetNumDropItems       (uint32_t * aNumItems) MOZ_OVERRIDE;
     NS_IMETHOD GetData               (nsITransferable * aTransferable,
-                                      uint32_t aItemIndex);
-    NS_IMETHOD IsDataFlavorSupported (const char *aDataFlavor, bool *_retval);
+                                      uint32_t aItemIndex) MOZ_OVERRIDE;
+    NS_IMETHOD IsDataFlavorSupported (const char *aDataFlavor,
+                                      bool *_retval) MOZ_OVERRIDE;
 
     // Methods called from nsWindow to handle responding to GTK drag
     // destination signals
@@ -117,6 +118,9 @@ public:
 
     // set the drag icon during drag-begin
     void SetDragIcon(GdkDragContext* aContext);
+
+protected:
+    virtual ~nsDragService();
 
 private:
 

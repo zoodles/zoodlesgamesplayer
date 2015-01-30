@@ -1,4 +1,4 @@
-/* -*- Mode: javascript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -9,7 +9,7 @@ const { classes: Cc, interfaces: Ci, utils: Cu } = Components;
 
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
-let promise = Cu.import("resource://gre/modules/commonjs/sdk/core/promise.js").Promise;
+let {Promise: promise} = Cu.import("resource://gre/modules/Promise.jsm", {});
 Cu.import("resource:///modules/devtools/VariablesView.jsm");
 Cu.import("resource:///modules/devtools/ViewHelpers.jsm");
 
@@ -169,6 +169,16 @@ VariablesViewController.prototype = {
    */
   _populateFromObject: function(aTarget, aGrip) {
     let deferred = promise.defer();
+
+    if (aGrip.class === "Promise" && aGrip.promiseState) {
+      const { state, value, reason } = aGrip.promiseState;
+      aTarget.addItem("<state>", { value: state });
+      if (state === "fulfilled") {
+        this.addExpander(aTarget.addItem("<value>", { value }), value);
+      } else if (state === "rejected") {
+        this.addExpander(aTarget.addItem("<reason>", { value: reason }), reason);
+      }
+    }
 
     let objectClient = this._getObjectClient(aGrip);
     objectClient.getPrototypeAndProperties(aResponse => {

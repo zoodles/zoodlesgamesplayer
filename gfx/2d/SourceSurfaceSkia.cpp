@@ -11,6 +11,7 @@
 #include "HelpersSkia.h"
 #include "DrawTargetSkia.h"
 #include "DataSurfaceHelpers.h"
+#include "skia/SkGrPixelRef.h"
 
 namespace mozilla {
 namespace gfx {
@@ -49,6 +50,7 @@ SourceSurfaceSkia::InitFromCanvas(SkCanvas* aCanvas,
   SkISize size = aCanvas->getDeviceSize();
 
   mBitmap = (SkBitmap)aCanvas->getDevice()->accessBitmap(false);
+
   mFormat = aFormat;
 
   mSize = IntSize(size.fWidth, size.fHeight);
@@ -65,7 +67,14 @@ SourceSurfaceSkia::InitFromData(unsigned char* aData,
                                 SurfaceFormat aFormat)
 {
   SkBitmap temp;
-  temp.setConfig(GfxFormatToSkiaConfig(aFormat), aSize.width, aSize.height, aStride);
+  SkAlphaType alphaType = (aFormat == SurfaceFormat::B8G8R8X8) ?
+    kOpaque_SkAlphaType : kPremul_SkAlphaType;
+
+  SkImageInfo info = SkImageInfo::Make(aSize.width,
+                                       aSize.height,
+                                       GfxFormatToSkiaColorType(aFormat),
+                                       alphaType);
+  temp.setInfo(info, aStride);
   temp.setPixels(aData);
 
   if (!temp.copyTo(&mBitmap, GfxFormatToSkiaColorType(aFormat))) {
@@ -73,17 +82,38 @@ SourceSurfaceSkia::InitFromData(unsigned char* aData,
   }
 
   if (aFormat == SurfaceFormat::B8G8R8X8) {
-    mBitmap.lockPixels();
-    // We have to manually set the A channel to be 255 as Skia doesn't understand BGRX
-    ConvertBGRXToBGRA(reinterpret_cast<unsigned char*>(mBitmap.getPixels()), aSize, mBitmap.rowBytes());
-    mBitmap.unlockPixels();
-    mBitmap.notifyPixelsChanged();
-    mBitmap.setAlphaType(kOpaque_SkAlphaType);
+    mBitmap.setAlphaType(kIgnore_SkAlphaType);
   }
 
   mSize = aSize;
   mFormat = aFormat;
   mStride = mBitmap.rowBytes();
+  return true;
+}
+
+bool
+SourceSurfaceSkia::InitFromTexture(DrawTargetSkia* aOwner,
+                                   unsigned int aTexture,
+                                   const IntSize &aSize,
+                                   SurfaceFormat aFormat)
+{
+  MOZ_ASSERT(aOwner, "null GrContext");
+  GrBackendTextureDesc skiaTexGlue;
+  mSize.width = skiaTexGlue.fWidth = aSize.width;
+  mSize.height = skiaTexGlue.fHeight = aSize.height;
+  skiaTexGlue.fFlags = kNone_GrBackendTextureFlag;
+  skiaTexGlue.fOrigin = kBottomLeft_GrSurfaceOrigin;
+  skiaTexGlue.fConfig = GfxFormatToGrConfig(aFormat);
+  skiaTexGlue.fSampleCnt = 0;
+  skiaTexGlue.fTextureHandle = aTexture;
+
+  GrTexture *skiaTexture = aOwner->mGrContext->wrapBackendTexture(skiaTexGlue);
+  SkImageInfo imgInfo = SkImageInfo::Make(aSize.width, aSize.height, GfxFormatToSkiaColorType(aFormat), kOpaque_SkAlphaType);
+  SkGrPixelRef *texRef = new SkGrPixelRef(imgInfo, skiaTexture, false);
+  mBitmap.setInfo(imgInfo, aSize.width*aSize.height*4);
+  mBitmap.setPixelRef(texRef);
+
+  mDrawTarget = aOwner;
   return true;
 }
 

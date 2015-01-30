@@ -4,8 +4,7 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-interface WindowProxy;
-
+[Constructor(DOMString typeArg, optional KeyboardEventInit keyboardEventInitDict)]
 interface KeyboardEvent : UIEvent
 {
   readonly attribute unsigned long    charCode;
@@ -27,8 +26,29 @@ interface KeyboardEvent : UIEvent
 
   readonly attribute unsigned long location;
   readonly attribute boolean       repeat;
+  readonly attribute boolean       isComposing;
 
   readonly attribute DOMString key;
+  [Pref="dom.keyboardevent.code.enabled"]
+  readonly attribute DOMString code;
+};
+
+dictionary KeyboardEventInit : UIEventInit
+{
+  DOMString      key           = "";
+  DOMString      code          = "";
+  unsigned long  location      = 0;
+  boolean        ctrlKey       = false;
+  boolean        shiftKey      = false;
+  boolean        altKey        = false;
+  boolean        metaKey       = false;
+  boolean        repeat        = false;
+  boolean        isComposing   = false;
+
+  // legacy attributes
+  unsigned long  charCode      = 0;
+  unsigned long  keyCode       = 0;
+  unsigned long  which         = 0;
 };
 
 // Mozilla extensions

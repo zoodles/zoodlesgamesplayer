@@ -9,12 +9,40 @@ var gContentPane = {
    */
   init: function ()
   {
+    function setEventListener(aId, aEventType, aCallback)
+    {
+      document.getElementById(aId)
+              .addEventListener(aEventType, aCallback.bind(gContentPane));
+    }
+
     this._rebuildFonts();
     var menulist = document.getElementById("defaultFont");
     if (menulist.selectedIndex == -1) {
       menulist.insertItemAt(0, "", "", "");
       menulist.selectedIndex = 0;
     }
+
+    // Show translation preferences if we may:
+    const prefName = "browser.translation.ui.show";
+    if (Services.prefs.getBoolPref(prefName)) {
+      let row = document.getElementById("translationBox");
+      row.removeAttribute("hidden");
+    }
+
+    setEventListener("font.language.group", "change",
+      gContentPane._rebuildFonts);
+    setEventListener("popupPolicyButton", "command",
+      gContentPane.showPopupExceptions);
+    setEventListener("advancedFonts", "command",
+      gContentPane.configureFonts);
+    setEventListener("colors", "command",
+      gContentPane.configureColors);
+    setEventListener("chooseLanguage", "command",
+      gContentPane.showLanguages);
+    setEventListener("translationAttributionImage", "click",
+      gContentPane.openTranslationProviderAttribution);
+    setEventListener("translateButton", "command",
+      gContentPane.showTranslationExceptions);
   },
 
   // UTILITY FUNCTIONS
@@ -54,8 +82,8 @@ var gContentPane = {
     params.windowTitle = bundlePreferences.getString("popuppermissionstitle");
     params.introText = bundlePreferences.getString("popuppermissionstext");
 
-    openDialog("chrome://browser/content/preferences/permissions.xul", 
-               "Browser:Permissions", "resizable=yes", params);
+    gSubDialog.open("chrome://browser/content/preferences/permissions.xul",
+                    "resizable=yes", params);
   },
 
   // FONTS
@@ -94,6 +122,10 @@ var gContentPane = {
                    element  : "defaultFontSize",
                    fonttype : null }];
     var preferences = document.getElementById("contentPreferences");
+    // Ensure preferences are "visible" to ensure bindings work.
+    preferences.hidden = false;
+    // Force flush:
+    preferences.clientHeight;
     for (var i = 0; i < prefs.length; ++i) {
       var preference = document.getElementById(prefs[i].format.replace(/%LANG%/, aLanguageGroup));
       if (!preference) {
@@ -146,8 +178,7 @@ var gContentPane = {
    */  
   configureFonts: function ()
   {
-    openDialog("chrome://browser/content/preferences/fonts.xul", 
-               "Browser:FontPreferences", null);
+    gSubDialog.open("chrome://browser/content/preferences/fonts.xul");
   },
 
   /**
@@ -156,8 +187,7 @@ var gContentPane = {
    */
   configureColors: function ()
   {
-    openDialog("chrome://browser/content/preferences/colors.xul", 
-               "Browser:ColorPreferences", null);  
+    gSubDialog.open("chrome://browser/content/preferences/colors.xul");
   },
 
   // LANGUAGES
@@ -167,7 +197,21 @@ var gContentPane = {
    */
   showLanguages: function ()
   {
-    openDialog("chrome://browser/content/preferences/languages.xul", 
-               "Browser:LanguagePreferences", null);
+    gSubDialog.open("chrome://browser/content/preferences/languages.xul");
+  },
+
+  /**
+   * Displays the translation exceptions dialog where specific site and language
+   * translation preferences can be set.
+   */
+  showTranslationExceptions: function ()
+  {
+    gSubDialog.open("chrome://browser/content/preferences/translation.xul");
+  },
+
+  openTranslationProviderAttribution: function ()
+  {
+    Components.utils.import("resource:///modules/translation/Translation.jsm");
+    Translation.openProviderAttribution();
   }
 };

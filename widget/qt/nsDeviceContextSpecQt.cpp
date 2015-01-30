@@ -10,9 +10,6 @@
 #define SET_PRINTER_FEATURES_VIA_PREFS 1
 #define PRINTERFEATURES_PREF "print.tmp.printerfeatures"
 
-#ifdef MOZ_LOGGING
-#define FORCE_PR_LOG 1 /* Allow logging in the release build */
-#endif /* MOZ_LOGGING */
 #include "prlog.h"
 
 #include "plstr.h"
@@ -52,7 +49,7 @@ nsDeviceContextSpecQt::~nsDeviceContextSpecQt()
     DO_PR_DEBUG_LOG(("nsDeviceContextSpecQt::~nsDeviceContextSpecQt()\n"));
 }
 
-NS_IMPL_ISUPPORTS1(nsDeviceContextSpecQt,
+NS_IMPL_ISUPPORTS(nsDeviceContextSpecQt,
         nsIDeviceContextSpec)
 
 NS_IMETHODIMP nsDeviceContextSpecQt::GetSurfaceForPrinter(
@@ -154,12 +151,6 @@ NS_IMETHODIMP nsDeviceContextSpecQt::Init(nsIWidget* aWidget,
     return NS_OK;
 }
 
-NS_IMETHODIMP nsDeviceContextSpecQt::GetPath(const char** aPath)
-{
-    *aPath = mPath;
-    return NS_OK;
-}
-
 NS_IMETHODIMP nsDeviceContextSpecQt::BeginDocument(
         const nsAString& aTitle,
         char16_t* aPrintToFileName,
@@ -214,7 +205,11 @@ nsPrinterEnumeratorQt::nsPrinterEnumeratorQt()
 {
 }
 
-NS_IMPL_ISUPPORTS1(nsPrinterEnumeratorQt, nsIPrinterEnumerator)
+nsPrinterEnumeratorQt::~nsPrinterEnumeratorQt()
+{
+}
+
+NS_IMPL_ISUPPORTS(nsPrinterEnumeratorQt, nsIPrinterEnumerator)
 
 NS_IMETHODIMP nsPrinterEnumeratorQt::GetPrinterNameList(
         nsIStringEnumerator** aPrinterNameList)

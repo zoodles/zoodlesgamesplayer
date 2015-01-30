@@ -34,6 +34,7 @@ const SORTING_URL = EXAMPLE_URL + "html_sorting-test-page.html";
 const FILTERING_URL = EXAMPLE_URL + "html_filter-test-page.html";
 const INFINITE_GET_URL = EXAMPLE_URL + "html_infinite-get-page.html";
 const CUSTOM_GET_URL = EXAMPLE_URL + "html_custom-get-page.html";
+const SINGLE_GET_URL = EXAMPLE_URL + "html_single-get-page.html";
 const STATISTICS_URL = EXAMPLE_URL + "html_statistics-test-page.html";
 const CURL_URL = EXAMPLE_URL + "html_copy-as-curl.html";
 const CURL_UTILS_URL = EXAMPLE_URL + "html_curl-utils.html";
@@ -42,6 +43,8 @@ const SIMPLE_SJS = EXAMPLE_URL + "sjs_simple-test-server.sjs";
 const CONTENT_TYPE_SJS = EXAMPLE_URL + "sjs_content-type-test-server.sjs";
 const STATUS_CODES_SJS = EXAMPLE_URL + "sjs_status-codes-test-server.sjs";
 const SORTING_SJS = EXAMPLE_URL + "sjs_sorting-test-server.sjs";
+const HTTPS_REDIRECT_SJS = EXAMPLE_URL + "sjs_https-redirect-test-server.sjs";
+const CORS_SJS_PATH = "/browser/browser/devtools/netmonitor/test/sjs_cors-test-server.sjs";
 
 const TEST_IMAGE = EXAMPLE_URL + "test-image.png";
 const TEST_IMAGE_DATA_URI = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAABGdBTUEAAK/INwWK6QAAABl0RVh0U29mdHdhcmUAQWRvYmUgSW1hZ2VSZWFkeXHJZTwAAAHWSURBVHjaYvz//z8DJQAggJiQOe/fv2fv7Oz8rays/N+VkfG/iYnJfyD/1+rVq7ffu3dPFpsBAAHEAHIBCJ85c8bN2Nj4vwsDw/8zQLwKiO8CcRoQu0DxqlWrdsHUwzBAAIGJmTNnPgYa9j8UqhFElwPxf2MIDeIrKSn9FwSJoRkAEEAM0DD4DzMAyPi/G+QKY4hh5WAXGf8PDQ0FGwJ22d27CjADAAIIrLmjo+MXA9R2kAHvGBA2wwx6B8W7od6CeQcggKCmCEL8bgwxYCbUIGTDVkHDBia+CuotgACCueD3TDQN75D4xmAvCoK9ARMHBzAw0AECiBHkAlC0Mdy7x9ABNA3obAZXIAa6iKEcGlMVQHwWyjYuL2d4v2cPg8vZswx7gHyAAAK7AOif7SAbOqCmn4Ha3AHFsIDtgPq/vLz8P4MSkJ2W9h8ggBjevXvHDo4FQUQg/kdypqCg4H8lUIACnQ/SOBMYI8bAsAJFPcj1AAEEjwVQqLpAbXmH5BJjqI0gi9DTAAgDBBCcAVLkgmQ7yKCZxpCQxqUZhAECCJ4XgMl493ug21ZD+aDAXH0WLM4A9MZPXJkJIIAwTAR5pQMalaCABQUULttBGCCAGCnNzgABBgAMJ5THwGvJLAAAAABJRU5ErkJggg==";
@@ -54,9 +57,12 @@ SimpleTest.registerCleanupFunction(() => {
 // All tests are asynchronous.
 waitForExplicitFinish();
 
-// Enable logging for all the relevant tests.
 const gEnableLogging = Services.prefs.getBoolPref("devtools.debugger.log");
-Services.prefs.setBoolPref("devtools.debugger.log", true);
+// To enable logging for try runs, just set the pref to true.
+Services.prefs.setBoolPref("devtools.debugger.log", false);
+
+// Uncomment this pref to dump all devtools emitted events to the console.
+// Services.prefs.setBoolPref("devtools.dump.emit", true);
 
 // Always reset some prefs to their original values after the test finishes.
 const gDefaultFilters = Services.prefs.getCharPref("devtools.netmonitor.filters");
@@ -66,6 +72,8 @@ registerCleanupFunction(() => {
 
   Services.prefs.setBoolPref("devtools.debugger.log", gEnableLogging);
   Services.prefs.setCharPref("devtools.netmonitor.filters", gDefaultFilters);
+  Services.prefs.clearUserPref("devtools.cache.disabled");
+  Services.prefs.clearUserPref("devtools.dump.emit");
 });
 
 function addTab(aUrl, aWindow) {
@@ -96,24 +104,53 @@ function removeTab(aTab, aWindow) {
   targetBrowser.removeTab(aTab);
 }
 
+function waitForNavigation(aTarget) {
+  let deferred = promise.defer();
+  aTarget.once("will-navigate", () => {
+    aTarget.once("navigate", () => {
+      deferred.resolve();
+    });
+  });
+  return deferred.promise;
+}
+
+function reconfigureTab(aTarget, aOptions) {
+  let deferred = promise.defer();
+  aTarget.activeTab.reconfigure(aOptions, deferred.resolve);
+  return deferred.promise;
+};
+
+function toggleCache(aTarget, aDisabled) {
+  let options = { cacheDisabled: aDisabled, performReload: true };
+  let navigationFinished = waitForNavigation(aTarget);
+
+  // Disable the cache for any toolbox that it is opened from this point on.
+  Services.prefs.setBoolPref("devtools.cache.disabled", aDisabled);
+
+  return reconfigureTab(aTarget, options).then(() => navigationFinished);
+}
+
 function initNetMonitor(aUrl, aWindow) {
   info("Initializing a network monitor pane.");
 
-  return addTab(aUrl).then((aTab) => {
+  return Task.spawn(function*() {
+    let tab = yield addTab(aUrl);
     info("Net tab added successfully: " + aUrl);
 
-    let deferred = promise.defer();
-    let debuggee = aTab.linkedBrowser.contentWindow.wrappedJSObject;
-    let target = TargetFactory.forTab(aTab);
+    let debuggee = tab.linkedBrowser.contentWindow.wrappedJSObject;
+    let target = TargetFactory.forTab(tab);
 
-    gDevTools.showToolbox(target, "netmonitor").then((aToolbox) => {
-      info("Netork monitor pane shown successfully.");
+    yield target.makeRemote();
+    info("Target remoted.");
 
-      let monitor = aToolbox.getCurrentPanel();
-      deferred.resolve([aTab, debuggee, monitor]);
-    });
+    yield toggleCache(target, true);
+    info("Cache disabled when the current and all future toolboxes are open.");
 
-    return deferred.promise;
+    let toolbox = yield gDevTools.showToolbox(target, "netmonitor");
+    info("Netork monitor pane shown successfully.");
+
+    let monitor = toolbox.getCurrentPanel();
+    return [tab, debuggee, monitor];
   });
 }
 
@@ -136,7 +173,7 @@ function teardown(aMonitor) {
   let deferred = promise.defer();
   let tab = aMonitor.target.tab;
 
-  aMonitor.once("destroyed", deferred.resolve);
+  aMonitor.once("destroyed", () => executeSoon(deferred.resolve));
   removeTab(tab);
 
   return deferred.promise;
@@ -146,71 +183,81 @@ function waitForNetworkEvents(aMonitor, aGetRequests, aPostRequests = 0) {
   let deferred = promise.defer();
 
   let panel = aMonitor.panelWin;
+  let events = panel.EVENTS;
+  let menu = panel.NetMonitorView.RequestsMenu;
+
+  let progress = {};
   let genericEvents = 0;
   let postEvents = 0;
 
-  function onGenericEvent() {
+  let awaitedEventsToListeners = [
+    ["UPDATING_REQUEST_HEADERS", onGenericEvent],
+    ["RECEIVED_REQUEST_HEADERS", onGenericEvent],
+    ["UPDATING_REQUEST_COOKIES", onGenericEvent],
+    ["RECEIVED_REQUEST_COOKIES", onGenericEvent],
+    ["UPDATING_REQUEST_POST_DATA", onPostEvent],
+    ["RECEIVED_REQUEST_POST_DATA", onPostEvent],
+    ["UPDATING_RESPONSE_HEADERS", onGenericEvent],
+    ["RECEIVED_RESPONSE_HEADERS", onGenericEvent],
+    ["UPDATING_RESPONSE_COOKIES", onGenericEvent],
+    ["RECEIVED_RESPONSE_COOKIES", onGenericEvent],
+    ["STARTED_RECEIVING_RESPONSE", onGenericEvent],
+    ["UPDATING_RESPONSE_CONTENT", onGenericEvent],
+    ["RECEIVED_RESPONSE_CONTENT", onGenericEvent],
+    ["UPDATING_EVENT_TIMINGS", onGenericEvent],
+    ["RECEIVED_EVENT_TIMINGS", onGenericEvent]
+  ];
+
+  function initProgressForURL(url) {
+    if (progress[url]) return;
+    progress[url] = {};
+    awaitedEventsToListeners.forEach(([e]) => progress[url][e] = 0);
+  }
+
+  function updateProgressForURL(url, event) {
+    initProgressForURL(url);
+    progress[url][Object.keys(events).find(e => events[e] == event)] = 1;
+  }
+
+  function onGenericEvent(event, actor) {
     genericEvents++;
-    maybeResolve();
+    maybeResolve(event, actor);
   }
 
-  function onPostEvent() {
+  function onPostEvent(event, actor) {
     postEvents++;
-    maybeResolve();
+    maybeResolve(event, actor);
   }
 
-  function maybeResolve() {
+  function maybeResolve(event, actor) {
     info("> Network events progress: " +
       genericEvents + "/" + ((aGetRequests + aPostRequests) * 13) + ", " +
-      postEvents + "/" + (aPostRequests * 2));
+      postEvents + "/" + (aPostRequests * 2) + ", " +
+      "got " + event + " for " + actor);
+
+    let url = menu.getItemByValue(actor).attachment.url;
+    updateProgressForURL(url, event);
+    info("> Current state: " + JSON.stringify(progress, null, 2));
 
     // There are 15 updates which need to be fired for a request to be
-    // considered finished. RequestPostData isn't fired for non-POST requests.
+    // considered finished. The "requestPostData" packet isn't fired for
+    // non-POST requests.
     if (genericEvents == (aGetRequests + aPostRequests) * 13 &&
         postEvents == aPostRequests * 2) {
 
-      panel.off(panel.EVENTS.UPDATING_REQUEST_HEADERS, onGenericEvent);
-      panel.off(panel.EVENTS.RECEIVED_REQUEST_HEADERS, onGenericEvent);
-      panel.off(panel.EVENTS.UPDATING_REQUEST_COOKIES, onGenericEvent);
-      panel.off(panel.EVENTS.RECEIVED_REQUEST_COOKIES, onGenericEvent);
-      panel.off(panel.EVENTS.UPDATING_REQUEST_POST_DATA, onPostEvent);
-      panel.off(panel.EVENTS.RECEIVED_REQUEST_POST_DATA, onPostEvent);
-      panel.off(panel.EVENTS.UPDATING_RESPONSE_HEADERS, onGenericEvent);
-      panel.off(panel.EVENTS.RECEIVED_RESPONSE_HEADERS, onGenericEvent);
-      panel.off(panel.EVENTS.UPDATING_RESPONSE_COOKIES, onGenericEvent);
-      panel.off(panel.EVENTS.RECEIVED_RESPONSE_COOKIES, onGenericEvent);
-      panel.off(panel.EVENTS.STARTED_RECEIVING_RESPONSE, onGenericEvent);
-      panel.off(panel.EVENTS.UPDATING_RESPONSE_CONTENT, onGenericEvent);
-      panel.off(panel.EVENTS.RECEIVED_RESPONSE_CONTENT, onGenericEvent);
-      panel.off(panel.EVENTS.UPDATING_EVENT_TIMINGS, onGenericEvent);
-      panel.off(panel.EVENTS.RECEIVED_EVENT_TIMINGS, onGenericEvent);
-
+      awaitedEventsToListeners.forEach(([e, l]) => panel.off(events[e], l));
       executeSoon(deferred.resolve);
     }
   }
 
-  panel.on(panel.EVENTS.UPDATING_REQUEST_HEADERS, onGenericEvent);
-  panel.on(panel.EVENTS.RECEIVED_REQUEST_HEADERS, onGenericEvent);
-  panel.on(panel.EVENTS.UPDATING_REQUEST_COOKIES, onGenericEvent);
-  panel.on(panel.EVENTS.RECEIVED_REQUEST_COOKIES, onGenericEvent);
-  panel.on(panel.EVENTS.UPDATING_REQUEST_POST_DATA, onPostEvent);
-  panel.on(panel.EVENTS.RECEIVED_REQUEST_POST_DATA, onPostEvent);
-  panel.on(panel.EVENTS.UPDATING_RESPONSE_HEADERS, onGenericEvent);
-  panel.on(panel.EVENTS.RECEIVED_RESPONSE_HEADERS, onGenericEvent);
-  panel.on(panel.EVENTS.UPDATING_RESPONSE_COOKIES, onGenericEvent);
-  panel.on(panel.EVENTS.RECEIVED_RESPONSE_COOKIES, onGenericEvent);
-  panel.on(panel.EVENTS.STARTED_RECEIVING_RESPONSE, onGenericEvent);
-  panel.on(panel.EVENTS.UPDATING_RESPONSE_CONTENT, onGenericEvent);
-  panel.on(panel.EVENTS.RECEIVED_RESPONSE_CONTENT, onGenericEvent);
-  panel.on(panel.EVENTS.UPDATING_EVENT_TIMINGS, onGenericEvent);
-  panel.on(panel.EVENTS.RECEIVED_EVENT_TIMINGS, onGenericEvent);
-
+  awaitedEventsToListeners.forEach(([e, l]) => panel.on(events[e], l));
   return deferred.promise;
 }
 
 function verifyRequestItemTarget(aRequestItem, aMethod, aUrl, aData = {}) {
   info("> Verifying: " + aMethod + " " + aUrl + " " + aData.toSource());
-  info("> Request: " + aRequestItem.attachment.toSource());
+  // This bloats log sizes significantly in automation (bug 992485)
+  //info("> Request: " + aRequestItem.attachment.toSource());
 
   let requestsMenu = aRequestItem.ownerView;
   let widgetIndex = requestsMenu.indexOfItem(aRequestItem);
@@ -219,7 +266,7 @@ function verifyRequestItemTarget(aRequestItem, aMethod, aUrl, aData = {}) {
   info("Widget index of item: " + widgetIndex);
   info("Visible index of item: " + visibleIndex);
 
-  let { fuzzyUrl, status, statusText, type, fullMimeType, size, time } = aData;
+  let { fuzzyUrl, status, statusText, type, fullMimeType, transferred, size, time } = aData;
   let { attachment, target } = aRequestItem
 
   let uri = Services.io.newURI(aUrl, null, null).QueryInterface(Ci.nsIURL);
@@ -273,6 +320,14 @@ function verifyRequestItemTarget(aRequestItem, aMethod, aUrl, aData = {}) {
     info("Tooltip type: " + tooltip);
     is(value, type, "The displayed type is incorrect.");
     is(tooltip, fullMimeType, "The tooltip type is incorrect.");
+  }
+  if (transferred !== undefined) {
+    let value = target.querySelector(".requests-menu-transferred").getAttribute("value");
+    let tooltip = target.querySelector(".requests-menu-transferred").getAttribute("tooltiptext");
+    info("Displayed transferred size: " + value);
+    info("Tooltip transferred size: " + tooltip);
+    is(value, transferred, "The displayed transferred size is incorrect.");
+    is(tooltip, transferred, "The tooltip transferred size is incorrect.");
   }
   if (size !== undefined) {
     let value = target.querySelector(".requests-menu-size").getAttribute("value");

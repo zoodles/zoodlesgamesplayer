@@ -7,6 +7,9 @@
 
 class nsDeviceContextSpecAndroid MOZ_FINAL : public nsIDeviceContextSpec
 {
+private:
+    ~nsDeviceContextSpecAndroid() {}
+
 public:
     NS_DECL_ISUPPORTS
 
@@ -23,7 +26,6 @@ public:
     NS_IMETHOD BeginPage() { return NS_OK; }
     NS_IMETHOD EndPage() { return NS_OK; }
 
-    NS_IMETHOD GetPath (const char** aPath);
 private:
     nsCOMPtr<nsIPrintSettings> mPrintSettings;
     nsCOMPtr<nsIFile> mTempFile;

@@ -30,7 +30,6 @@
 #include "nsGkAtoms.h"
 #include "nsImageFrame.h"
 #include "nsLayoutStylesheetCache.h"
-#include "nsNodeInfo.h"
 #include "nsRange.h"
 #include "nsRegion.h"
 #include "nsRepeatService.h"
@@ -47,7 +46,7 @@
 #include "nsCCUncollectableMarker.h"
 #include "nsTextFragment.h"
 #include "nsCSSRuleProcessor.h"
-#include "nsCrossSiteListenerProxy.h"
+#include "nsCORSListenerProxy.h"
 #include "nsHTMLDNSPrefetch.h"
 #include "nsHtml5Module.h"
 #include "mozilla/dom/FallbackEncoding.h"
@@ -63,8 +62,12 @@
 #include "CacheObserver.h"
 #include "DisplayItemClip.h"
 #include "ActiveLayerTracker.h"
+#include "CounterStyleManager.h"
+#include "FrameLayerBuilder.h"
+#include "mozilla/dom/RequestSyncWifiService.h"
 
 #include "AudioChannelService.h"
+#include "mozilla/dom/DataStoreService.h"
 
 #ifdef MOZ_XUL
 #include "nsXULPopupManager.h"
@@ -84,8 +87,8 @@
 #include "nsSynthVoiceRegistry.h"
 #endif
 
-#ifdef MOZ_MEDIA_PLUGINS
-#include "MediaPluginHost.h"
+#ifdef MOZ_ANDROID_OMX
+#include "AndroidMediaPluginHost.h"
 #endif
 
 #ifdef MOZ_WMF
@@ -100,7 +103,7 @@
 #include "FFmpegRuntimeLinker.h"
 #endif
 
-#include "AudioStream.h"
+#include "CubebUtils.h"
 #include "Latency.h"
 #include "WebAudioUtils.h"
 
@@ -130,6 +133,7 @@ using namespace mozilla::system;
 #include "mozilla/IMEStateManager.h"
 #include "nsDocument.h"
 #include "mozilla/dom/HTMLVideoElement.h"
+#include "CameraPreferences.h"
 
 using namespace mozilla;
 using namespace mozilla::net;
@@ -213,7 +217,6 @@ nsLayoutStatics::Initialize()
 
   nsMathMLOperators::AddRefTable();
 
-  nsEditProperty::RegisterAtoms();
   nsTextServicesDocument::RegisterAtoms();
 
 #ifdef DEBUG
@@ -260,7 +263,7 @@ nsLayoutStatics::Initialize()
   }
 
   AsyncLatencyLogger::InitializeStatics();
-  AudioStream::InitLibrary();
+  CubebUtils::InitLibrary();
 
   nsContentSink::InitializeStatics();
   nsHtml5Module::InitializeStatics();
@@ -292,6 +295,16 @@ nsLayoutStatics::Initialize()
 
   CacheObserver::Init();
 
+  CounterStyleManager::InitializeBuiltinCounterStyles();
+
+  CameraPreferences::Initialize();
+
+  IMEStateManager::Init();
+
+#ifdef MOZ_B2G
+  RequestSyncWifiService::Init();
+#endif
+
   return NS_OK;
 }
 
@@ -311,7 +324,6 @@ nsLayoutStatics::Shutdown()
   Attr::Shutdown();
   EventListenerManager::Shutdown();
   IMEStateManager::Shutdown();
-  nsComputedDOMStyle::Shutdown();
   nsCSSParser::Shutdown();
   nsCSSRuleProcessor::Shutdown();
   nsTextFrameTextRunCache::Shutdown();
@@ -359,8 +371,8 @@ nsLayoutStatics::Shutdown()
   nsAutoCopyListener::Shutdown();
   FrameLayerBuilder::Shutdown();
 
-#ifdef MOZ_MEDIA_PLUGINS
-  MediaPluginHost::Shutdown();
+#ifdef MOZ_ANDROID_OMX
+  AndroidMediaPluginHost::Shutdown();
 #endif
 
 #ifdef MOZ_GSTREAMER
@@ -371,7 +383,7 @@ nsLayoutStatics::Shutdown()
   FFmpegRuntimeLinker::Unlink();
 #endif
 
-  AudioStream::ShutdownLibrary();
+  CubebUtils::ShutdownLibrary();
   AsyncLatencyLogger::ShutdownLogger();
   WebAudioUtils::Shutdown();
 
@@ -411,6 +423,8 @@ nsLayoutStatics::Shutdown()
 
   AudioChannelService::Shutdown();
 
+  DataStoreService::Shutdown();
+
   ContentParent::ShutDown();
 
   nsRefreshDriver::Shutdown();
@@ -420,4 +434,6 @@ nsLayoutStatics::Shutdown()
   nsDocument::XPCOMShutdown();
 
   CacheObserver::Shutdown();
+
+  CameraPreferences::Shutdown();
 }

@@ -1,9 +1,10 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const CURRENT_SCHEMA_VERSION = 23;
+const CURRENT_SCHEMA_VERSION = 26;
+const FIRST_UPGRADABLE_SCHEMA_VERSION = 11;
 
 const NS_APP_USER_PROFILE_50_DIR = "ProfD";
 const NS_APP_PROFILE_DIR_STARTUP = "ProfDS";
@@ -20,8 +21,9 @@ const TRANSITION_DOWNLOAD = Ci.nsINavHistoryService.TRANSITION_DOWNLOAD;
 
 const TITLE_LENGTH_MAX = 4096;
 
-Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+Cu.importGlobalProperties(["URL"]);
 
+Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "FileUtils",
                                   "resource://gre/modules/FileUtils.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "NetUtil",
@@ -34,12 +36,18 @@ XPCOMUtils.defineLazyModuleGetter(this, "Task",
                                   "resource://gre/modules/Task.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "BookmarkJSONUtils",
                                   "resource://gre/modules/BookmarkJSONUtils.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "BookmarkHTMLUtils",
+                                  "resource://gre/modules/BookmarkHTMLUtils.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "PlacesBackups",
                                   "resource://gre/modules/PlacesBackups.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "PlacesTestUtils",
+                                  "resource://testing-common/PlacesTestUtils.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "PlacesTransactions",
                                   "resource://gre/modules/PlacesTransactions.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "OS",
                                   "resource://gre/modules/osfile.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "Sqlite",
+                                  "resource://gre/modules/Sqlite.jsm");
 
 // This imports various other objects in addition to PlacesUtils.
 Cu.import("resource://gre/modules/PlacesUtils.jsm");
@@ -310,9 +318,9 @@ function visits_in_database(aURI)
 {
   let url = aURI instanceof Ci.nsIURI ? aURI.spec : aURI;
   let stmt = DBConn().createStatement(
-    "SELECT count(*) FROM moz_historyvisits v "
-  + "JOIN moz_places h ON h.id = v.place_id "
-  + "WHERE url = :url"
+    `SELECT count(*) FROM moz_historyvisits v
+     JOIN moz_places h ON h.id = v.place_id
+     WHERE url = :url`
   );
   stmt.params.url = url;
   try {
@@ -383,20 +391,6 @@ function promiseTopicObserved(aTopic)
 }
 
 /**
- * Clears history asynchronously.
- *
- * @return {Promise}
- * @resolves When history has been cleared.
- * @rejects Never.
- */
-function promiseClearHistory() {
-  let promise = promiseTopicObserved(PlacesUtils.TOPIC_EXPIRATION_FINISHED);
-  do_execute_soon(function() PlacesUtils.bhistory.removeAllPages());
-  return promise;
-}
-
-
-/**
  * Simulates a Places shutdown.
  */
 function shutdownPlaces(aKeepAliveConnection)
@@ -407,9 +401,8 @@ function shutdownPlaces(aKeepAliveConnection)
 }
 
 const FILENAME_BOOKMARKS_HTML = "bookmarks.html";
-let (backup_date = new Date().toLocaleFormat("%Y-%m-%d")) {
-  const FILENAME_BOOKMARKS_JSON = "bookmarks-" + backup_date + ".json";
-}
+const FILENAME_BOOKMARKS_JSON = "bookmarks-" +
+  (new Date().toLocaleFormat("%Y-%m-%d")) + ".json";
 
 /**
  * Creates a bookmarks.html file in the profile folder from a given source file.
@@ -547,7 +540,9 @@ function check_JSON_backup(aIsAutomaticBackup) {
  */
 function frecencyForUrl(aURI)
 {
-  let url = aURI instanceof Ci.nsIURI ? aURI.spec : aURI;
+  let url = aURI instanceof Ci.nsIURI ? aURI.spec
+                                      : aURI instanceof URL ? aURI.href
+                                                            : aURI;
   let stmt = DBConn().createStatement(
     "SELECT frecency FROM moz_places WHERE url = ?1"
   );
@@ -687,9 +682,9 @@ function do_get_guid_for_uri(aURI,
     aStack = Components.stack.caller;
   }
   let stmt = DBConn().createStatement(
-    "SELECT guid "
-  + "FROM moz_places "
-  + "WHERE url = :url "
+    `SELECT guid
+     FROM moz_places
+     WHERE url = :url`
   );
   stmt.params.url = aURI.spec;
   do_check_true(stmt.executeStep(), aStack);
@@ -734,9 +729,9 @@ function do_get_guid_for_bookmark(aId,
     aStack = Components.stack.caller;
   }
   let stmt = DBConn().createStatement(
-    "SELECT guid "
-  + "FROM moz_bookmarks "
-  + "WHERE id = :item_id "
+    `SELECT guid
+     FROM moz_bookmarks
+     WHERE id = :item_id`
   );
   stmt.params.item_id = aId;
   do_check_true(stmt.executeStep(), aStack);
@@ -849,8 +844,6 @@ function NavHistoryResultObserver() {}
 
 NavHistoryResultObserver.prototype = {
   batching: function () {},
-  containerClosed: function () {},
-  containerOpened: function () {},
   containerStateChanged: function () {},
   invalidateContainer: function () {},
   nodeAnnotationChanged: function () {},
@@ -952,3 +945,28 @@ function promiseIsURIVisited(aURI) {
   return deferred.promise;
 }
 
+/**
+ * Asynchronously set the favicon associated with a page.
+ * @param aPageURI
+ *        The page's URI
+ * @param aIconURI
+ *        The URI of the favicon to be set.
+ */
+function promiseSetIconForPage(aPageURI, aIconURI) {
+  let deferred = Promise.defer();
+  PlacesUtils.favicons.setAndFetchFaviconForPage(
+    aPageURI, aIconURI, true,
+    PlacesUtils.favicons.FAVICON_LOAD_NON_PRIVATE,
+    () => { deferred.resolve(); });
+  return deferred.promise;
+}
+
+function checkBookmarkObject(info) {
+  do_check_valid_places_guid(info.guid);
+  do_check_valid_places_guid(info.parentGuid);
+  Assert.ok(typeof info.index == "number", "index should be a number");
+  Assert.ok(info.dateAdded.constructor.name == "Date", "dateAdded should be a Date");
+  Assert.ok(info.lastModified.constructor.name == "Date", "lastModified should be a Date");
+  Assert.ok(info.lastModified >= info.dateAdded, "lastModified should never be smaller than dateAdded");
+  Assert.ok(typeof info.type == "number", "type should be a number");
+}

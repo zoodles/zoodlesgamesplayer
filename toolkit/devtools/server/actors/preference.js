@@ -8,7 +8,6 @@ const {Arg, method, RetVal} = protocol;
 const {Promise: promise} = Cu.import("resource://gre/modules/Promise.jsm", {});
 
 Cu.import("resource://gre/modules/Services.jsm");
-Cu.import('resource://gre/modules/devtools/dbg-server.jsm');
 
 exports.register = function(handle) {
   handle.addGlobalActor(PreferenceActor, "preferenceActor");
@@ -17,7 +16,7 @@ exports.register = function(handle) {
 exports.unregister = function(handle) {
 };
 
-let PreferenceActor = protocol.ActorClass({
+let PreferenceActor = exports.PreferenceActor = protocol.ActorClass({
   typeName: "preference",
 
   getBoolPref: method(function(name) {
@@ -110,7 +109,6 @@ let PreferenceFront = protocol.FrontClass(PreferenceActor, {
   initialize: function(client, form) {
     protocol.Front.prototype.initialize.call(this, client);
     this.actorID = form.preferenceActor;
-    client.addActorPool(this);
     this.manage(this);
   },
 });
@@ -118,8 +116,13 @@ let PreferenceFront = protocol.FrontClass(PreferenceActor, {
 const _knownPreferenceFronts = new WeakMap();
 
 exports.getPreferenceFront = function(client, form) {
-  if (_knownPreferenceFronts.has(client))
+  if (!form.preferenceActor) {
+    return null;
+  }
+
+  if (_knownPreferenceFronts.has(client)) {
     return _knownPreferenceFronts.get(client);
+  }
 
   let front = new PreferenceFront(client, form);
   _knownPreferenceFronts.set(client, front);

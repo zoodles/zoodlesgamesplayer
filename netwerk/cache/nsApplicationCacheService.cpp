@@ -19,12 +19,16 @@ static NS_DEFINE_CID(kCacheServiceCID, NS_CACHESERVICE_CID);
 // nsApplicationCacheService
 //-----------------------------------------------------------------------------
 
-NS_IMPL_ISUPPORTS1(nsApplicationCacheService, nsIApplicationCacheService)
+NS_IMPL_ISUPPORTS(nsApplicationCacheService, nsIApplicationCacheService)
 
 nsApplicationCacheService::nsApplicationCacheService()
 {
     nsCOMPtr<nsICacheService> serv = do_GetService(kCacheServiceCID);
     mCacheService = nsCacheService::GlobalInstance();
+}
+
+nsApplicationCacheService::~nsApplicationCacheService()
+{
 }
 
 NS_IMETHODIMP
@@ -209,7 +213,7 @@ public:
 
     // nsIObserver implementation.
     NS_IMETHODIMP
-    Observe(nsISupports *aSubject, const char *aTopic, const char16_t *aData)
+    Observe(nsISupports *aSubject, const char *aTopic, const char16_t *aData) MOZ_OVERRIDE
     {
         MOZ_ASSERT(!nsCRT::strcmp(aTopic, TOPIC_WEB_APP_CLEAR_DATA));
 
@@ -225,9 +229,12 @@ public:
 
         return cacheService->DiscardByAppId(appId, browserOnly);
     }
+
+private:
+    ~AppCacheClearDataObserver() {}
 };
 
-NS_IMPL_ISUPPORTS1(AppCacheClearDataObserver, nsIObserver)
+NS_IMPL_ISUPPORTS(AppCacheClearDataObserver, nsIObserver)
 
 } // anonymous namespace
 

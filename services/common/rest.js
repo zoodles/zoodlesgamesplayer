@@ -208,6 +208,23 @@ RESTRequest.prototype = {
   },
 
   /**
+   * Perform an HTTP PATCH.
+   *
+   * @param data
+   *        Data to be used as the request body. If this isn't a string
+   *        it will be JSONified automatically.
+   * @param onComplete
+   *        Short-circuit way to set the 'onComplete' method. Optional.
+   * @param onProgress
+   *        Short-circuit way to set the 'onProgress' method. Optional.
+   *
+   * @return the request object.
+   */
+  patch: function patch(data, onComplete, onProgress) {
+    return this.dispatch("PATCH", data, onComplete, onProgress);
+  },
+
+  /**
    * Perform an HTTP PUT.
    *
    * @param data
@@ -307,7 +324,7 @@ RESTRequest.prototype = {
     }
 
     // Set HTTP request body.
-    if (method == "PUT" || method == "POST") {
+    if (method == "PUT" || method == "POST" || method == "PATCH") {
       // Convert non-string bodies into JSON.
       if (typeof data != "string") {
         data = JSON.stringify(data);
@@ -366,7 +383,7 @@ RESTRequest.prototype = {
                                      Cr.NS_ERROR_NET_TIMEOUT);
     if (!this.onComplete) {
       this._log.error("Unexpected error: onComplete not defined in " +
-                      "abortTimeout.")
+                      "abortTimeout.");
       return;
     }
     this.onComplete(error);
@@ -441,6 +458,7 @@ RESTRequest.prototype = {
     if (!statusSuccess) {
       let message = Components.Exception("", statusCode).name;
       let error = Components.Exception(message, statusCode);
+      this._log.debug(this.method + " " + uri + " failed: " + statusCode + " - " + message);
       this.onComplete(error);
       this.onComplete = this.onProgress = null;
       return;
@@ -623,8 +641,8 @@ RESTResponse.prototype = {
                       CommonUtils.exceptionStr(ex));
       return null;
     }
-    delete this.status;
-    return this.status = status;
+    Object.defineProperty(this, "status", {value: status});
+    return status;
   },
 
   /**
@@ -639,8 +657,8 @@ RESTResponse.prototype = {
                       CommonUtils.exceptionStr(ex));
       return null;
     }
-    delete this.statusText;
-    return this.statusText = statusText;
+    Object.defineProperty(this, "statusText", {value: statusText});
+    return statusText;
   },
 
   /**
@@ -655,8 +673,8 @@ RESTResponse.prototype = {
                       CommonUtils.exceptionStr(ex));
       return null;
     }
-    delete this.success;
-    return this.success = success;
+    Object.defineProperty(this, "success", {value: success});
+    return success;
   },
 
   /**
@@ -676,8 +694,8 @@ RESTResponse.prototype = {
       return null;
     }
 
-    delete this.headers;
-    return this.headers = headers;
+    Object.defineProperty(this, "headers", {value: headers});
+    return headers;
   },
 
   /**
@@ -723,4 +741,3 @@ TokenAuthenticatedRESTRequest.prototype = {
     );
   },
 };
-

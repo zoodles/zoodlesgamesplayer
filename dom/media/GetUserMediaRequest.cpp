@@ -4,11 +4,10 @@
 
 #include "base/basictypes.h"
 #include "GetUserMediaRequest.h"
-#include "mozilla/dom/MediaStreamTrackBinding.h"
+#include "mozilla/dom/MediaStreamBinding.h"
 #include "mozilla/dom/GetUserMediaRequestBinding.h"
 #include "nsIScriptGlobalObject.h"
 #include "nsPIDOMWindow.h"
-#include "nsCxPusher.h"
 
 namespace mozilla {
 namespace dom {
@@ -16,13 +15,14 @@ namespace dom {
 GetUserMediaRequest::GetUserMediaRequest(
     nsPIDOMWindow* aInnerWindow,
     const nsAString& aCallID,
-    const MediaStreamConstraintsInternal& aConstraints)
+    const MediaStreamConstraints& aConstraints,
+    bool aIsSecure)
   : mInnerWindowID(aInnerWindow->WindowID())
   , mOuterWindowID(aInnerWindow->GetOuterWindow()->WindowID())
   , mCallID(aCallID)
-  , mConstraints(aConstraints)
+  , mConstraints(new MediaStreamConstraints(aConstraints))
+  , mIsSecure(aIsSecure)
 {
-  SetIsDOMBinding();
 }
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_0(GetUserMediaRequest)
@@ -34,9 +34,9 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(GetUserMediaRequest)
 NS_INTERFACE_MAP_END
 
 JSObject*
-GetUserMediaRequest::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+GetUserMediaRequest::WrapObject(JSContext* aCx)
 {
-  return GetUserMediaRequestBinding::Wrap(aCx, aScope, this);
+  return GetUserMediaRequestBinding::Wrap(aCx, this);
 }
 
 nsISupports* GetUserMediaRequest::GetParentObject()
@@ -59,10 +59,15 @@ uint64_t GetUserMediaRequest::InnerWindowID()
   return mInnerWindowID;
 }
 
-void
-GetUserMediaRequest::GetConstraints(MediaStreamConstraintsInternal &result)
+bool GetUserMediaRequest::IsSecure()
 {
-  result = mConstraints;
+  return mIsSecure;
+}
+
+void
+GetUserMediaRequest::GetConstraints(MediaStreamConstraints &result)
+{
+  result = *mConstraints;
 }
 
 } // namespace dom

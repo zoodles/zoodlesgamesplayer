@@ -1,4 +1,5 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -24,18 +25,93 @@
 #endif
 #include "mozilla/Attributes.h"
 #include "mozilla/Assertions.h"
+#include "mozilla/Compiler.h"
 #include "mozilla/Likely.h"
+#include "mozilla/MacroArgs.h"
+#include "mozilla/MacroForEach.h"
+
+namespace mozilla {
+template <typename T>
+struct HasDangerousPublicDestructor
+{
+  static const bool value = false;
+};
+}
+
+#if defined(__clang__)
+   // bug 1028428 shows that at least in FreeBSD 10.0 with Clang 3.4 and libc++ 3.4,
+   // std::is_destructible is buggy in that it returns false when it should return true
+   // on ipc::SharedMemory. On the other hand, all Clang versions currently in use
+   // seem to handle the fallback just fine.
+#  define MOZ_CAN_USE_IS_DESTRUCTIBLE_FALLBACK
+#elif defined(__GNUC__)
+   // GCC 4.7 is has buggy std::is_destructible
+#  if MOZ_USING_LIBSTDCXX && MOZ_GCC_VERSION_AT_LEAST(4, 8, 0)
+#    define MOZ_HAVE_STD_IS_DESTRUCTIBLE
+   // Some GCC versions have an ICE when using destructors in decltype().
+   // Works for me on GCC 4.8.2 on Fedora 20 x86-64.
+#  elif MOZ_GCC_VERSION_AT_LEAST(4, 8, 2)
+#    define MOZ_CAN_USE_IS_DESTRUCTIBLE_FALLBACK
+#  endif
+#endif
+
+#ifdef MOZ_HAVE_STD_IS_DESTRUCTIBLE
+#  include <type_traits>
+#  define MOZ_IS_DESTRUCTIBLE(X) (std::is_destructible<X>::value)
+#elif defined MOZ_CAN_USE_IS_DESTRUCTIBLE_FALLBACK
+  namespace mozilla {
+    struct IsDestructibleFallbackImpl
+    {
+      template<typename T> static T&& Declval();
+
+      template<typename T, typename = decltype(Declval<T>().~T())>
+      static TrueType Test(int);
+
+      template<typename>
+      static FalseType Test(...);
+
+      template<typename T>
+      struct Selector
+      {
+        typedef decltype(Test<T>(0)) type;
+      };
+    };
+
+    template<typename T>
+    struct IsDestructibleFallback
+      : IsDestructibleFallbackImpl::Selector<T>::type
+    {
+    };
+  }
+#  define MOZ_IS_DESTRUCTIBLE(X) (mozilla::IsDestructibleFallback<X>::value)
+#endif
+
+#ifdef MOZ_IS_DESTRUCTIBLE
+#define MOZ_ASSERT_TYPE_OK_FOR_REFCOUNTING(X) \
+  static_assert(!MOZ_IS_DESTRUCTIBLE(X) || \
+                mozilla::HasDangerousPublicDestructor<X>::value, \
+                "Reference-counted class " #X " should not have a public destructor. " \
+                "Try to make this class's destructor non-public. If that is really " \
+                "not possible, you can whitelist this class by providing a " \
+                "HasDangerousPublicDestructor specialization for it."); \
+  static_assert(!mozilla::HasDangerousPublicDestructor<X>::value || \
+                MOZ_IS_DESTRUCTIBLE(X), \
+                "Class " #X " has no public destructor. That's good! So please " \
+                "remove the HasDangerousPublicDestructor specialization for it.");
+#else
+#define MOZ_ASSERT_TYPE_OK_FOR_REFCOUNTING(X)
+#endif
 
 inline nsISupports*
-ToSupports(nsISupports* p)
+ToSupports(nsISupports* aSupports)
 {
-    return p;
+  return aSupports;
 }
 
 inline nsISupports*
-ToCanonicalSupports(nsISupports* p)
+ToCanonicalSupports(nsISupports* aSupports)
 {
-    return nullptr;
+  return nullptr;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -43,13 +119,14 @@ ToCanonicalSupports(nsISupports* p)
 
 #if (defined(DEBUG) || (defined(NIGHTLY_BUILD) && !defined(MOZ_PROFILING))) && !defined(XPCOM_GLUE_AVOID_NSPR)
 
-class nsAutoOwningThread {
+class nsAutoOwningThread
+{
 public:
-    nsAutoOwningThread() { mThread = PR_GetCurrentThread(); }
-    void *GetThread() const { return mThread; }
+  nsAutoOwningThread() { mThread = PR_GetCurrentThread(); }
+  void* GetThread() const { return mThread; }
 
 private:
-    void *mThread;
+  void* mThread;
 };
 
 #define NS_DECL_OWNINGTHREAD            nsAutoOwningThread _mOwningThread;
@@ -75,23 +152,45 @@ private:
 #define NS_LOG_RELEASE(_p, _rc, _type) \
   NS_LogRelease((_p), (_rc), (_type))
 
+#include "mozilla/TypeTraits.h"
+#define MOZ_ASSERT_CLASSNAME(_type)                         \
+  static_assert(mozilla::IsClass<_type>::value,             \
+                "Token '" #_type "' is not a class type.")
+// Older versions of gcc can't instantiate local classes in templates.
+// GCC 4.7 doesn't have this problem.
+#if MOZ_IS_GCC
+# if !MOZ_GCC_VERSION_AT_LEAST(4, 7, 0)
+#  undef MOZ_ASSERT_CLASSNAME
+#  define MOZ_ASSERT_CLASSNAME(_type)
+# endif
+#endif
+
+// Note that the following constructor/destructor logging macros are redundant
+// for refcounted objects that log via the NS_LOG_ADDREF/NS_LOG_RELEASE macros.
+// Refcount logging is preferred.
 #define MOZ_COUNT_CTOR(_type)                                 \
 do {                                                          \
+  MOZ_ASSERT_CLASSNAME(_type);                                \
   NS_LogCtor((void*)this, #_type, sizeof(*this));             \
 } while (0)
 
 #define MOZ_COUNT_CTOR_INHERITED(_type, _base)                    \
 do {                                                              \
+  MOZ_ASSERT_CLASSNAME(_type);                                    \
+  MOZ_ASSERT_CLASSNAME(_base);                                    \
   NS_LogCtor((void*)this, #_type, sizeof(*this) - sizeof(_base)); \
 } while (0)
 
 #define MOZ_COUNT_DTOR(_type)                                 \
 do {                                                          \
+  MOZ_ASSERT_CLASSNAME(_type);                                \
   NS_LogDtor((void*)this, #_type, sizeof(*this));             \
 } while (0)
 
 #define MOZ_COUNT_DTOR_INHERITED(_type, _base)                    \
 do {                                                              \
+  MOZ_ASSERT_CLASSNAME(_type);                                    \
+  MOZ_ASSERT_CLASSNAME(_base);                                    \
   NS_LogDtor((void*)this, #_type, sizeof(*this) - sizeof(_base)); \
 } while (0)
 
@@ -126,24 +225,23 @@ do {                                                              \
 #define NS_REFCOUNT_CHANGE (1 << NS_NUMBER_OF_FLAGS_IN_REFCNT)
 #define NS_REFCOUNT_VALUE(_val) (_val >> NS_NUMBER_OF_FLAGS_IN_REFCNT)
 
-class nsCycleCollectingAutoRefCnt {
-
+class nsCycleCollectingAutoRefCnt
+{
 public:
-  nsCycleCollectingAutoRefCnt()
-    : mRefCntAndFlags(0)
-  {}
+  nsCycleCollectingAutoRefCnt() : mRefCntAndFlags(0) {}
 
-  nsCycleCollectingAutoRefCnt(uintptr_t aValue)
+  explicit nsCycleCollectingAutoRefCnt(uintptr_t aValue)
     : mRefCntAndFlags(aValue << NS_NUMBER_OF_FLAGS_IN_REFCNT)
   {
   }
 
-  MOZ_ALWAYS_INLINE uintptr_t incr(nsISupports *owner)
+  MOZ_ALWAYS_INLINE uintptr_t incr(nsISupports* aOwner)
   {
-    return incr(owner, nullptr);
+    return incr(aOwner, nullptr);
   }
 
-  MOZ_ALWAYS_INLINE uintptr_t incr(void *owner, nsCycleCollectionParticipant *p)
+  MOZ_ALWAYS_INLINE uintptr_t incr(void* aOwner,
+                                   nsCycleCollectionParticipant* aCp)
   {
     mRefCntAndFlags += NS_REFCOUNT_CHANGE;
     mRefCntAndFlags &= ~NS_IS_PURPLE;
@@ -153,7 +251,7 @@ public:
       mRefCntAndFlags |= NS_IN_PURPLE_BUFFER;
       // Refcount isn't zero, so Suspect won't delete anything.
       MOZ_ASSERT(get() > 0);
-      NS_CycleCollectorSuspect3(owner, p, this, nullptr);
+      NS_CycleCollectorSuspect3(aOwner, aCp, this, nullptr);
     }
     return NS_REFCOUNT_VALUE(mRefCntAndFlags);
   }
@@ -165,22 +263,23 @@ public:
     mRefCntAndFlags = NS_REFCOUNT_CHANGE | NS_IN_PURPLE_BUFFER;
   }
 
-  MOZ_ALWAYS_INLINE uintptr_t decr(nsISupports *owner,
-                                   bool *shouldDelete = nullptr)
+  MOZ_ALWAYS_INLINE uintptr_t decr(nsISupports* aOwner,
+                                   bool* aShouldDelete = nullptr)
   {
-    return decr(owner, nullptr, shouldDelete);
+    return decr(aOwner, nullptr, aShouldDelete);
   }
 
-  MOZ_ALWAYS_INLINE uintptr_t decr(void *owner, nsCycleCollectionParticipant *p,
-                                   bool *shouldDelete = nullptr)
+  MOZ_ALWAYS_INLINE uintptr_t decr(void* aOwner,
+                                   nsCycleCollectionParticipant* aCp,
+                                   bool* aShouldDelete = nullptr)
   {
     MOZ_ASSERT(get() > 0);
     if (!IsInPurpleBuffer()) {
       mRefCntAndFlags -= NS_REFCOUNT_CHANGE;
       mRefCntAndFlags |= (NS_IN_PURPLE_BUFFER | NS_IS_PURPLE);
       uintptr_t retval = NS_REFCOUNT_VALUE(mRefCntAndFlags);
-      // Suspect may delete 'owner' and 'this'!
-      NS_CycleCollectorSuspect3(owner, p, this, shouldDelete);
+      // Suspect may delete 'aOwner' and 'this'!
+      NS_CycleCollectorSuspect3(aOwner, aCp, this, aShouldDelete);
       return retval;
     }
     mRefCntAndFlags -= NS_REFCOUNT_CHANGE;
@@ -220,54 +319,58 @@ public:
     return get();
   }
 
- private:
+private:
   uintptr_t mRefCntAndFlags;
 };
 
-class nsAutoRefCnt {
+class nsAutoRefCnt
+{
+public:
+  nsAutoRefCnt() : mValue(0) {}
+  explicit nsAutoRefCnt(nsrefcnt aValue) : mValue(aValue) {}
 
- public:
-    nsAutoRefCnt() : mValue(0) {}
-    nsAutoRefCnt(nsrefcnt aValue) : mValue(aValue) {}
+  // only support prefix increment/decrement
+  nsrefcnt operator++() { return ++mValue; }
+  nsrefcnt operator--() { return --mValue; }
 
-    // only support prefix increment/decrement
-    nsrefcnt operator++() { return ++mValue; }
-    nsrefcnt operator--() { return --mValue; }
+  nsrefcnt operator=(nsrefcnt aValue) { return (mValue = aValue); }
+  operator nsrefcnt() const { return mValue; }
+  nsrefcnt get() const { return mValue; }
 
-    nsrefcnt operator=(nsrefcnt aValue) { return (mValue = aValue); }
-    operator nsrefcnt() const { return mValue; }
-    nsrefcnt get() const { return mValue; }
-
-    static const bool isThreadSafe = false;
- private:
-    nsrefcnt operator++(int) MOZ_DELETE;
-    nsrefcnt operator--(int) MOZ_DELETE;
-    nsrefcnt mValue;
+  static const bool isThreadSafe = false;
+private:
+  nsrefcnt operator++(int) = delete;
+  nsrefcnt operator--(int) = delete;
+  nsrefcnt mValue;
 };
 
 #ifndef XPCOM_GLUE
 namespace mozilla {
-class ThreadSafeAutoRefCnt {
- public:
-    ThreadSafeAutoRefCnt() : mValue(0) {}
-    ThreadSafeAutoRefCnt(nsrefcnt aValue) : mValue(aValue) {}
-    
-    // only support prefix increment/decrement
-    MOZ_ALWAYS_INLINE nsrefcnt operator++() { return ++mValue; }
-    MOZ_ALWAYS_INLINE nsrefcnt operator--() { return --mValue; }
+class ThreadSafeAutoRefCnt
+{
+public:
+  ThreadSafeAutoRefCnt() : mValue(0) {}
+  explicit ThreadSafeAutoRefCnt(nsrefcnt aValue) : mValue(aValue) {}
 
-    MOZ_ALWAYS_INLINE nsrefcnt operator=(nsrefcnt aValue) { return (mValue = aValue); }
-    MOZ_ALWAYS_INLINE operator nsrefcnt() const { return mValue; }
-    MOZ_ALWAYS_INLINE nsrefcnt get() const { return mValue; }
+  // only support prefix increment/decrement
+  MOZ_ALWAYS_INLINE nsrefcnt operator++() { return ++mValue; }
+  MOZ_ALWAYS_INLINE nsrefcnt operator--() { return --mValue; }
 
-    static const bool isThreadSafe = true;
- private:
-    nsrefcnt operator++(int) MOZ_DELETE;
-    nsrefcnt operator--(int) MOZ_DELETE;
-    // In theory, RelaseAcquire consistency (but no weaker) is sufficient for
-    // the counter. Making it weaker could speed up builds on ARM (but not x86),
-    // but could break pre-existing code that assumes sequential consistency.
-    Atomic<nsrefcnt> mValue;
+  MOZ_ALWAYS_INLINE nsrefcnt operator=(nsrefcnt aValue)
+  {
+    return (mValue = aValue);
+  }
+  MOZ_ALWAYS_INLINE operator nsrefcnt() const { return mValue; }
+  MOZ_ALWAYS_INLINE nsrefcnt get() const { return mValue; }
+
+  static const bool isThreadSafe = true;
+private:
+  nsrefcnt operator++(int) = delete;
+  nsrefcnt operator--(int) = delete;
+  // In theory, RelaseAcquire consistency (but no weaker) is sufficient for
+  // the counter. Making it weaker could speed up builds on ARM (but not x86),
+  // but could break pre-existing code that assumes sequential consistency.
+  Atomic<nsrefcnt> mValue;
 };
 }
 #endif
@@ -282,9 +385,9 @@ class ThreadSafeAutoRefCnt {
 #define NS_DECL_ISUPPORTS                                                     \
 public:                                                                       \
   NS_IMETHOD QueryInterface(REFNSIID aIID,                                    \
-                            void** aInstancePtr);                             \
-  NS_IMETHOD_(nsrefcnt) AddRef(void);                                         \
-  NS_IMETHOD_(nsrefcnt) Release(void);                                        \
+                            void** aInstancePtr) MOZ_OVERRIDE;                \
+  NS_IMETHOD_(MozExternalRefCountType) AddRef(void) MOZ_OVERRIDE;             \
+  NS_IMETHOD_(MozExternalRefCountType) Release(void) MOZ_OVERRIDE;            \
 protected:                                                                    \
   nsAutoRefCnt mRefCnt;                                                       \
   NS_DECL_OWNINGTHREAD                                                        \
@@ -293,9 +396,9 @@ public:
 #define NS_DECL_THREADSAFE_ISUPPORTS                                          \
 public:                                                                       \
   NS_IMETHOD QueryInterface(REFNSIID aIID,                                    \
-                            void** aInstancePtr);                             \
-  NS_IMETHOD_(nsrefcnt) AddRef(void);                                         \
-  NS_IMETHOD_(nsrefcnt) Release(void);                                        \
+                            void** aInstancePtr) MOZ_OVERRIDE;                \
+  NS_IMETHOD_(MozExternalRefCountType) AddRef(void) MOZ_OVERRIDE;             \
+  NS_IMETHOD_(MozExternalRefCountType) Release(void) MOZ_OVERRIDE;            \
 protected:                                                                    \
   ::mozilla::ThreadSafeAutoRefCnt mRefCnt;                                    \
   NS_DECL_OWNINGTHREAD                                                        \
@@ -304,9 +407,9 @@ public:
 #define NS_DECL_CYCLE_COLLECTING_ISUPPORTS                                    \
 public:                                                                       \
   NS_IMETHOD QueryInterface(REFNSIID aIID,                                    \
-                            void** aInstancePtr);                             \
-  NS_IMETHOD_(nsrefcnt) AddRef(void);                                         \
-  NS_IMETHOD_(nsrefcnt) Release(void);                                        \
+                            void** aInstancePtr) MOZ_OVERRIDE;                \
+  NS_IMETHOD_(MozExternalRefCountType) AddRef(void) MOZ_OVERRIDE;             \
+  NS_IMETHOD_(MozExternalRefCountType) Release(void) MOZ_OVERRIDE;            \
   NS_IMETHOD_(void) DeleteCycleCollectable(void);                             \
 protected:                                                                    \
   nsCycleCollectingAutoRefCnt mRefCnt;                                        \
@@ -322,6 +425,7 @@ public:
  */
 
 #define NS_IMPL_CC_NATIVE_ADDREF_BODY(_class)                                 \
+    MOZ_ASSERT_TYPE_OK_FOR_REFCOUNTING(_class)                                \
     MOZ_ASSERT(int32_t(mRefCnt) >= 0, "illegal refcnt");                      \
     NS_ASSERT_OWNINGTHREAD(_class);                                           \
     nsrefcnt count =                                                          \
@@ -340,13 +444,13 @@ public:
     return count;
 
 #define NS_IMPL_CYCLE_COLLECTING_NATIVE_ADDREF(_class)                        \
-NS_METHOD_(nsrefcnt) _class::AddRef(void)                                     \
+NS_METHOD_(MozExternalRefCountType) _class::AddRef(void)                      \
 {                                                                             \
   NS_IMPL_CC_NATIVE_ADDREF_BODY(_class)                                       \
 }
 
 #define NS_IMPL_CYCLE_COLLECTING_NATIVE_RELEASE_WITH_LAST_RELEASE(_class, _last) \
-NS_METHOD_(nsrefcnt) _class::Release(void)                                       \
+NS_METHOD_(MozExternalRefCountType) _class::Release(void)                        \
 {                                                                                \
     MOZ_ASSERT(int32_t(mRefCnt) > 0, "dup release");                             \
     NS_ASSERT_OWNINGTHREAD(_class);                                              \
@@ -371,17 +475,17 @@ NS_METHOD_(nsrefcnt) _class::Release(void)                                      
 }
 
 #define NS_IMPL_CYCLE_COLLECTING_NATIVE_RELEASE(_class)                       \
-NS_METHOD_(nsrefcnt) _class::Release(void)                                    \
+NS_METHOD_(MozExternalRefCountType) _class::Release(void)                     \
 {                                                                             \
   NS_IMPL_CC_NATIVE_RELEASE_BODY(_class)                                      \
 }
 
 #define NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(_class)            \
 public:                                                                       \
-  NS_METHOD_(nsrefcnt) AddRef(void) {                                         \
+  NS_METHOD_(MozExternalRefCountType) AddRef(void) {                          \
     NS_IMPL_CC_NATIVE_ADDREF_BODY(_class)                                     \
   }                                                                           \
-  NS_METHOD_(nsrefcnt) Release(void) {                                        \
+  NS_METHOD_(MozExternalRefCountType) Release(void) {                         \
     NS_IMPL_CC_NATIVE_RELEASE_BODY(_class)                                    \
   }                                                                           \
 protected:                                                                    \
@@ -393,28 +497,23 @@ public:
 ///////////////////////////////////////////////////////////////////////////////
 
 /**
- * Previously used to initialize the reference count, but no longer needed.
- *
- * DEPRECATED.
- */
-#define NS_INIT_ISUPPORTS() ((void)0)
-
-/**
  * Use this macro to declare and implement the AddRef & Release methods for a
  * given non-XPCOM <i>_class</i>.
  *
  * @param _class The name of the class implementing the method
+ * @param optional MOZ_OVERRIDE Mark the AddRef & Release methods as overrides.
  */
-#define NS_INLINE_DECL_REFCOUNTING(_class)                                    \
+#define NS_INLINE_DECL_REFCOUNTING(_class, ...)                               \
 public:                                                                       \
-  NS_METHOD_(nsrefcnt) AddRef(void) {                                         \
+  NS_METHOD_(MozExternalRefCountType) AddRef(void) __VA_ARGS__ {              \
+    MOZ_ASSERT_TYPE_OK_FOR_REFCOUNTING(_class)                                \
     MOZ_ASSERT(int32_t(mRefCnt) >= 0, "illegal refcnt");                      \
     NS_ASSERT_OWNINGTHREAD(_class);                                           \
     ++mRefCnt;                                                                \
     NS_LOG_ADDREF(this, mRefCnt, #_class, sizeof(*this));                     \
     return mRefCnt;                                                           \
   }                                                                           \
-  NS_METHOD_(nsrefcnt) Release(void) {                                        \
+  NS_METHOD_(MozExternalRefCountType) Release(void) __VA_ARGS__ {             \
     MOZ_ASSERT(int32_t(mRefCnt) > 0, "dup release");                          \
     NS_ASSERT_OWNINGTHREAD(_class);                                           \
     --mRefCnt;                                                                \
@@ -440,15 +539,16 @@ public:
  *
  * @param _class The name of the class implementing the method
  */
-#define NS_INLINE_DECL_THREADSAFE_REFCOUNTING(_class)                         \
+#define NS_INLINE_DECL_THREADSAFE_REFCOUNTING(_class, ...)                    \
 public:                                                                       \
-  NS_METHOD_(nsrefcnt) AddRef(void) {                                         \
+  NS_METHOD_(MozExternalRefCountType) AddRef(void) __VA_ARGS__ {              \
+    MOZ_ASSERT_TYPE_OK_FOR_REFCOUNTING(_class)                                \
     MOZ_ASSERT(int32_t(mRefCnt) >= 0, "illegal refcnt");                      \
     nsrefcnt count = ++mRefCnt;                                               \
     NS_LOG_ADDREF(this, count, #_class, sizeof(*this));                       \
     return (nsrefcnt) count;                                                  \
   }                                                                           \
-  NS_METHOD_(nsrefcnt) Release(void) {                                        \
+  NS_METHOD_(MozExternalRefCountType) Release(void) __VA_ARGS__ {             \
     MOZ_ASSERT(int32_t(mRefCnt) > 0, "dup release");                          \
     nsrefcnt count = --mRefCnt;                                               \
     NS_LOG_RELEASE(this, count, #_class);                                     \
@@ -467,8 +567,9 @@ public:
  * @param _class The name of the class implementing the method
  */
 #define NS_IMPL_ADDREF(_class)                                                \
-NS_IMETHODIMP_(nsrefcnt) _class::AddRef(void)                                 \
+NS_IMETHODIMP_(MozExternalRefCountType) _class::AddRef(void)                  \
 {                                                                             \
+  MOZ_ASSERT_TYPE_OK_FOR_REFCOUNTING(_class)                                  \
   MOZ_ASSERT(int32_t(mRefCnt) >= 0, "illegal refcnt");                        \
   if (!mRefCnt.isThreadSafe)                                                  \
     NS_ASSERT_OWNINGTHREAD(_class);                                           \
@@ -485,8 +586,9 @@ NS_IMETHODIMP_(nsrefcnt) _class::AddRef(void)                                 \
  * @param _aggregator the owning/containing object
  */
 #define NS_IMPL_ADDREF_USING_AGGREGATOR(_class, _aggregator)                  \
-NS_IMETHODIMP_(nsrefcnt) _class::AddRef(void)                                 \
+NS_IMETHODIMP_(MozExternalRefCountType) _class::AddRef(void)                  \
 {                                                                             \
+  MOZ_ASSERT_TYPE_OK_FOR_REFCOUNTING(_class)                                  \
   NS_PRECONDITION(_aggregator, "null aggregator");                            \
   return (_aggregator)->AddRef();                                             \
 }
@@ -511,7 +613,7 @@ NS_IMETHODIMP_(nsrefcnt) _class::AddRef(void)                                 \
  * of object allocated with placement new).
  */
 #define NS_IMPL_RELEASE_WITH_DESTROY(_class, _destroy)                        \
-NS_IMETHODIMP_(nsrefcnt) _class::Release(void)                                \
+NS_IMETHODIMP_(MozExternalRefCountType) _class::Release(void)                 \
 {                                                                             \
   MOZ_ASSERT(int32_t(mRefCnt) > 0, "dup release");                            \
   if (!mRefCnt.isThreadSafe)                                                  \
@@ -552,7 +654,7 @@ NS_IMETHODIMP_(nsrefcnt) _class::Release(void)                                \
  * @param _aggregator the owning/containing object
  */
 #define NS_IMPL_RELEASE_USING_AGGREGATOR(_class, _aggregator)                 \
-NS_IMETHODIMP_(nsrefcnt) _class::Release(void)                                \
+NS_IMETHODIMP_(MozExternalRefCountType) _class::Release(void)                 \
 {                                                                             \
   NS_PRECONDITION(_aggregator, "null aggregator");                            \
   return (_aggregator)->Release();                                            \
@@ -560,8 +662,9 @@ NS_IMETHODIMP_(nsrefcnt) _class::Release(void)                                \
 
 
 #define NS_IMPL_CYCLE_COLLECTING_ADDREF(_class)                               \
-NS_IMETHODIMP_(nsrefcnt) _class::AddRef(void)                                 \
+NS_IMETHODIMP_(MozExternalRefCountType) _class::AddRef(void)                  \
 {                                                                             \
+  MOZ_ASSERT_TYPE_OK_FOR_REFCOUNTING(_class)                                  \
   MOZ_ASSERT(int32_t(mRefCnt) >= 0, "illegal refcnt");                        \
   NS_ASSERT_OWNINGTHREAD(_class);                                             \
   nsISupports *base = NS_CYCLE_COLLECTION_CLASSNAME(_class)::Upcast(this);    \
@@ -571,7 +674,7 @@ NS_IMETHODIMP_(nsrefcnt) _class::AddRef(void)                                 \
 }
 
 #define NS_IMPL_CYCLE_COLLECTING_RELEASE_WITH_DESTROY(_class, _destroy)       \
-NS_IMETHODIMP_(nsrefcnt) _class::Release(void)                                \
+NS_IMETHODIMP_(MozExternalRefCountType) _class::Release(void)                 \
 {                                                                             \
   MOZ_ASSERT(int32_t(mRefCnt) > 0, "dup release");                            \
   NS_ASSERT_OWNINGTHREAD(_class);                                             \
@@ -591,7 +694,7 @@ NS_IMETHODIMP_(void) _class::DeleteCycleCollectable(void)                     \
 // _LAST_RELEASE can be useful when certain resources should be released
 // as soon as we know the object will be deleted.
 #define NS_IMPL_CYCLE_COLLECTING_RELEASE_WITH_LAST_RELEASE(_class, _last)     \
-NS_IMETHODIMP_(nsrefcnt) _class::Release(void)                                \
+NS_IMETHODIMP_(MozExternalRefCountType) _class::Release(void)                 \
 {                                                                             \
   MOZ_ASSERT(int32_t(mRefCnt) > 0, "dup release");                            \
   NS_ASSERT_OWNINGTHREAD(_class);                                             \
@@ -634,13 +737,13 @@ NS_IMETHODIMP_(void) _class::DeleteCycleCollectable(void)                     \
 
 struct QITableEntry
 {
-  const nsIID *iid;     // null indicates end of the QITableEntry array
+  const nsIID* iid;     // null indicates end of the QITableEntry array
   int32_t   offset;
 };
 
-NS_COM_GLUE nsresult NS_FASTCALL
+nsresult NS_FASTCALL
 NS_TableDrivenQI(void* aThis, REFNSIID aIID,
-                 void **aInstancePtr, const QITableEntry* entries);
+                 void** aInstancePtr, const QITableEntry* aEntries);
 
 /**
  * Implement table-driven queryinterface
@@ -657,14 +760,14 @@ NS_IMETHODIMP _class::QueryInterface(REFNSIID aIID, void** aInstancePtr)      \
   static const QITableEntry table[] = {
 
 #define NS_INTERFACE_TABLE_ENTRY(_class, _interface)                          \
-  { &_interface::COMTypeInfo<int>::kIID,                                      \
+  { &NS_GET_IID(_interface),                                                  \
     int32_t(reinterpret_cast<char*>(                                          \
                         static_cast<_interface*>((_class*) 0x1000)) -         \
                reinterpret_cast<char*>((_class*) 0x1000))                     \
   },
 
 #define NS_INTERFACE_TABLE_ENTRY_AMBIGUOUS(_class, _interface, _implClass)    \
-  { &_interface::COMTypeInfo<int>::kIID,                                      \
+  { &NS_GET_IID(_interface),                                                  \
     int32_t(reinterpret_cast<char*>(                                          \
                         static_cast<_interface*>(                             \
                                        static_cast<_implClass*>(              \
@@ -795,12 +898,12 @@ NS_IMETHODIMP _class::QueryInterface(REFNSIID aIID, void** aInstancePtr)      \
   NS_IMPL_QUERY_TAIL_GUTS
 
 
-  /*
-    This is the new scheme.  Using this notation now will allow us to switch to
-    a table driven mechanism when it's ready.  Note the difference between this
-    and the (currently) underlying NS_IMPL_QUERY_INTERFACE mechanism.  You must
-    explicitly mention |nsISupports| when using the interface maps.
-  */
+/*
+  This is the new scheme.  Using this notation now will allow us to switch to
+  a table driven mechanism when it's ready.  Note the difference between this
+  and the (currently) underlying NS_IMPL_QUERY_INTERFACE mechanism.  You must
+  explicitly mention |nsISupports| when using the interface maps.
+*/
 #define NS_INTERFACE_MAP_BEGIN(_implClass)      NS_IMPL_QUERY_HEAD(_implClass)
 #define NS_INTERFACE_MAP_ENTRY(_interface)      NS_IMPL_QUERY_BODY(_interface)
 #define NS_INTERFACE_MAP_ENTRY_CONDITIONAL(_interface, condition)             \
@@ -821,146 +924,12 @@ NS_IMETHODIMP _class::QueryInterface(REFNSIID aIID, void** aInstancePtr)      \
     NS_INTERFACE_TABLE_ENTRY(_class, nsISupports)                             \
   NS_INTERFACE_TABLE_END
 
-#define NS_INTERFACE_TABLE1(_class, _i1)                                      \
+#define NS_INTERFACE_TABLE(aClass, ...)                                       \
+  MOZ_STATIC_ASSERT_VALID_ARG_COUNT(__VA_ARGS__);                             \
   NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i1)                                     \
-    NS_INTERFACE_TABLE_ENTRY_AMBIGUOUS(_class, nsISupports, _i1)              \
-  NS_INTERFACE_TABLE_END
-
-#define NS_INTERFACE_TABLE2(_class, _i1, _i2)                                 \
-  NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i1)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i2)                                     \
-    NS_INTERFACE_TABLE_ENTRY_AMBIGUOUS(_class, nsISupports, _i1)              \
-  NS_INTERFACE_TABLE_END
-
-#define NS_INTERFACE_TABLE3(_class, _i1, _i2, _i3)                            \
-  NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i1)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i2)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i3)                                     \
-    NS_INTERFACE_TABLE_ENTRY_AMBIGUOUS(_class, nsISupports, _i1)              \
-  NS_INTERFACE_TABLE_END
-
-#define NS_INTERFACE_TABLE4(_class, _i1, _i2, _i3, _i4)                       \
-  NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i1)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i2)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i3)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i4)                                     \
-    NS_INTERFACE_TABLE_ENTRY_AMBIGUOUS(_class, nsISupports, _i1)              \
-  NS_INTERFACE_TABLE_END
-
-#define NS_INTERFACE_TABLE5(_class, _i1, _i2, _i3, _i4, _i5)                  \
-  NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i1)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i2)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i3)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i4)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i5)                                     \
-    NS_INTERFACE_TABLE_ENTRY_AMBIGUOUS(_class, nsISupports, _i1)              \
-  NS_INTERFACE_TABLE_END
-
-#define NS_INTERFACE_TABLE6(_class, _i1, _i2, _i3, _i4, _i5, _i6)             \
-  NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i1)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i2)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i3)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i4)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i5)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i6)                                     \
-    NS_INTERFACE_TABLE_ENTRY_AMBIGUOUS(_class, nsISupports, _i1)              \
-  NS_INTERFACE_TABLE_END
-
-#define NS_INTERFACE_TABLE7(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7)        \
-  NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i1)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i2)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i3)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i4)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i5)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i6)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i7)                                     \
-    NS_INTERFACE_TABLE_ENTRY_AMBIGUOUS(_class, nsISupports, _i1)              \
-  NS_INTERFACE_TABLE_END
-
-#define NS_INTERFACE_TABLE8(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7, _i8)   \
-  NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i1)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i2)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i3)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i4)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i5)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i6)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i7)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i8)                                     \
-    NS_INTERFACE_TABLE_ENTRY_AMBIGUOUS(_class, nsISupports, _i1)              \
-  NS_INTERFACE_TABLE_END
-
-#define NS_INTERFACE_TABLE9(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7,        \
-                            _i8, _i9)                                         \
-  NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i1)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i2)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i3)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i4)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i5)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i6)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i7)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i8)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i9)                                     \
-    NS_INTERFACE_TABLE_ENTRY_AMBIGUOUS(_class, nsISupports, _i1)              \
-  NS_INTERFACE_TABLE_END
-
-#define NS_INTERFACE_TABLE10(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7,       \
-                             _i8, _i9, _i10)                                  \
-  NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i1)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i2)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i3)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i4)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i5)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i6)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i7)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i8)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i9)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i10)                                    \
-    NS_INTERFACE_TABLE_ENTRY_AMBIGUOUS(_class, nsISupports, _i1)              \
-  NS_INTERFACE_TABLE_END
-
-#define NS_INTERFACE_TABLE11(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7,       \
-                             _i8, _i9, _i10, _i11)                            \
-  NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i1)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i2)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i3)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i4)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i5)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i6)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i7)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i8)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i9)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i10)                                    \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i11)                                    \
-    NS_INTERFACE_TABLE_ENTRY_AMBIGUOUS(_class, nsISupports, _i1)              \
-  NS_INTERFACE_TABLE_END
-
-#define NS_INTERFACE_TABLE12(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7,       \
-                             _i8, _i9, _i10, _i11, _i12)                      \
-  NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i1)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i2)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i3)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i4)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i5)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i6)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i7)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i8)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i9)                                     \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i10)                                    \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i11)                                    \
-    NS_INTERFACE_TABLE_ENTRY(_class, _i12)                                    \
-    NS_INTERFACE_TABLE_ENTRY_AMBIGUOUS(_class, nsISupports, _i1)              \
+    MOZ_FOR_EACH(NS_INTERFACE_TABLE_ENTRY, (aClass,), (__VA_ARGS__))          \
+    NS_INTERFACE_TABLE_ENTRY_AMBIGUOUS(aClass, nsISupports,                   \
+                                       MOZ_ARG_1(__VA_ARGS__))                \
   NS_INTERFACE_TABLE_END
 
 #define NS_IMPL_QUERY_INTERFACE0(_class)                                      \
@@ -968,74 +937,10 @@ NS_IMETHODIMP _class::QueryInterface(REFNSIID aIID, void** aInstancePtr)      \
   NS_INTERFACE_TABLE0(_class)                                                 \
   NS_INTERFACE_TABLE_TAIL
 
-#define NS_IMPL_QUERY_INTERFACE1(_class, _i1)                                 \
-  NS_INTERFACE_TABLE_HEAD(_class)                                             \
-  NS_INTERFACE_TABLE1(_class, _i1)                                            \
+#define NS_IMPL_QUERY_INTERFACE(aClass, ...)                                  \
+  NS_INTERFACE_TABLE_HEAD(aClass)                                             \
+  NS_INTERFACE_TABLE(aClass, __VA_ARGS__)                                     \
   NS_INTERFACE_TABLE_TAIL
-
-#define NS_IMPL_QUERY_INTERFACE2(_class, _i1, _i2)                            \
-  NS_INTERFACE_TABLE_HEAD(_class)                                             \
-  NS_INTERFACE_TABLE2(_class, _i1, _i2)                                       \
-  NS_INTERFACE_TABLE_TAIL
-
-#define NS_IMPL_QUERY_INTERFACE3(_class, _i1, _i2, _i3)                       \
-  NS_INTERFACE_TABLE_HEAD(_class)                                             \
-  NS_INTERFACE_TABLE3(_class, _i1, _i2, _i3)                                  \
-  NS_INTERFACE_TABLE_TAIL
-
-#define NS_IMPL_QUERY_INTERFACE4(_class, _i1, _i2, _i3, _i4)                  \
-  NS_INTERFACE_TABLE_HEAD(_class)                                             \
-  NS_INTERFACE_TABLE4(_class, _i1, _i2, _i3, _i4)                             \
-  NS_INTERFACE_TABLE_TAIL
-
-#define NS_IMPL_QUERY_INTERFACE5(_class, _i1, _i2, _i3, _i4, _i5)             \
-  NS_INTERFACE_TABLE_HEAD(_class)                                             \
-  NS_INTERFACE_TABLE5(_class, _i1, _i2, _i3, _i4, _i5)                        \
-  NS_INTERFACE_TABLE_TAIL
-
-#define NS_IMPL_QUERY_INTERFACE6(_class, _i1, _i2, _i3, _i4, _i5, _i6)        \
-  NS_INTERFACE_TABLE_HEAD(_class)                                             \
-  NS_INTERFACE_TABLE6(_class, _i1, _i2, _i3, _i4, _i5, _i6)                   \
-  NS_INTERFACE_TABLE_TAIL
-
-#define NS_IMPL_QUERY_INTERFACE7(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7)   \
-  NS_INTERFACE_TABLE_HEAD(_class)                                             \
-  NS_INTERFACE_TABLE7(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7)              \
-  NS_INTERFACE_TABLE_TAIL
-
-#define NS_IMPL_QUERY_INTERFACE8(_class, _i1, _i2, _i3, _i4, _i5, _i6,        \
-                                 _i7, _i8)                                    \
-  NS_INTERFACE_TABLE_HEAD(_class)                                             \
-  NS_INTERFACE_TABLE8(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7, _i8)         \
-  NS_INTERFACE_TABLE_TAIL
-
-#define NS_IMPL_QUERY_INTERFACE9(_class, _i1, _i2, _i3, _i4, _i5, _i6,        \
-                                 _i7, _i8, _i9)                               \
-  NS_INTERFACE_TABLE_HEAD(_class)                                             \
-  NS_INTERFACE_TABLE9(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7, _i8, _i9)    \
-  NS_INTERFACE_TABLE_TAIL
-
-#define NS_IMPL_QUERY_INTERFACE10(_class, _i1, _i2, _i3, _i4, _i5, _i6,       \
-                                  _i7, _i8, _i9, _i10)                        \
-  NS_INTERFACE_TABLE_HEAD(_class)                                             \
-  NS_INTERFACE_TABLE10(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7, _i8,        \
-                       _i9, _i10)                                             \
-  NS_INTERFACE_TABLE_TAIL
-
-#define NS_IMPL_QUERY_INTERFACE11(_class, _i1, _i2, _i3, _i4, _i5, _i6,       \
-                                  _i7, _i8, _i9, _i10, _i11)                  \
-  NS_INTERFACE_TABLE_HEAD(_class)                                             \
-  NS_INTERFACE_TABLE11(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7, _i8,        \
-                       _i9, _i10, _i11)                                       \
-  NS_INTERFACE_TABLE_TAIL
-
-#define NS_IMPL_QUERY_INTERFACE12(_class, _i1, _i2, _i3, _i4, _i5, _i6,       \
-                                  _i7, _i8, _i9, _i10, _i11, _i12)            \
-  NS_INTERFACE_TABLE_HEAD(_class)                                             \
-  NS_INTERFACE_TABLE12(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7, _i8,        \
-                       _i9, _i10, _i11, _i12)                                 \
-  NS_INTERFACE_TABLE_TAIL
-
 
 /**
  * Declare that you're going to inherit from something that already
@@ -1052,9 +957,9 @@ NS_IMETHODIMP _class::QueryInterface(REFNSIID aIID, void** aInstancePtr)      \
 #define NS_DECL_ISUPPORTS_INHERITED                                           \
 public:                                                                       \
   NS_IMETHOD QueryInterface(REFNSIID aIID,                                    \
-                            void** aInstancePtr);                             \
-  NS_IMETHOD_(nsrefcnt) AddRef(void);                                         \
-  NS_IMETHOD_(nsrefcnt) Release(void);                                        \
+                            void** aInstancePtr) MOZ_OVERRIDE;                \
+  NS_IMETHOD_(MozExternalRefCountType) AddRef(void) MOZ_OVERRIDE;             \
+  NS_IMETHOD_(MozExternalRefCountType) Release(void) MOZ_OVERRIDE;            \
 
 /**
  * These macros can be used in conjunction with NS_DECL_ISUPPORTS_INHERITED
@@ -1065,15 +970,16 @@ public:                                                                       \
  */
 
 #define NS_IMPL_ADDREF_INHERITED(Class, Super)                                \
-NS_IMETHODIMP_(nsrefcnt) Class::AddRef(void)                                  \
+NS_IMETHODIMP_(MozExternalRefCountType) Class::AddRef(void)                   \
 {                                                                             \
+  MOZ_ASSERT_TYPE_OK_FOR_REFCOUNTING(Class)                                   \
   nsrefcnt r = Super::AddRef();                                               \
   NS_LOG_ADDREF(this, r, #Class, sizeof(*this));                              \
   return r;                                                                   \
 }
 
 #define NS_IMPL_RELEASE_INHERITED(Class, Super)                               \
-NS_IMETHODIMP_(nsrefcnt) Class::Release(void)                                 \
+NS_IMETHODIMP_(MozExternalRefCountType) Class::Release(void)                  \
 {                                                                             \
   nsrefcnt r = Super::Release();                                              \
   NS_LOG_RELEASE(this, r, #Class);                                            \
@@ -1085,206 +991,35 @@ NS_IMETHODIMP_(nsrefcnt) Class::Release(void)                                 \
  * class might be aggregated.
  */
 #define NS_IMPL_NONLOGGING_ADDREF_INHERITED(Class, Super)                     \
-NS_IMETHODIMP_(nsrefcnt) Class::AddRef(void)                                  \
+NS_IMETHODIMP_(MozExternalRefCountType) Class::AddRef(void)                   \
 {                                                                             \
+  MOZ_ASSERT_TYPE_OK_FOR_REFCOUNTING(Class)                                   \
   return Super::AddRef();                                                     \
 }
 
 #define NS_IMPL_NONLOGGING_RELEASE_INHERITED(Class, Super)                    \
-NS_IMETHODIMP_(nsrefcnt) Class::Release(void)                                 \
+NS_IMETHODIMP_(MozExternalRefCountType) Class::Release(void)                  \
 {                                                                             \
   return Super::Release();                                                    \
 }
 
 #define NS_INTERFACE_TABLE_INHERITED0(Class) /* Nothing to do here */
 
-#define NS_INTERFACE_TABLE_INHERITED1(Class, i1)                              \
+#define NS_INTERFACE_TABLE_INHERITED(aClass, ...)                             \
+  MOZ_STATIC_ASSERT_VALID_ARG_COUNT(__VA_ARGS__);                             \
   NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(Class, i1)                                       \
+    MOZ_FOR_EACH(NS_INTERFACE_TABLE_ENTRY, (aClass,), (__VA_ARGS__))          \
   NS_INTERFACE_TABLE_END
 
-#define NS_INTERFACE_TABLE_INHERITED2(Class, i1, i2)                          \
-  NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(Class, i1)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i2)                                       \
-  NS_INTERFACE_TABLE_END
+#define NS_IMPL_QUERY_INTERFACE_INHERITED0(aClass, aSuper)                    \
+  NS_INTERFACE_TABLE_HEAD(aClass)                                             \
+  NS_INTERFACE_TABLE_INHERITED0(aClass)                                       \
+  NS_INTERFACE_TABLE_TAIL_INHERITING(aSuper)
 
-#define NS_INTERFACE_TABLE_INHERITED3(Class, i1, i2, i3)                      \
-  NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(Class, i1)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i2)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i3)                                       \
-  NS_INTERFACE_TABLE_END
-
-#define NS_INTERFACE_TABLE_INHERITED4(Class, i1, i2, i3, i4)                  \
-  NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(Class, i1)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i2)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i3)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i4)                                       \
-  NS_INTERFACE_TABLE_END
-
-#define NS_INTERFACE_TABLE_INHERITED5(Class, i1, i2, i3, i4, i5)              \
-  NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(Class, i1)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i2)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i3)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i4)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i5)                                       \
-  NS_INTERFACE_TABLE_END
-
-#define NS_INTERFACE_TABLE_INHERITED6(Class, i1, i2, i3, i4, i5, i6)          \
-  NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(Class, i1)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i2)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i3)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i4)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i5)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i6)                                       \
-  NS_INTERFACE_TABLE_END
-
-#define NS_INTERFACE_TABLE_INHERITED7(Class, i1, i2, i3, i4, i5, i6, i7)      \
-  NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(Class, i1)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i2)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i3)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i4)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i5)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i6)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i7)                                       \
-  NS_INTERFACE_TABLE_END
-
-#define NS_INTERFACE_TABLE_INHERITED8(Class, i1, i2, i3, i4, i5, i6, i7, i8)  \
-  NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(Class, i1)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i2)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i3)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i4)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i5)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i6)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i7)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i8)                                       \
-  NS_INTERFACE_TABLE_END
-
-#define NS_INTERFACE_TABLE_INHERITED9(Class, i1, i2, i3, i4, i5, i6, i7,      \
-                                      i8, i9)                                 \
-  NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(Class, i1)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i2)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i3)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i4)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i5)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i6)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i7)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i8)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i9)                                       \
-  NS_INTERFACE_TABLE_END
-
-#define NS_INTERFACE_TABLE_INHERITED10(Class, i1, i2, i3, i4, i5, i6, i7,     \
-                                      i8, i9, i10)                            \
-  NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(Class, i1)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i2)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i3)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i4)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i5)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i6)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i7)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i8)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i9)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i10)                                      \
-  NS_INTERFACE_TABLE_END
-
-#define NS_INTERFACE_TABLE_INHERITED11(Class, i1, i2, i3, i4, i5, i6, i7,     \
-                                      i8, i9, i10, i11)                       \
-  NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(Class, i1)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i2)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i3)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i4)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i5)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i6)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i7)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i8)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i9)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i10)                                      \
-    NS_INTERFACE_TABLE_ENTRY(Class, i11)                                      \
-  NS_INTERFACE_TABLE_END
-
-#define NS_INTERFACE_TABLE_INHERITED12(Class, i1, i2, i3, i4, i5, i6, i7,     \
-                                      i8, i9, i10, i11, i12)                  \
-  NS_INTERFACE_TABLE_BEGIN                                                    \
-    NS_INTERFACE_TABLE_ENTRY(Class, i1)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i2)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i3)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i4)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i5)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i6)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i7)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i8)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i9)                                       \
-    NS_INTERFACE_TABLE_ENTRY(Class, i10)                                      \
-    NS_INTERFACE_TABLE_ENTRY(Class, i11)                                      \
-    NS_INTERFACE_TABLE_ENTRY(Class, i12)                                      \
-  NS_INTERFACE_TABLE_END
-
-#define NS_IMPL_QUERY_INTERFACE_INHERITED0(Class, Super)                      \
-  NS_INTERFACE_TABLE_HEAD(Class)                                              \
-  NS_INTERFACE_TABLE_INHERITED0(Class)                                        \
-  NS_INTERFACE_TABLE_TAIL_INHERITING(Super)
-
-#define NS_IMPL_QUERY_INTERFACE_INHERITED1(Class, Super, i1)                  \
-  NS_INTERFACE_TABLE_HEAD(Class)                                              \
-  NS_INTERFACE_TABLE_INHERITED1(Class, i1)                                    \
-  NS_INTERFACE_TABLE_TAIL_INHERITING(Super)
-
-#define NS_IMPL_QUERY_INTERFACE_INHERITED2(Class, Super, i1, i2)              \
-  NS_INTERFACE_TABLE_HEAD(Class)                                              \
-  NS_INTERFACE_TABLE_INHERITED2(Class, i1, i2)                                \
-  NS_INTERFACE_TABLE_TAIL_INHERITING(Super)
-
-#define NS_IMPL_QUERY_INTERFACE_INHERITED3(Class, Super, i1, i2, i3)          \
-  NS_INTERFACE_TABLE_HEAD(Class)                                              \
-  NS_INTERFACE_TABLE_INHERITED3(Class, i1, i2, i3)                            \
-  NS_INTERFACE_TABLE_TAIL_INHERITING(Super)
-
-#define NS_IMPL_QUERY_INTERFACE_INHERITED4(Class, Super, i1, i2, i3, i4)      \
-  NS_INTERFACE_TABLE_HEAD(Class)                                              \
-  NS_INTERFACE_TABLE_INHERITED4(Class, i1, i2, i3, i4)                        \
-  NS_INTERFACE_TABLE_TAIL_INHERITING(Super)
-
-#define NS_IMPL_QUERY_INTERFACE_INHERITED5(Class,Super,i1,i2,i3,i4,i5)        \
-  NS_INTERFACE_TABLE_HEAD(Class)                                              \
-  NS_INTERFACE_TABLE_INHERITED5(Class, i1, i2, i3, i4, i5)                    \
-  NS_INTERFACE_TABLE_TAIL_INHERITING(Super)
-
-#define NS_IMPL_QUERY_INTERFACE_INHERITED6(Class,Super,i1,i2,i3,i4,i5,i6)     \
-  NS_INTERFACE_TABLE_HEAD(Class)                                              \
-  NS_INTERFACE_TABLE_INHERITED6(Class, i1, i2, i3, i4, i5, i6)                \
-  NS_INTERFACE_TABLE_TAIL_INHERITING(Super)
-
-#define NS_IMPL_QUERY_INTERFACE_INHERITED7(Class,Super,i1,i2,i3,i4,i5,i6,i7)  \
-  NS_INTERFACE_TABLE_HEAD(Class)                                              \
-  NS_INTERFACE_TABLE_INHERITED7(Class, i1, i2, i3, i4, i5, i6, i7)            \
-  NS_INTERFACE_TABLE_TAIL_INHERITING(Super)
-
-#define NS_IMPL_QUERY_INTERFACE_INHERITED8(Class,Super,i1,i2,i3,i4,i5,i6,     \
-                                           i7,i8)                             \
-  NS_INTERFACE_TABLE_HEAD(Class)                                              \
-  NS_INTERFACE_TABLE_INHERITED8(Class, i1, i2, i3, i4, i5, i6, i7, i8)        \
-  NS_INTERFACE_TABLE_TAIL_INHERITING(Super)
-
-#define NS_IMPL_QUERY_INTERFACE_INHERITED9(Class,Super,i1,i2,i3,i4,i5,i6,     \
-                                           i7,i8,i9)                          \
-  NS_INTERFACE_TABLE_HEAD(Class)                                              \
-  NS_INTERFACE_TABLE_INHERITED9(Class, i1, i2, i3, i4, i5, i6, i7, i8, i9)    \
-  NS_INTERFACE_TABLE_TAIL_INHERITING(Super)
-
-#define NS_IMPL_QUERY_INTERFACE_INHERITED10(Class,Super,i1,i2,i3,i4,i5,i6,       \
-                                            i7,i8,i9,i10)                        \
-  NS_INTERFACE_TABLE_HEAD(Class)                                                 \
-  NS_INTERFACE_TABLE_INHERITED10(Class, i1, i2, i3, i4, i5, i6, i7, i8, i9, i10) \
-  NS_INTERFACE_TABLE_TAIL_INHERITING(Super)
+#define NS_IMPL_QUERY_INTERFACE_INHERITED(aClass, aSuper, ...)                \
+  NS_INTERFACE_TABLE_HEAD(aClass)                                             \
+  NS_INTERFACE_TABLE_INHERITED(aClass, __VA_ARGS__)                           \
+  NS_INTERFACE_TABLE_TAIL_INHERITING(aSuper)
 
 /**
  * Convenience macros for implementing all nsISupports methods for
@@ -1299,127 +1034,21 @@ NS_IMETHODIMP_(nsrefcnt) Class::Release(void)                                 \
   NS_IMPL_RELEASE(_class)                                                     \
   NS_IMPL_QUERY_INTERFACE0(_class)
 
-#define NS_IMPL_ISUPPORTS1(_class, _interface)                                \
-  NS_IMPL_ADDREF(_class)                                                      \
-  NS_IMPL_RELEASE(_class)                                                     \
-  NS_IMPL_QUERY_INTERFACE1(_class, _interface)
+#define NS_IMPL_ISUPPORTS(aClass, ...)                                        \
+  NS_IMPL_ADDREF(aClass)                                                      \
+  NS_IMPL_RELEASE(aClass)                                                     \
+  NS_IMPL_QUERY_INTERFACE(aClass, __VA_ARGS__)
 
-#define NS_IMPL_ISUPPORTS2(_class, _i1, _i2)                                  \
-  NS_IMPL_ADDREF(_class)                                                      \
-  NS_IMPL_RELEASE(_class)                                                     \
-  NS_IMPL_QUERY_INTERFACE2(_class, _i1, _i2)
+#define NS_IMPL_ISUPPORTS_INHERITED0(aClass, aSuper)                          \
+    NS_IMPL_QUERY_INTERFACE_INHERITED0(aClass, aSuper)                        \
+    NS_IMPL_ADDREF_INHERITED(aClass, aSuper)                                  \
+    NS_IMPL_RELEASE_INHERITED(aClass, aSuper)                                 \
 
-#define NS_IMPL_ISUPPORTS3(_class, _i1, _i2, _i3)                             \
-  NS_IMPL_ADDREF(_class)                                                      \
-  NS_IMPL_RELEASE(_class)                                                     \
-  NS_IMPL_QUERY_INTERFACE3(_class, _i1, _i2, _i3)
+#define NS_IMPL_ISUPPORTS_INHERITED(aClass, aSuper, ...)                      \
+  NS_IMPL_QUERY_INTERFACE_INHERITED(aClass, aSuper, __VA_ARGS__)              \
+  NS_IMPL_ADDREF_INHERITED(aClass, aSuper)                                    \
+  NS_IMPL_RELEASE_INHERITED(aClass, aSuper)
 
-#define NS_IMPL_ISUPPORTS4(_class, _i1, _i2, _i3, _i4)                        \
-  NS_IMPL_ADDREF(_class)                                                      \
-  NS_IMPL_RELEASE(_class)                                                     \
-  NS_IMPL_QUERY_INTERFACE4(_class, _i1, _i2, _i3, _i4)
-
-#define NS_IMPL_ISUPPORTS5(_class, _i1, _i2, _i3, _i4, _i5)                   \
-  NS_IMPL_ADDREF(_class)                                                      \
-  NS_IMPL_RELEASE(_class)                                                     \
-  NS_IMPL_QUERY_INTERFACE5(_class, _i1, _i2, _i3, _i4, _i5)
-
-#define NS_IMPL_ISUPPORTS6(_class, _i1, _i2, _i3, _i4, _i5, _i6)              \
-  NS_IMPL_ADDREF(_class)                                                      \
-  NS_IMPL_RELEASE(_class)                                                     \
-  NS_IMPL_QUERY_INTERFACE6(_class, _i1, _i2, _i3, _i4, _i5, _i6)
-
-#define NS_IMPL_ISUPPORTS7(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7)         \
-  NS_IMPL_ADDREF(_class)                                                      \
-  NS_IMPL_RELEASE(_class)                                                     \
-  NS_IMPL_QUERY_INTERFACE7(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7)
-
-#define NS_IMPL_ISUPPORTS8(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7, _i8)    \
-  NS_IMPL_ADDREF(_class)                                                      \
-  NS_IMPL_RELEASE(_class)                                                     \
-  NS_IMPL_QUERY_INTERFACE8(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7, _i8)
-
-#define NS_IMPL_ISUPPORTS9(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7, _i8,    \
-                           _i9)                                               \
-  NS_IMPL_ADDREF(_class)                                                      \
-  NS_IMPL_RELEASE(_class)                                                     \
-  NS_IMPL_QUERY_INTERFACE9(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7, _i8, _i9)
-
-#define NS_IMPL_ISUPPORTS10(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7, _i8,   \
-                            _i9, _i10)                                        \
-  NS_IMPL_ADDREF(_class)                                                      \
-  NS_IMPL_RELEASE(_class)                                                     \
-  NS_IMPL_QUERY_INTERFACE10(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7, _i8,   \
-                            _i9, _i10)
-
-#define NS_IMPL_ISUPPORTS11(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7, _i8,   \
-                            _i9, _i10, _i11)                                  \
-  NS_IMPL_ADDREF(_class)                                                      \
-  NS_IMPL_RELEASE(_class)                                                     \
-  NS_IMPL_QUERY_INTERFACE11(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7, _i8,   \
-                            _i9, _i10, _i11)
-
-#define NS_IMPL_ISUPPORTS12(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7, _i8,   \
-                            _i9, _i10, _i11, _i12)                            \
-  NS_IMPL_ADDREF(_class)                                                      \
-  NS_IMPL_RELEASE(_class)                                                     \
-  NS_IMPL_QUERY_INTERFACE12(_class, _i1, _i2, _i3, _i4, _i5, _i6, _i7, _i8,   \
-                            _i9, _i10, _i11, _i12)
-
-#define NS_IMPL_ISUPPORTS_INHERITED0(Class, Super)                            \
-    NS_IMPL_QUERY_INTERFACE_INHERITED0(Class, Super)                          \
-    NS_IMPL_ADDREF_INHERITED(Class, Super)                                    \
-    NS_IMPL_RELEASE_INHERITED(Class, Super)                                   \
-
-#define NS_IMPL_ISUPPORTS_INHERITED1(Class, Super, i1)                        \
-    NS_IMPL_QUERY_INTERFACE_INHERITED1(Class, Super, i1)                      \
-    NS_IMPL_ADDREF_INHERITED(Class, Super)                                    \
-    NS_IMPL_RELEASE_INHERITED(Class, Super)                                   \
-
-#define NS_IMPL_ISUPPORTS_INHERITED2(Class, Super, i1, i2)                    \
-    NS_IMPL_QUERY_INTERFACE_INHERITED2(Class, Super, i1, i2)                  \
-    NS_IMPL_ADDREF_INHERITED(Class, Super)                                    \
-    NS_IMPL_RELEASE_INHERITED(Class, Super)                                   \
-
-#define NS_IMPL_ISUPPORTS_INHERITED3(Class, Super, i1, i2, i3)                \
-    NS_IMPL_QUERY_INTERFACE_INHERITED3(Class, Super, i1, i2, i3)              \
-    NS_IMPL_ADDREF_INHERITED(Class, Super)                                    \
-    NS_IMPL_RELEASE_INHERITED(Class, Super)                                   \
-
-#define NS_IMPL_ISUPPORTS_INHERITED4(Class, Super, i1, i2, i3, i4)            \
-    NS_IMPL_QUERY_INTERFACE_INHERITED4(Class, Super, i1, i2, i3, i4)          \
-    NS_IMPL_ADDREF_INHERITED(Class, Super)                                    \
-    NS_IMPL_RELEASE_INHERITED(Class, Super)                                   \
-
-#define NS_IMPL_ISUPPORTS_INHERITED5(Class, Super, i1, i2, i3, i4, i5)        \
-    NS_IMPL_QUERY_INTERFACE_INHERITED5(Class, Super, i1, i2, i3, i4, i5)      \
-    NS_IMPL_ADDREF_INHERITED(Class, Super)                                    \
-    NS_IMPL_RELEASE_INHERITED(Class, Super)                                   \
-
-#define NS_IMPL_ISUPPORTS_INHERITED6(Class, Super, i1, i2, i3, i4, i5, i6)    \
-    NS_IMPL_QUERY_INTERFACE_INHERITED6(Class, Super, i1, i2, i3, i4, i5, i6)  \
-    NS_IMPL_ADDREF_INHERITED(Class, Super)                                    \
-    NS_IMPL_RELEASE_INHERITED(Class, Super)                                   \
-
-#define NS_IMPL_ISUPPORTS_INHERITED7(Class, Super, i1, i2, i3, i4, i5, i6, i7) \
-    NS_IMPL_QUERY_INTERFACE_INHERITED7(Class, Super, i1, i2, i3, i4, i5, i6, i7) \
-    NS_IMPL_ADDREF_INHERITED(Class, Super)                                    \
-    NS_IMPL_RELEASE_INHERITED(Class, Super)                                   \
-
-#define NS_IMPL_ISUPPORTS_INHERITED8(Class, Super, i1, i2, i3, i4, i5, i6, i7, i8) \
-    NS_IMPL_QUERY_INTERFACE_INHERITED8(Class, Super, i1, i2, i3, i4, i5, i6, i7, i8) \
-    NS_IMPL_ADDREF_INHERITED(Class, Super)                                    \
-    NS_IMPL_RELEASE_INHERITED(Class, Super)                                   \
-
-#define NS_IMPL_ISUPPORTS_INHERITED9(Class, Super, i1, i2, i3, i4, i5, i6, i7, i8, i9) \
-    NS_IMPL_QUERY_INTERFACE_INHERITED9(Class, Super, i1, i2, i3, i4, i5, i6, i7, i8, i9) \
-    NS_IMPL_ADDREF_INHERITED(Class, Super)                                    \
-    NS_IMPL_RELEASE_INHERITED(Class, Super)                                   \
-
-#define NS_IMPL_ISUPPORTS_INHERITED10(Class, Super, i1, i2, i3, i4, i5, i6, i7, i8, i9, i10) \
-    NS_IMPL_QUERY_INTERFACE_INHERITED10(Class, Super, i1, i2, i3, i4, i5, i6, i7, i8, i9, i10) \
-    NS_IMPL_ADDREF_INHERITED(Class, Super)                                    \
-    NS_IMPL_RELEASE_INHERITED(Class, Super)                                   \
 /*
  * Macro to glue together a QI that starts with an interface table
  * and segues into an interface map (e.g. it uses singleton classinfo

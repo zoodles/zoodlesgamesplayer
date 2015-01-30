@@ -19,11 +19,14 @@ static Atomic<size_t> gShmemMapped;
 
 class ShmemReporter MOZ_FINAL : public nsIMemoryReporter
 {
+  ~ShmemReporter() {}
+
 public:
   NS_DECL_THREADSAFE_ISUPPORTS
 
   NS_IMETHOD
-  CollectReports(nsIHandleReportCallback* aHandleReport, nsISupports* aData)
+  CollectReports(nsIHandleReportCallback* aHandleReport, nsISupports* aData,
+                 bool aAnonymize) MOZ_OVERRIDE
   {
     nsresult rv;
     rv = MOZ_COLLECT_REPORT(
@@ -42,13 +45,12 @@ public:
   }
 };
 
-NS_IMPL_ISUPPORTS1(ShmemReporter, nsIMemoryReporter)
+NS_IMPL_ISUPPORTS(ShmemReporter, nsIMemoryReporter)
 
 SharedMemory::SharedMemory()
   : mAllocSize(0)
   , mMappedSize(0)
 {
-  MOZ_COUNT_CTOR(SharedMemory);
   static Atomic<bool> registered;
   if (registered.compareExchange(false, true)) {
     RegisterStrongMemoryReporter(new ShmemReporter());

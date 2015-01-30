@@ -16,6 +16,7 @@ namespace mozilla {
 class ErrorResult;
 
 namespace dom {
+class File;
 class GlobalObject;
 template<typename> class Optional;
 }
@@ -27,6 +28,12 @@ class FileReaderSync MOZ_FINAL
 {
   NS_INLINE_DECL_REFCOUNTING(FileReaderSync)
 
+private:
+  // Private destructor, to discourage deletion outside of Release():
+  ~FileReaderSync()
+  {
+  }
+
   nsresult ConvertStream(nsIInputStream *aStream, const char *aCharset,
                          nsAString &aResult);
 
@@ -34,18 +41,15 @@ public:
   static already_AddRefed<FileReaderSync>
   Constructor(const GlobalObject& aGlobal, ErrorResult& aRv);
 
-  JSObject* WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope);
+  bool WrapObject(JSContext* aCx, JS::MutableHandle<JSObject*> aReflector);
 
-  JSObject* ReadAsArrayBuffer(JSContext* aCx, JS::Handle<JSObject*> aScopeObj,
-                              JS::Handle<JSObject*> aBlob,
-                              ErrorResult& aRv);
-  void ReadAsBinaryString(JS::Handle<JSObject*> aBlob, nsAString& aResult,
-                          ErrorResult& aRv);
-  void ReadAsText(JS::Handle<JSObject*> aBlob,
-                  const Optional<nsAString>& aEncoding,
+  void ReadAsArrayBuffer(JSContext* aCx, JS::Handle<JSObject*> aScopeObj,
+                         File& aBlob, JS::MutableHandle<JSObject*> aRetval,
+                         ErrorResult& aRv);
+  void ReadAsBinaryString(File& aBlob, nsAString& aResult, ErrorResult& aRv);
+  void ReadAsText(File& aBlob, const Optional<nsAString>& aEncoding,
                   nsAString& aResult, ErrorResult& aRv);
-  void ReadAsDataURL(JS::Handle<JSObject*> aBlob, nsAString& aResult,
-                     ErrorResult& aRv);
+  void ReadAsDataURL(File& aBlob, nsAString& aResult, ErrorResult& aRv);
 };
 
 END_WORKERS_NAMESPACE

@@ -20,8 +20,7 @@ class nsXBLDocumentInfo MOZ_FINAL : public nsSupportsWeakReference
 public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
 
-  nsXBLDocumentInfo(nsIDocument* aDocument);
-  virtual ~nsXBLDocumentInfo();
+  explicit nsXBLDocumentInfo(nsIDocument* aDocument);
 
   already_AddRefed<nsIDocument> GetDocument()
     { nsCOMPtr<nsIDocument> copy = mDocument; return copy.forget(); }
@@ -45,8 +44,6 @@ public:
 
   bool IsChrome() { return mIsChrome; }
 
-  JSObject* GetCompilationGlobal();
-
   void MarkInCCGeneration(uint32_t aGeneration);
 
   static nsresult ReadPrototypeBindings(nsIURI* aURI, nsXBLDocumentInfo** aDocInfo);
@@ -54,7 +51,8 @@ public:
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(nsXBLDocumentInfo)
 
 private:
-  void EnsureGlobalObject();
+  virtual ~nsXBLDocumentInfo();
+
   nsCOMPtr<nsIDocument> mDocument;
   bool mScriptAccess;
   bool mIsChrome;
@@ -63,8 +61,6 @@ private:
 
   // non-owning pointer to the first binding in the table
   nsXBLPrototypeBinding* mFirstBinding;
-
-  nsRefPtr<nsXBLDocGlobalObject> mGlobalObject;
 };
 
 #ifdef DEBUG

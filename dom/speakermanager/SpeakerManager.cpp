@@ -11,32 +11,32 @@
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsIDocShell.h"
 #include "AudioChannelService.h"
+#include "mozilla/Services.h"
 
-using namespace mozilla::dom;
+namespace mozilla {
+namespace dom {
 
-NS_IMPL_QUERY_INTERFACE_INHERITED1(SpeakerManager, nsDOMEventTargetHelper,
-                                   nsIDOMEventListener)
-NS_IMPL_ADDREF_INHERITED(SpeakerManager, nsDOMEventTargetHelper)
-NS_IMPL_RELEASE_INHERITED(SpeakerManager, nsDOMEventTargetHelper)
+NS_IMPL_QUERY_INTERFACE_INHERITED(SpeakerManager, DOMEventTargetHelper,
+                                  nsIDOMEventListener)
+NS_IMPL_ADDREF_INHERITED(SpeakerManager, DOMEventTargetHelper)
+NS_IMPL_RELEASE_INHERITED(SpeakerManager, DOMEventTargetHelper)
 
 SpeakerManager::SpeakerManager()
   : mForcespeaker(false)
   , mVisible(false)
 {
-  SetIsDOMBinding();
   SpeakerManagerService *service =
-    SpeakerManagerService::GetSpeakerManagerService();
-  if (service) {
-    service->RegisterSpeakerManager(this);
-  }
+    SpeakerManagerService::GetOrCreateSpeakerManagerService();
+  MOZ_ASSERT(service);
+  service->RegisterSpeakerManager(this);
 }
 
 SpeakerManager::~SpeakerManager()
 {
-  SpeakerManagerService *service = SpeakerManagerService::GetSpeakerManagerService();
-  if (service) {
-    service->UnRegisterSpeakerManager(this);
-  }
+  SpeakerManagerService *service = SpeakerManagerService::GetOrCreateSpeakerManagerService();
+  MOZ_ASSERT(service);
+
+  service->UnRegisterSpeakerManager(this);
   nsCOMPtr<EventTarget> target = do_QueryInterface(GetOwner());
   NS_ENSURE_TRUE_VOID(target);
 
@@ -53,11 +53,10 @@ SpeakerManager::Speakerforced()
   if (mForcespeaker && !mVisible) {
     return false;
   }
-  SpeakerManagerService *service = SpeakerManagerService::GetSpeakerManagerService();
-  if (service) {
-    return service->GetSpeakerStatus();
-  }
-  return false;
+  SpeakerManagerService *service = SpeakerManagerService::GetOrCreateSpeakerManagerService();
+  MOZ_ASSERT(service);
+  return service->GetSpeakerStatus();
+
 }
 
 bool
@@ -69,10 +68,10 @@ SpeakerManager::Forcespeaker()
 void
 SpeakerManager::SetForcespeaker(bool aEnable)
 {
-  SpeakerManagerService *service = SpeakerManagerService::GetSpeakerManagerService();
-  if (service) {
-    service->ForceSpeaker(aEnable, mVisible);
-  }
+  SpeakerManagerService *service = SpeakerManagerService::GetOrCreateSpeakerManagerService();
+  MOZ_ASSERT(service);
+
+  service->ForceSpeaker(aEnable, mVisible);
   mForcespeaker = aEnable;
 }
 
@@ -146,8 +145,7 @@ SpeakerManager::Constructor(const GlobalObject& aGlobal, ErrorResult& aRv)
     return nullptr;
   }
 
-  nsCOMPtr<nsIPermissionManager> permMgr =
-    do_GetService(NS_PERMISSIONMANAGER_CONTRACTID);
+  nsCOMPtr<nsIPermissionManager> permMgr = services::GetPermissionManager();
   NS_ENSURE_TRUE(permMgr, nullptr);
 
   uint32_t permission = nsIPermissionManager::DENY_ACTION;
@@ -167,9 +165,9 @@ SpeakerManager::Constructor(const GlobalObject& aGlobal, ErrorResult& aRv)
 }
 
 JSObject*
-SpeakerManager::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+SpeakerManager::WrapObject(JSContext* aCx)
 {
-  return MozSpeakerManagerBinding::Wrap(aCx, aScope, this);
+  return MozSpeakerManagerBinding::Wrap(aCx, this);
 }
 
 NS_IMETHODIMP
@@ -191,8 +189,10 @@ SpeakerManager::HandleEvent(nsIDOMEvent* aEvent)
   // switches to true in all apps. I.e. the app doesn't have to
   // call forcespeaker=true again when it comes into foreground.
   SpeakerManagerService *service =
-    SpeakerManagerService::GetSpeakerManagerService();
-  if (service && mVisible && mForcespeaker) {
+    SpeakerManagerService::GetOrCreateSpeakerManagerService();
+  MOZ_ASSERT(service);
+
+  if (mVisible && mForcespeaker) {
     service->ForceSpeaker(mForcespeaker, mVisible);
   }
   // If an application that has called forcespeaker=true, but no audio is
@@ -200,7 +200,7 @@ SpeakerManager::HandleEvent(nsIDOMEvent* aEvent)
   // the background, we switch 'speakerforced' to false.
   if (!mVisible && mForcespeaker) {
     AudioChannelService* audioChannelService =
-      AudioChannelService::GetAudioChannelService();
+      AudioChannelService::GetOrCreateAudioChannelService();
     if (audioChannelService && !audioChannelService->AnyAudioChannelIsActive()) {
       service->ForceSpeaker(false, mVisible);
     }
@@ -213,9 +213,12 @@ SpeakerManager::SetAudioChannelActive(bool isActive)
 {
   if (!isActive && !mVisible) {
     SpeakerManagerService *service =
-      SpeakerManagerService::GetSpeakerManagerService();
-    if (service) {
-      service->ForceSpeaker(false, mVisible);
-    }
+      SpeakerManagerService::GetOrCreateSpeakerManagerService();
+    MOZ_ASSERT(service);
+
+    service->ForceSpeaker(false, mVisible);
   }
 }
+
+} // namespace dom
+} // namespace mozilla

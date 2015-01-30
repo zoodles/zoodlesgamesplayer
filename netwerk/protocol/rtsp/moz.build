@@ -9,17 +9,18 @@ EXPORTS.mozilla.net += [
     'controller/RtspControllerParent.h',
     'controller/RtspMetaData.h',
     'rtsp/RTSPSource.h',
-    'RtspChannel.h',
+    'RtspChannelChild.h',
+    'RtspChannelParent.h',
     'RtspHandler.h',
 ]
 
-# These files cannot be built in unified mode because they force NSPR logging.
-SOURCES += [
+UNIFIED_SOURCES += [
     'controller/RtspController.cpp',
     'controller/RtspControllerChild.cpp',
     'controller/RtspControllerParent.cpp',
     'controller/RtspMetaData.cpp',
-    'RtspChannel.cpp',
+    'RtspChannelChild.cpp',
+    'RtspChannelParent.cpp',
     'RtspHandler.cpp',
 ]
 
@@ -47,16 +48,20 @@ MSVC_ENABLE_PGO = True
 
 include('/ipc/chromium/chromium-config.mozbuild')
 
-FINAL_LIBRARY = 'necko'
+# Suppress some GCC warnings being treated as errors:
+#  - about attributes on forward declarations for types that are already
+#    defined, which complains about an important MOZ_EXPORT for android::AString
+if CONFIG['GNU_CC']:
+  CXXFLAGS += ['-Wno-error=attributes']
+
+FINAL_LIBRARY = 'xul'
 
 DEFINES['IMPL_NS_NET'] = True
 DEFINES['FORCE_PR_LOG'] = True
 
 LOCAL_INCLUDES += [
-    '../../base/src',
-    '/content/base/src',
-    '/dom/events',
-    '/xpcom/ds',
+    '/dom/base',
+    '/netwerk/base',
     'controller',
     'rtsp',
 ]

@@ -6,72 +6,28 @@
 
 const { interfaces: Ci, utils: Cu } = Components;
 
-Cu.import("resource://gre/modules/XPCOMUtils.jsm");
-Cu.import("resource://gre/modules/Services.jsm");
-Cu.import("resource://gre/modules/Promise.jsm");
 Cu.import("resource://gre/modules/FxAccountsCommon.js");
-
-XPCOMUtils.defineLazyServiceGetter(this, "uuidgen",
-                                   "@mozilla.org/uuid-generator;1",
-                                   "nsIUUIDGenerator");
+Cu.import("resource://gre/modules/ContentRequestHelper.jsm");
+Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 
 function FxAccountsUIGlue() {
 }
 
 FxAccountsUIGlue.prototype = {
 
-  _browser: Services.wm.getMostRecentWindow("navigator:browser"),
-
-  _contentRequest: function(aEventName, aData) {
-    let deferred = Promise.defer();
-
-    let content = this._browser.getContentWindow();
-    if (!content) {
-      deferred.reject("InternalErrorNoContent");
-      return;
-    }
-
-    let id = uuidgen.generateUUID().toString();
-
-    content.addEventListener("mozFxAccountsRPContentEvent",
-                             function onContentEvent(result) {
-      let msg = result.detail;
-      if (!msg || !msg.id || msg.id != id) {
-        deferred.reject("InternalErrorWrongContentEvent");
-        content.removeEventListener("mozFxAccountsRPContentEvent",
-                                    onContentEvent);
-        return;
-      }
-
-      log.debug("Got content event " + JSON.stringify(msg));
-
-      if (msg.error) {
-        deferred.reject(msg);
-      } else {
-        deferred.resolve(msg.result);
-      }
-      content.removeEventListener("mozFxAccountsRPContentEvent",
-                                  onContentEvent);
-    });
-
-    let detail = {
-       eventName: aEventName,
-       id: id,
-       data: aData
-    };
-    log.debug("Send chrome event " + JSON.stringify(detail));
-    this._browser.shell.sendCustomEvent("mozFxAccountsUnsolChromeEvent", detail);
-
-    return deferred.promise;
-  },
+  __proto__: ContentRequestHelper.prototype,
 
   signInFlow: function() {
-    return this._contentRequest("openFlow");
+    return this.contentRequest("mozFxAccountsRPContentEvent",
+                               "mozFxAccountsUnsolChromeEvent",
+                               "openFlow");
   },
 
-  refreshAuthentication: function(aAccountId) {
-    return this._contentRequest("refreshAuthentication", {
-      accountId: aAccountId
+  refreshAuthentication: function(aEmail) {
+    return this.contentRequest("mozFxAccountsRPContentEvent",
+                               "mozFxAccountsUnsolChromeEvent",
+                               "refreshAuthentication", {
+      email: aEmail
     });
   },
 

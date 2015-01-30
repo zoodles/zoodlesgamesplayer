@@ -255,7 +255,8 @@ function test_auth() {
 
   let winObs = new WindowObserver(function(authWin) {
     ok(authWin, "Authentication window opened");
-    ok(authWin.contentWindow.location);
+    // See bug 1063404.
+    // ok(authWin.location);
   });
 
   Services.ww.registerNotification(winObs);
@@ -275,6 +276,7 @@ function test() {
     finish();
     return;
   }
+
 
   registerCleanupFunction(cleanUp);
 
@@ -312,6 +314,7 @@ function resetState() {
 function cleanUp() {
   info("cleanup");
   resetState();
+
 
   for (let topic in gActiveObservers)
     Services.obs.removeObserver(gActiveObservers[topic], topic);

@@ -7,8 +7,6 @@
 #ifndef jit_BaselineJIT_h
 #define jit_BaselineJIT_h
 
-#ifdef JS_ION
-
 #include "mozilla/MemoryReporting.h"
 
 #include "jscntxt.h"
@@ -17,7 +15,8 @@
 #include "ds/LifoAlloc.h"
 #include "jit/Bailouts.h"
 #include "jit/IonCode.h"
-#include "jit/IonMacroAssembler.h"
+#include "jit/MacroAssembler.h"
+#include "vm/TraceLogging.h"
 
 namespace js {
 namespace jit {
@@ -54,13 +53,13 @@ class PCMappingSlotInfo
     inline static PCMappingSlotInfo MakeSlotInfo() { return PCMappingSlotInfo(0); }
 
     inline static PCMappingSlotInfo MakeSlotInfo(SlotLocation topSlotLoc) {
-        JS_ASSERT(ValidSlotLocation(topSlotLoc));
+        MOZ_ASSERT(ValidSlotLocation(topSlotLoc));
         return PCMappingSlotInfo(1 | (topSlotLoc << 2));
     }
 
     inline static PCMappingSlotInfo MakeSlotInfo(SlotLocation topSlotLoc, SlotLocation nextSlotLoc) {
-        JS_ASSERT(ValidSlotLocation(topSlotLoc));
-        JS_ASSERT(ValidSlotLocation(nextSlotLoc));
+        MOZ_ASSERT(ValidSlotLocation(topSlotLoc));
+        MOZ_ASSERT(ValidSlotLocation(nextSlotLoc));
         return PCMappingSlotInfo(2 | (topSlotLoc << 2) | (nextSlotLoc) << 4);
     }
 
@@ -95,6 +94,19 @@ struct PCMappingIndexEntry
     uint32_t bufferOffset;
 };
 
+// Describes a single AsmJSModule which jumps (via an FFI exit with the given
+// index) directly to a BaselineScript or IonScript.
+struct DependentAsmJSModuleExit
+{
+    const AsmJSModule *module;
+    size_t exitIndex;
+
+    DependentAsmJSModuleExit(const AsmJSModule *module, size_t exitIndex)
+      : module(module),
+        exitIndex(exitIndex)
+    { }
+};
+
 struct BaselineScript
 {
   public:
@@ -107,7 +119,7 @@ struct BaselineScript
 
   private:
     // Code pointer containing the actual method.
-    HeapPtr<JitCode> method_;
+    HeapPtrJitCode method_;
 
     // For heavyweight scripts, template objects to use for the call object and
     // decl env object (linked via the call object's enclosing scope).
@@ -116,14 +128,39 @@ struct BaselineScript
     // Allocated space for fallback stubs.
     FallbackICStubSpace fallbackStubSpace_;
 
+    // If non-null, the list of AsmJSModules that contain an optimized call
+    // directly to this script.
+    Vector<DependentAsmJSModuleExit> *dependentAsmJSModules_;
+
     // Native code offset right before the scope chain is initialized.
     uint32_t prologueOffset_;
 
-    // The offsets for the toggledJump instructions for SPS update ICs.
-#ifdef DEBUG
-    mozilla::DebugOnly<bool> spsOn_;
+    // Native code offset right before the frame is popped and the method
+    // returned from.
+    uint32_t epilogueOffset_;
+
+    // The offsets for the toggledJump instructions for profiler instrumentation.
+    uint32_t profilerEnterToggleOffset_;
+    uint32_t profilerExitToggleOffset_;
+
+    // The offsets and event used for Tracelogger toggling.
+#ifdef JS_TRACE_LOGGING
+# ifdef DEBUG
+    bool traceLoggerScriptsEnabled_;
+    bool traceLoggerEngineEnabled_;
+# endif
+    uint32_t traceLoggerEnterToggleOffset_;
+    uint32_t traceLoggerExitToggleOffset_;
+    TraceLoggerEvent traceLoggerScriptEvent_;
 #endif
-    uint32_t spsPushToggleOffset_;
+
+    // Native code offsets right after the debug prologue VM call returns, or
+    // would have returned. This offset is recorded even when debug mode is
+    // off to aid on-stack debug mode recompilation.
+    //
+    // We don't need one for the debug epilogue because that always happens
+    // right before the epilogue, so we just use the epilogue offset.
+    uint32_t postDebugPrologueOffset_;
 
   public:
     enum Flag {
@@ -139,9 +176,17 @@ struct BaselineScript
         // (rather than call object stored) arguments.
         MODIFIES_ARGUMENTS = 1 << 2,
 
-        // Flag set when compiled for use for debug mode. Handles various
+        // Flag set when compiled for use with Debugger. Handles various
         // Debugger hooks and compiles toggled calls for traps.
-        DEBUG_MODE = 1 << 3
+        HAS_DEBUG_INSTRUMENTATION = 1 << 3,
+
+        // Flag set if this script has ever been Ion compiled, either directly
+        // or inlined into another script. This is cleared when the script's
+        // type information or caches are cleared.
+        ION_COMPILED_OR_INLINED = 1 << 4,
+
+        // Flag is set if this script has profiling instrumentation turned on.
+        PROFILER_INSTRUMENTATION_ON = 1 << 5
     };
 
   private:
@@ -163,14 +208,29 @@ struct BaselineScript
     // they correspond to, for use by TypeScript::BytecodeTypes.
     uint32_t bytecodeTypeMapOffset_;
 
+    // For generator scripts, we store the native code address for each yield
+    // instruction.
+    uint32_t yieldEntriesOffset_;
+
   public:
     // Do not call directly, use BaselineScript::New. This is public for cx->new_.
-    BaselineScript(uint32_t prologueOffset, uint32_t spsPushToggleOffset);
+    BaselineScript(uint32_t prologueOffset, uint32_t epilogueOffset,
+                   uint32_t profilerEnterToggleOffset,
+                   uint32_t profilerExitToggleOffset,
+                   uint32_t traceLoggerEnterToggleOffset,
+                   uint32_t traceLoggerExitToggleOffset,
+                   uint32_t postDebugPrologueOffset);
 
-    static BaselineScript *New(JSContext *cx, uint32_t prologueOffset,
-                               uint32_t spsPushToggleOffset, size_t icEntries,
-                               size_t pcMappingIndexEntries, size_t pcMappingSize,
-                               size_t bytecodeTypeMapEntries);
+    static BaselineScript *New(JSScript *jsscript, uint32_t prologueOffset,
+                               uint32_t epilogueOffset, uint32_t postDebugPrologueOffset,
+                               uint32_t profilerEnterToggleOffset,
+                               uint32_t profilerExitToggleOffset,
+                               uint32_t traceLoggerEnterToggleOffset,
+                               uint32_t traceLoggerExitToggleOffset,
+                               size_t icEntries, size_t pcMappingIndexEntries,
+                               size_t pcMappingSize,
+                               size_t bytecodeTypeMapEntries, size_t yieldEntries);
+
     static void Trace(JSTracer *trc, BaselineScript *script);
     static void Destroy(FreeOp *fop, BaselineScript *script);
 
@@ -210,11 +270,21 @@ struct BaselineScript
         return flags_ & MODIFIES_ARGUMENTS;
     }
 
-    void setDebugMode() {
-        flags_ |= DEBUG_MODE;
+    void setHasDebugInstrumentation() {
+        flags_ |= HAS_DEBUG_INSTRUMENTATION;
     }
-    bool debugMode() const {
-        return flags_ & DEBUG_MODE;
+    bool hasDebugInstrumentation() const {
+        return flags_ & HAS_DEBUG_INSTRUMENTATION;
+    }
+
+    void setIonCompiledOrInlined() {
+        flags_ |= ION_COMPILED_OR_INLINED;
+    }
+    void clearIonCompiledOrInlined() {
+        flags_ &= ~ION_COMPILED_OR_INLINED;
+    }
+    bool ionCompiledOrInlined() const {
+        return flags_ & ION_COMPILED_OR_INLINED;
     }
 
     uint32_t prologueOffset() const {
@@ -224,8 +294,25 @@ struct BaselineScript
         return method_->raw() + prologueOffset_;
     }
 
+    uint32_t epilogueOffset() const {
+        return epilogueOffset_;
+    }
+    uint8_t *epilogueEntryAddr() const {
+        return method_->raw() + epilogueOffset_;
+    }
+
+    uint32_t postDebugPrologueOffset() const {
+        return postDebugPrologueOffset_;
+    }
+    uint8_t *postDebugPrologueAddr() const {
+        return method_->raw() + postDebugPrologueOffset_;
+    }
+
     ICEntry *icEntryList() {
         return (ICEntry *)(reinterpret_cast<uint8_t *>(this) + icEntriesOffset_);
+    }
+    uint8_t **yieldEntryList() {
+        return (uint8_t **)(reinterpret_cast<uint8_t *>(this) + yieldEntriesOffset_);
     }
     PCMappingIndexEntry *pcMappingIndexEntryList() {
         return (PCMappingIndexEntry *)(reinterpret_cast<uint8_t *>(this) + pcMappingIndexOffset_);
@@ -241,7 +328,7 @@ struct BaselineScript
         return method_;
     }
     void setMethod(JitCode *code) {
-        JS_ASSERT(!method_);
+        MOZ_ASSERT(!method_);
         method_ = code;
     }
 
@@ -249,7 +336,7 @@ struct BaselineScript
         return templateScope_;
     }
     void setTemplateScope(JSObject *templateScope) {
-        JS_ASSERT(!templateScope_);
+        MOZ_ASSERT(!templateScope_);
         templateScope_ = templateScope;
     }
 
@@ -257,12 +344,16 @@ struct BaselineScript
         method()->togglePreBarriers(enabled);
     }
 
+    bool containsCodeAddress(uint8_t *addr) const {
+        return method()->raw() <= addr && addr <= method()->raw() + method()->instructionsSize();
+    }
+
     ICEntry &icEntry(size_t index);
-    ICEntry *maybeICEntryFromReturnOffset(CodeOffsetLabel returnOffset);
     ICEntry &icEntryFromReturnOffset(CodeOffsetLabel returnOffset);
     ICEntry &icEntryFromPCOffset(uint32_t pcOffset);
     ICEntry &icEntryFromPCOffset(uint32_t pcOffset, ICEntry *prevLookedUpEntry);
-    ICEntry *maybeICEntryFromReturnAddress(uint8_t *returnAddr);
+    ICEntry &callVMEntryFromPCOffset(uint32_t pcOffset);
+    ICEntry &stackCheckICEntry(bool earlyCheck);
     ICEntry &icEntryFromReturnAddress(uint8_t *returnAddr);
     uint8_t *returnAddressForIC(const ICEntry &ent);
 
@@ -270,8 +361,10 @@ struct BaselineScript
         return icEntries_;
     }
 
-    void copyICEntries(HandleScript script, const ICEntry *entries, MacroAssembler &masm);
+    void copyICEntries(JSScript *script, const ICEntry *entries, MacroAssembler &masm);
     void adoptFallbackStubs(FallbackICStubSpace *stubSpace);
+
+    void copyYieldEntries(JSScript *script, Vector<uint32_t> &yieldOffsets);
 
     PCMappingIndexEntry &pcMappingIndexEntry(size_t index);
     CompactBufferReader pcMappingReader(size_t indexEntry);
@@ -281,18 +374,39 @@ struct BaselineScript
     }
 
     void copyPCMappingIndexEntries(const PCMappingIndexEntry *entries);
-
     void copyPCMappingEntries(const CompactBufferWriter &entries);
-    uint8_t *nativeCodeForPC(JSScript *script, jsbytecode *pc, PCMappingSlotInfo *slotInfo = nullptr);
-    jsbytecode *pcForReturnOffset(JSScript *script, uint32_t nativeOffset);
-    jsbytecode *pcForReturnAddress(JSScript *script, uint8_t *nativeAddress);
+
+    uint8_t *nativeCodeForPC(JSScript *script, jsbytecode *pc,
+                             PCMappingSlotInfo *slotInfo = nullptr);
+
+    // Return the bytecode offset for a given native code address. Be careful
+    // when using this method: we don't emit code for some bytecode ops, so
+    // the result may not be accurate.
+    jsbytecode *approximatePcForNativeAddress(JSScript *script, uint8_t *nativeAddress);
+
+    bool addDependentAsmJSModule(JSContext *cx, DependentAsmJSModuleExit exit);
+    void unlinkDependentAsmJSModules(FreeOp *fop);
+    void removeDependentAsmJSModule(DependentAsmJSModuleExit exit);
 
     // Toggle debug traps (used for breakpoints and step mode) in the script.
     // If |pc| is nullptr, toggle traps for all ops in the script. Else, only
     // toggle traps at |pc|.
     void toggleDebugTraps(JSScript *script, jsbytecode *pc);
 
-    void toggleSPS(bool enable);
+    void toggleProfilerInstrumentation(bool enable);
+    bool isProfilerInstrumentationOn() const {
+        return flags_ & PROFILER_INSTRUMENTATION_ON;
+    }
+
+#ifdef JS_TRACE_LOGGING
+    void initTraceLogger(JSRuntime *runtime, JSScript *script);
+    void toggleTraceLoggerScripts(JSRuntime *runtime, JSScript *script, bool enable);
+    void toggleTraceLoggerEngine(bool enable);
+
+    static size_t offsetOfTraceLoggerScriptEvent() {
+        return offsetof(BaselineScript, traceLoggerScriptEvent_);
+    }
+#endif
 
     void noteAccessedGetter(uint32_t pcOffset);
     void noteArrayWriteHole(uint32_t pcOffset);
@@ -300,19 +414,28 @@ struct BaselineScript
     static size_t offsetOfFlags() {
         return offsetof(BaselineScript, flags_);
     }
+    static size_t offsetOfYieldEntriesOffset() {
+        return offsetof(BaselineScript, yieldEntriesOffset_);
+    }
 
     static void writeBarrierPre(Zone *zone, BaselineScript *script);
 
     uint32_t *bytecodeTypeMap() {
-        JS_ASSERT(bytecodeTypeMapOffset_);
+        MOZ_ASSERT(bytecodeTypeMapOffset_);
         return reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(this) + bytecodeTypeMapOffset_);
     }
 };
+static_assert(sizeof(BaselineScript) % sizeof(uintptr_t) == 0,
+              "The data attached to the script must be aligned for fast JIT access.");
 
 inline bool
 IsBaselineEnabled(JSContext *cx)
 {
+#ifdef JS_CODEGEN_NONE
+    return false;
+#else
     return cx->runtime()->options().baseline();
+#endif
 }
 
 MethodStatus
@@ -321,10 +444,10 @@ CanEnterBaselineMethod(JSContext *cx, RunState &state);
 MethodStatus
 CanEnterBaselineAtBranch(JSContext *cx, InterpreterFrame *fp, bool newType);
 
-IonExecStatus
+JitExecStatus
 EnterBaselineMethod(JSContext *cx, RunState &state);
 
-IonExecStatus
+JitExecStatus
 EnterBaselineAtBranch(JSContext *cx, InterpreterFrame *fp, jsbytecode *pc);
 
 void
@@ -335,7 +458,12 @@ AddSizeOfBaselineData(JSScript *script, mozilla::MallocSizeOf mallocSizeOf, size
                       size_t *fallbackStubs);
 
 void
-ToggleBaselineSPS(JSRuntime *runtime, bool enable);
+ToggleBaselineProfiling(JSRuntime *runtime, bool enable);
+
+void
+ToggleBaselineTraceLoggerScripts(JSRuntime *runtime, bool enable);
+void
+ToggleBaselineTraceLoggerEngine(JSRuntime *runtime, bool enable);
 
 struct BaselineBailoutInfo
 {
@@ -361,6 +489,9 @@ struct BaselineBailoutInfo
     // The native code address to resume into.
     void *resumeAddr;
 
+    // The bytecode pc where we will resume.
+    jsbytecode *resumePC;
+
     // If resuming into a TypeMonitor IC chain, this field holds the
     // address of the first stub in that chain.  If this field is
     // set, then the actual jitcode resumed into is the jitcode for
@@ -377,9 +508,9 @@ struct BaselineBailoutInfo
 };
 
 uint32_t
-BailoutIonToBaseline(JSContext *cx, JitActivation *activation, IonBailoutIterator &iter,
+BailoutIonToBaseline(JSContext *cx, JitActivation *activation, JitFrameIterator &iter,
                      bool invalidate, BaselineBailoutInfo **bailoutInfo,
-                     const ExceptionBailoutInfo *exceptionInfo = nullptr);
+                     const ExceptionBailoutInfo *exceptionInfo);
 
 // Mark baseline scripts on the stack as active, so that they are not discarded
 // during GC.
@@ -387,11 +518,9 @@ void
 MarkActiveBaselineScripts(Zone *zone);
 
 MethodStatus
-BaselineCompile(JSContext *cx, HandleScript script);
+BaselineCompile(JSContext *cx, JSScript *script, bool forceDebugInstrumentation = false);
 
 } // namespace jit
 } // namespace js
-
-#endif // JS_ION
 
 #endif /* jit_BaselineJIT_h */

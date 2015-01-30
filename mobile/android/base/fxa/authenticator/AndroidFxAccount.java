@@ -8,18 +8,23 @@ import java.io.UnsupportedEncodingException;
 import java.net.URISyntaxException;
 import java.security.GeneralSecurityException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.EnumSet;
+import java.util.List;
 
 import org.mozilla.gecko.background.common.GlobalConstants;
 import org.mozilla.gecko.background.common.log.Logger;
 import org.mozilla.gecko.background.fxa.FxAccountUtils;
 import org.mozilla.gecko.db.BrowserContract;
+import org.mozilla.gecko.fxa.FirefoxAccounts;
 import org.mozilla.gecko.fxa.FxAccountConstants;
 import org.mozilla.gecko.fxa.login.State;
 import org.mozilla.gecko.fxa.login.State.StateLabel;
 import org.mozilla.gecko.fxa.login.StateFactory;
 import org.mozilla.gecko.sync.ExtendedJSONObject;
 import org.mozilla.gecko.sync.Utils;
+import org.mozilla.gecko.sync.setup.Constants;
 
 import android.accounts.Account;
 import android.accounts.AccountManager;
@@ -58,6 +63,10 @@ public class AndroidFxAccount {
   public static final String BUNDLE_KEY_STATE_LABEL = "stateLabel";
   public static final String BUNDLE_KEY_STATE = "state";
 
+  protected static final List<String> ANDROID_AUTHORITIES = Collections.unmodifiableList(Arrays.asList(BrowserContract.AUTHORITY));
+
+  private static final String PREF_KEY_LAST_SYNCED_TIMESTAMP = "lastSyncedTimestamp";
+
   protected final Context context;
   protected final AccountManager accountManager;
   protected final Account account;
@@ -89,7 +98,7 @@ public class AndroidFxAccount {
    * {@link AccountPickler#pickle}, and is identical to calling it directly.
    * <p>
    * Note that pickling is different from bundling, which involves operations on a
-   * {@link android.os.Bundle Bundle} object of miscellaenous data associated with the account.
+   * {@link android.os.Bundle Bundle} object of miscellaneous data associated with the account.
    * See {@link #persistBundle} and {@link #unbundle} for more.
    */
   public void pickle(final String filename) {
@@ -162,7 +171,7 @@ public class AndroidFxAccount {
     if (b == null) {
       return def;
     }
-    return b.booleanValue();
+    return b;
   }
 
   protected byte[] getBundleDataBytes(String key) {
@@ -316,6 +325,9 @@ public class AndroidFxAccount {
     if (email == null) {
       throw new IllegalArgumentException("email must not be null");
     }
+    if (profile == null) {
+      throw new IllegalArgumentException("profile must not be null");
+    }
     if (idpServerURI == null) {
       throw new IllegalArgumentException("idpServerURI must not be null");
     }
@@ -361,6 +373,15 @@ public class AndroidFxAccount {
       return null;
     }
 
+    // Try to work around an intermittent issue described at
+    // http://stackoverflow.com/a/11698139.  What happens is that tests that
+    // delete and re-create the same account frequently will find the account
+    // missing all or some of the userdata bundle, possibly due to an Android
+    // AccountManager caching bug.
+    for (String key : userdata.keySet()) {
+      accountManager.setUserData(account, key, userdata.getString(key));
+    }
+
     AndroidFxAccount fxAccount = new AndroidFxAccount(context, account);
 
     if (!fromPickle) {
@@ -380,6 +401,10 @@ public class AndroidFxAccount {
     getSyncPrefs().edit().clear().commit();
   }
 
+  public static Iterable<String> getAndroidAuthorities() {
+    return ANDROID_AUTHORITIES;
+  }
+
   /**
    * Return true if the underlying Android account is currently set to sync automatically.
    * <p>
@@ -391,43 +416,82 @@ public class AndroidFxAccount {
    */
   public boolean isSyncing() {
     boolean isSyncEnabled = true;
-    for (String authority : new String[] { BrowserContract.AUTHORITY }) {
+    for (String authority : getAndroidAuthorities()) {
       isSyncEnabled &= ContentResolver.getSyncAutomatically(account, authority);
     }
     return isSyncEnabled;
   }
 
   public void enableSyncing() {
-    Logger.info(LOG_TAG, "Enabling sync for account named like " + Utils.obfuscateEmail(getEmail()));
-    for (String authority : new String[] { BrowserContract.AUTHORITY }) {
+    Logger.info(LOG_TAG, "Enabling sync for account named like " + getObfuscatedEmail());
+    for (String authority : getAndroidAuthorities()) {
       ContentResolver.setSyncAutomatically(account, authority, true);
       ContentResolver.setIsSyncable(account, authority, 1);
     }
   }
 
   public void disableSyncing() {
-    Logger.info(LOG_TAG, "Disabling sync for account named like " + Utils.obfuscateEmail(getEmail()));
-    for (String authority : new String[] { BrowserContract.AUTHORITY }) {
+    Logger.info(LOG_TAG, "Disabling sync for account named like " + getObfuscatedEmail());
+    for (String authority : getAndroidAuthorities()) {
       ContentResolver.setSyncAutomatically(account, authority, false);
     }
   }
 
-  public void requestSync(Bundle extras) {
-    Logger.info(LOG_TAG, "Requesting sync for account named like " + Utils.obfuscateEmail(getEmail()) +
-        (extras.isEmpty() ? "." : "; has extras."));
-    for (String authority : new String[] { BrowserContract.AUTHORITY }) {
-      ContentResolver.requestSync(account, authority, extras);
+  /**
+   * Is a sync currently in progress?
+   *
+   * @return true if Android is currently syncing the underlying Android Account.
+   */
+  public boolean isCurrentlySyncing() {
+    boolean active = false;
+    for (String authority : AndroidFxAccount.getAndroidAuthorities()) {
+      active |= ContentResolver.isSyncActive(account, authority);
     }
+    return active;
+  }
+
+  /**
+   * Request a sync.  See {@link FirefoxAccounts#requestSync(Account, EnumSet, String[], String[])}.
+   */
+  public void requestSync() {
+    requestSync(FirefoxAccounts.SOON, null, null);
+  }
+
+  /**
+   * Request a sync.  See {@link FirefoxAccounts#requestSync(Account, EnumSet, String[], String[])}.
+   *
+   * @param syncHints to pass to sync.
+   */
+  public void requestSync(EnumSet<FirefoxAccounts.SyncHint> syncHints) {
+    requestSync(syncHints, null, null);
+  }
+
+  /**
+   * Request a sync.  See {@link FirefoxAccounts#requestSync(Account, EnumSet, String[], String[])}.
+   *
+   * @param syncHints to pass to sync.
+   * @param stagesToSync stage names to sync.
+   * @param stagesToSkip stage names to skip.
+   */
+  public void requestSync(EnumSet<FirefoxAccounts.SyncHint> syncHints, String[] stagesToSync, String[] stagesToSkip) {
+    FirefoxAccounts.requestSync(getAndroidAccount(), syncHints, stagesToSync, stagesToSkip);
   }
 
   public synchronized void setState(State state) {
     if (state == null) {
       throw new IllegalArgumentException("state must not be null");
     }
-    Logger.info(LOG_TAG, "Moving account named like " + Utils.obfuscateEmail(getEmail()) +
+    Logger.info(LOG_TAG, "Moving account named like " + getObfuscatedEmail() +
         " to state " + state.getStateLabel().toString());
     updateBundleValue(BUNDLE_KEY_STATE_LABEL, state.getStateLabel().name());
     updateBundleValue(BUNDLE_KEY_STATE, state.toJSONObject().toJSONString());
+    broadcastAccountStateChangedIntent();
+  }
+
+  protected void broadcastAccountStateChangedIntent() {
+    final Intent intent = new Intent(FxAccountConstants.ACCOUNT_STATE_CHANGED_ACTION);
+    intent.putExtra(Constants.JSON_KEY_ACCOUNT, account.name);
+    context.sendBroadcast(intent, FxAccountConstants.PER_ACCOUNT_TYPE_PERMISSION);
   }
 
   public synchronized State getState() {
@@ -452,14 +516,14 @@ public class AndroidFxAccount {
    * <b>For debugging only!</b>
    */
   public void dump() {
-    if (!FxAccountConstants.LOG_PERSONAL_INFORMATION) {
+    if (!FxAccountUtils.LOG_PERSONAL_INFORMATION) {
       return;
     }
     ExtendedJSONObject o = toJSONObject();
     ArrayList<String> list = new ArrayList<String>(o.keySet());
     Collections.sort(list);
     for (String key : list) {
-      FxAccountConstants.pii(LOG_TAG, key + ": " + o.get(key));
+      FxAccountUtils.pii(LOG_TAG, key + ": " + o.get(key));
     }
   }
 
@@ -473,6 +537,17 @@ public class AndroidFxAccount {
    */
   public String getEmail() {
     return account.name;
+  }
+
+  /**
+   * Return the Firefox Account's local email address, obfuscated.
+   * <p>
+   * Use this when logging.
+   *
+   * @return local email address, obfuscated.
+   */
+  public String getObfuscatedEmail() {
+    return Utils.obfuscateEmail(account.name);
   }
 
   /**
@@ -491,5 +566,23 @@ public class AndroidFxAccount {
         Long.valueOf(FxAccountConstants.ACCOUNT_DELETED_INTENT_VERSION));
     intent.putExtra(FxAccountConstants.ACCOUNT_DELETED_INTENT_ACCOUNT_KEY, account.name);
     return intent;
+  }
+
+  public void setLastSyncedTimestamp(long now) {
+    try {
+      getSyncPrefs().edit().putLong(PREF_KEY_LAST_SYNCED_TIMESTAMP, now).commit();
+    } catch (Exception e) {
+      Logger.warn(LOG_TAG, "Got exception setting last synced time; ignoring.", e);
+    }
+  }
+
+  public long getLastSyncedTimestamp() {
+    final long neverSynced = -1L;
+    try {
+      return getSyncPrefs().getLong(PREF_KEY_LAST_SYNCED_TIMESTAMP, neverSynced);
+    } catch (Exception e) {
+      Logger.warn(LOG_TAG, "Got exception getting last synced time; ignoring.", e);
+      return neverSynced;
+    }
   }
 }

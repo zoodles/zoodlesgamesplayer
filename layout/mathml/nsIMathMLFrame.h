@@ -11,7 +11,7 @@
 
 struct nsPresentationData;
 struct nsEmbellishData;
-struct nsHTMLReflowMetrics;
+class nsHTMLReflowMetrics;
 class nsRenderingContext;
 class nsIFrame;
 
@@ -200,6 +200,13 @@ public:
   // Returns 0 if the specified frame isn't a child frame.
   virtual uint8_t
   ScriptIncrement(nsIFrame* aFrame) = 0;
+
+  // Returns true if the frame is considered to be an mrow for layout purposes.
+  // This includes inferred mrows, but excludes <mrow> elements with a single
+  // child.  In the latter case, the child is to be treated as if it wasn't
+  // within an mrow, so we pretend the mrow isn't mrow-like.
+  virtual bool
+  IsMrowLike() = 0;
 };
 
 // struct used by a container frame to keep track of its embellishments.
@@ -279,6 +286,10 @@ struct nsPresentationData {
 // This bit is set if the frame is "space-like", as defined by the spec.
 #define NS_MATHML_SPACE_LIKE                          0x00000040U
 
+// This bit is set if a token frame should be rendered with the dtls font
+// feature setting.
+#define NS_MATHML_DTLS                                0x00000080U
+
 // This bit is set when the frame cannot be formatted due to an
 // error (e.g., invalid markup such as a <msup> without an overscript).
 // When set, a visual feedback will be provided to the user.
@@ -306,6 +317,9 @@ struct nsPresentationData {
 
 #define NS_MATHML_IS_SPACE_LIKE(_flags) \
   (NS_MATHML_SPACE_LIKE == ((_flags) & NS_MATHML_SPACE_LIKE))
+
+#define NS_MATHML_IS_DTLS_SET(_flags) \
+  (NS_MATHML_DTLS == ((_flags) & NS_MATHML_DTLS))
 
 #define NS_MATHML_HAS_ERROR(_flags) \
   (NS_MATHML_ERROR == ((_flags) & NS_MATHML_ERROR))

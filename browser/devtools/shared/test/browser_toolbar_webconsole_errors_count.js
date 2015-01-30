@@ -4,8 +4,7 @@
 // Tests that the developer toolbar errors count works properly.
 
 function test() {
-  const TEST_URI = "http://example.com/browser/browser/devtools/shared/test/" +
-                   "browser_toolbar_webconsole_errors_count.html";
+  const TEST_URI = TEST_URI_ROOT + "browser_toolbar_webconsole_errors_count.html";
 
   let gDevTools = Cu.import("resource:///modules/devtools/gDevTools.jsm",
                              {}).gDevTools;
@@ -193,10 +192,11 @@ function test() {
   function testEnd() {
     document.getElementById("developer-toolbar-closebutton").doCommand();
     let target1 = TargetFactory.forTab(tab1);
-    gDevTools.closeToolbox(target1);
-    gBrowser.removeTab(tab1);
-    gBrowser.removeTab(tab2);
-    finish();
+    gDevTools.closeToolbox(target1).then(() => {
+      gBrowser.removeTab(tab1);
+      gBrowser.removeTab(tab2);
+      finish();
+    });
   }
 
   // Utility functions

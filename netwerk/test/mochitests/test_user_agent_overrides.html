@@ -43,16 +43,10 @@ function getUA(host) {
 
 function testUA(options, callback) {
 
-  var [domain, override, test_hosts, skip, expected] =
-    [options.domain, options.override, options.test_hosts, options.skip, options.expected];
+  var [domain, override, test_hosts, expected] =
+    [options.domain, options.override, options.test_hosts, options.expected];
 
   info('Overriding ' + domain + ' with ' + override);
-
-  if (skip) {
-    todo(false, 'Skipping');
-    callback();
-    return;
-  }
 
   function is_subdomain(host) {
     var [test_domain] = host.slice(host.lastIndexOf('/') + 1).split(':', 1);
@@ -74,42 +68,56 @@ function testUA(options, callback) {
   SpecialPowers.pushPrefEnv({
     set: [[PREF_OVERRIDES_BRANCH + domain, override]],
   }, function () {
-    // check that the UA has changed after pref change
-    if (overrideNavigator) {
-      is(navigator.userAgent, expected,
-        'Navigator UA not overridden at step ' + (++step));
-    } else {
-      is(navigator.userAgent, DEFAULT_UA,
-        'Navigator UA should not be overridden at step ' + (++step));
-    }
-    test_hosts.forEach(function (test_host) {
-      is(getUA(test_host), expected,
-        'Header UA not overridden at step ' + (++step));
-    });
-    // clear the override pref to undo overriding the UA
-    SpecialPowers.pushPrefEnv({
-      clear: [[PREF_OVERRIDES_BRANCH + domain]],
-    }, function () {
-      // check that the UA has changed back
+    var ifr = document.createElement('IFRAME');
+    ifr.src = "about:blank";
+
+    ifr.addEventListener('load', function() {
+      var nav = ifr.contentWindow.navigator;
+
+      // check that the UA has changed after pref change
       if (overrideNavigator) {
-        is(navigator.userAgent, navigator_ua,
-          'Navigator UA not restored at step ' + (++step));
+        is(nav.userAgent, expected,
+          'Navigator UA not overridden at step ' + (++step));
+      } else {
+        is(nav.userAgent, DEFAULT_UA,
+          'Navigator UA should not be overridden at step ' + (++step));
       }
-      test_hosts.forEach(function (test_host, i) {
-        is(getUA(test_host), test_ua[i],
-          'Header UA not restored at step ' + (++step));
+
+      test_hosts.forEach(function (test_host) {
+        is(getUA(test_host), expected,
+          'Header UA not overridden at step ' + (++step));
       });
-      callback();
-    });
+
+      // clear the override pref to undo overriding the UA
+      SpecialPowers.pushPrefEnv({
+        clear: [[PREF_OVERRIDES_BRANCH + domain]],
+      }, function () {
+        var ifr = document.createElement('IFRAME');
+        ifr.src = "about:blank";
+
+        ifr.addEventListener('load', function() {
+          var nav = ifr.contentWindow.navigator;
+
+          // check that the UA has changed back
+          if (overrideNavigator) {
+            is(nav.userAgent, navigator_ua,
+              'Navigator UA not restored at step ' + (++step));
+          }
+          test_hosts.forEach(function (test_host, i) {
+            is(getUA(test_host), test_ua[i],
+              'Header UA not restored at step ' + (++step));
+          });
+          callback();
+        });
+
+        document.getElementById('content').appendChild(ifr);
+      });
+    }, false);
+
+    document.getElementById('content').appendChild(ifr);
   });
 }
 
-// mochitests on Android appear to have trouble with https
-// but when it eventually works, we should re-enable the test
-var skipHttps = /android/i.test(DEFAULT_UA);
-if (skipHttps) {
-  SimpleTest.doesThrow(function () getUA('https://example.com'), 'Re-enable https test');
-}
 
 var step = 0; // for logging
 var tests = [
@@ -150,7 +158,6 @@ var tests = [
 
   // should work with https
   {
-    skip: skipHttps,
     domain: 'example.com',
     override: UA_WHOLE_OVERRIDE,
     test_hosts: ['https://example.com',
@@ -232,6 +239,9 @@ SpecialPowers.Cu.import('resource://gre/modules/UserAgentOverrides.jsm', window)
 SpecialPowers.wrap(UserAgentOverrides).init();
 
 SimpleTest.waitForExplicitFinish();
+SimpleTest.requestCompleteLog();
+
+info(SpecialPowers.Cc["@mozilla.org/dom/site-specific-user-agent;1"].number);
 
 testOverrides(function ()
   testInactive(function ()
@@ -243,4 +253,3 @@ testOverrides(function ()
 </pre>
 </body>
 </html>
-

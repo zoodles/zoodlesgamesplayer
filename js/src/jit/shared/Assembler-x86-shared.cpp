@@ -10,8 +10,15 @@
 # include "jit/x86/MacroAssembler-x86.h"
 #elif defined(JS_CODEGEN_X64)
 # include "jit/x64/MacroAssembler-x64.h"
-#elif defined(JS_CODEGEN_ARM)
-# include "jit/arm/MacroAssembler-arm.h"
+#else
+# error "Wrong architecture. Only x86 and x64 should build this file!"
+#endif
+
+#ifdef _MSC_VER
+# include <intrin.h> // for __cpuid
+# if defined(_M_X64) && (_MSC_FULL_VER >= 160040219)
+#  include <immintrin.h> // for _xgetbv
+# endif
 #endif
 
 using namespace js;
@@ -43,7 +50,7 @@ TraceDataRelocations(JSTracer *trc, uint8_t *buffer, CompactBufferReader &reader
 {
     while (reader.more()) {
         size_t offset = reader.readUnsigned();
-        void **ptr = JSC::X86Assembler::getPointerRef(buffer + offset);
+        void **ptr = X86Assembler::getPointerRef(buffer + offset);
 
 #ifdef JS_PUNBOX64
         // All pointers on x64 will have the top bits cleared. If those bits
@@ -54,7 +61,7 @@ TraceDataRelocations(JSTracer *trc, uint8_t *buffer, CompactBufferReader &reader
             layout.asBits = *word;
             Value v = IMPL_TO_JSVAL(layout);
             gc::MarkValueUnbarriered(trc, &v, "ion-masm-value");
-            JS_ASSERT(*word == JSVAL_TO_IMPL(v).asBits);
+            *word = JSVAL_TO_IMPL(v).asBits;
             continue;
         }
 #endif
@@ -79,7 +86,7 @@ AssemblerX86Shared::trace(JSTracer *trc)
         if (rp.kind == Relocation::JITCODE) {
             JitCode *code = JitCode::FromExecutable((uint8_t *)rp.target);
             MarkJitCodeUnbarriered(trc, &code, "masmrel32");
-            JS_ASSERT(code == JitCode::FromExecutable((uint8_t *)rp.target));
+            MOZ_ASSERT(code == JitCode::FromExecutable((uint8_t *)rp.target));
         }
     }
     if (dataRelocations_.length()) {
@@ -128,25 +135,106 @@ AssemblerX86Shared::InvertCondition(Condition cond)
       case BelowOrEqual:
         return Above;
       default:
-        MOZ_ASSUME_UNREACHABLE("unexpected condition");
+        MOZ_CRASH("unexpected condition");
     }
 }
 
-void
-AutoFlushCache::update(uintptr_t newStart, size_t len)
+CPUInfo::SSEVersion CPUInfo::maxSSEVersion = UnknownSSE;
+CPUInfo::SSEVersion CPUInfo::maxEnabledSSEVersion = UnknownSSE;
+bool CPUInfo::avxPresent = false;
+bool CPUInfo::avxEnabled = false;
+
+static uintptr_t
+ReadXGETBV()
 {
+    // We use a variety of low-level mechanisms to get at the xgetbv
+    // instruction, including spelling out the xgetbv instruction as bytes,
+    // because older compilers and assemblers may not recognize the instruction
+    // by name.
+    size_t xcr0EAX = 0;
+#if defined(_XCR_XFEATURE_ENABLED_MASK)
+    xcr0EAX = _xgetbv(_XCR_XFEATURE_ENABLED_MASK);
+#elif defined(__GNUC__)
+    // xgetbv returns its results in %eax and %edx, and for our purposes here,
+    // we're only interested in the %eax value.
+    asm(".byte 0x0f, 0x01, 0xd0" : "=a"(xcr0EAX) : "c"(0) : "%edx");
+#elif defined(_MSC_VER) && defined(_M_IX86)
+    __asm {
+        xor ecx, ecx
+        _asm _emit 0x0f _asm _emit 0x01 _asm _emit 0xd0
+        mov xcr0EAX, eax
+    }
+#endif
+    return xcr0EAX;
 }
 
 void
-AutoFlushCache::flushAnyway()
+CPUInfo::SetSSEVersion()
 {
-}
+    int flagsEDX = 0;
+    int flagsECX = 0;
 
-AutoFlushCache::~AutoFlushCache()
-{
-    if (!runtime_)
-        return;
+#ifdef _MSC_VER
+    int cpuinfo[4];
+    __cpuid(cpuinfo, 1);
+    flagsECX = cpuinfo[2];
+    flagsEDX = cpuinfo[3];
+#elif defined(__GNUC__)
+# ifdef JS_CODEGEN_X64
+    asm (
+         "movl $0x1, %%eax;"
+         "cpuid;"
+         : "=c" (flagsECX), "=d" (flagsEDX)
+         :
+         : "%eax", "%ebx"
+         );
+# else
+    // On x86, preserve ebx. The compiler needs it for PIC mode.
+    // Some older processors don't fill the ecx register with cpuid, so clobber
+    // it before calling cpuid, so that there's no risk of picking random bits
+    // indicating SSE3/SSE4 are present.
+    asm (
+         "xor %%ecx, %%ecx;"
+         "movl $0x1, %%eax;"
+         "pushl %%ebx;"
+         "cpuid;"
+         "popl %%ebx;"
+         : "=c" (flagsECX), "=d" (flagsEDX)
+         :
+         : "%eax"
+         );
+# endif
+#else
+# error "Unsupported compiler"
+#endif
 
-    if (runtime_->flusher() == this)
-        runtime_->setFlusher(nullptr);
+    static const int SSEBit = 1 << 25;
+    static const int SSE2Bit = 1 << 26;
+    static const int SSE3Bit = 1 << 0;
+    static const int SSSE3Bit = 1 << 9;
+    static const int SSE41Bit = 1 << 19;
+    static const int SSE42Bit = 1 << 20;
+
+    if (flagsECX & SSE42Bit)      maxSSEVersion = SSE4_2;
+    else if (flagsECX & SSE41Bit) maxSSEVersion = SSE4_1;
+    else if (flagsECX & SSSE3Bit) maxSSEVersion = SSSE3;
+    else if (flagsECX & SSE3Bit)  maxSSEVersion = SSE3;
+    else if (flagsEDX & SSE2Bit)  maxSSEVersion = SSE2;
+    else if (flagsEDX & SSEBit)   maxSSEVersion = SSE;
+    else                          maxSSEVersion = NoSSE;
+
+    if (maxEnabledSSEVersion != UnknownSSE)
+        maxSSEVersion = Min(maxSSEVersion, maxEnabledSSEVersion);
+
+    static const int AVXBit = 1 << 28;
+    static const int XSAVEBit = 1 << 27;
+    avxPresent = (flagsECX & AVXBit) && (flagsECX & XSAVEBit) && avxEnabled;
+
+    // If the hardware supports AVX, check whether the OS supports it too.
+    if (avxPresent) {
+        size_t xcr0EAX = ReadXGETBV();
+        static const int xcr0SSEBit = 1 << 1;
+        static const int xcr0AVXBit = 1 << 2;
+        avxPresent = (xcr0EAX & xcr0SSEBit) && (xcr0EAX & xcr0AVXBit);
+    }
 }

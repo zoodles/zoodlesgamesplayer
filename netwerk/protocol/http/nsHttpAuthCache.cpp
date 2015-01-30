@@ -57,7 +57,7 @@ StrEquivalent(const char16_t *a, const char16_t *b)
 
 nsHttpAuthCache::nsHttpAuthCache()
     : mDB(nullptr)
-    , mObserver(new AppDataClearObserver(MOZ_THIS_IN_INITIALIZER_LIST()))
+    , mObserver(new AppDataClearObserver(this))
 {
     nsCOMPtr<nsIObserverService> obsSvc = services::GetObserverService();
     if (obsSvc) {
@@ -268,7 +268,7 @@ PLHashAllocOps nsHttpAuthCache::gHashAllocOps =
     nsHttpAuthCache::FreeEntry
 };
 
-NS_IMPL_ISUPPORTS1(nsHttpAuthCache::AppDataClearObserver, nsIObserver)
+NS_IMPL_ISUPPORTS(nsHttpAuthCache::AppDataClearObserver, nsIObserver)
 
 NS_IMETHODIMP
 nsHttpAuthCache::AppDataClearObserver::Observe(nsISupports *subject,

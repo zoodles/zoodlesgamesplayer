@@ -405,15 +405,17 @@ int32_t sAggregateBatchTestRedoOrderArr[] = {
 
 class TestTransaction : public nsITransaction
 {
+protected:
+  virtual ~TestTransaction() {}
+
 public:
 
   TestTransaction() {}
-  virtual ~TestTransaction() {}
 
   NS_DECL_ISUPPORTS
 };
 
-NS_IMPL_ISUPPORTS1(TestTransaction, nsITransaction)
+NS_IMPL_ISUPPORTS(TestTransaction, nsITransaction)
 
 class SimpleTransaction : public TestTransaction
 {
@@ -433,8 +435,8 @@ protected:
 
 public:
 
-  SimpleTransaction(int32_t aFlags=NONE_FLAG)
-                    : mVal(++sConstructorCount), mFlags(aFlags)
+  explicit SimpleTransaction(int32_t aFlags=NONE_FLAG)
+    : mVal(++sConstructorCount), mFlags(aFlags)
   {}
 
   virtual ~SimpleTransaction()

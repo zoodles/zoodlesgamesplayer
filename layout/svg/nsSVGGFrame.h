@@ -17,16 +17,16 @@ class nsSVGGFrame : public nsSVGGFrameBase
   friend nsIFrame*
   NS_NewSVGGFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
 protected:
-  nsSVGGFrame(nsStyleContext* aContext) :
+  explicit nsSVGGFrame(nsStyleContext* aContext) :
     nsSVGGFrameBase(aContext) {}
 
 public:
   NS_DECL_FRAMEARENA_HELPERS
 
 #ifdef DEBUG
-  virtual void Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
 #endif
 
   /**
@@ -52,8 +52,7 @@ public:
   virtual void NotifySVGChanged(uint32_t aFlags) MOZ_OVERRIDE;
 
   // nsSVGContainerFrame methods:
-  virtual gfxMatrix GetCanvasTM(uint32_t aFor,
-                                nsIFrame* aTransformRoot = nullptr) MOZ_OVERRIDE;
+  virtual gfxMatrix GetCanvasTM() MOZ_OVERRIDE;
 
   nsAutoPtr<gfxMatrix> mCanvasTM;
 };

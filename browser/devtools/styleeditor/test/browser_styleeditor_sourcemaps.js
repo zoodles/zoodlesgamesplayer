@@ -6,123 +6,144 @@
 const TESTCASE_URI = TEST_BASE_HTTPS + "sourcemaps.html";
 const PREF = "devtools.styleeditor.source-maps-enabled";
 
-function test()
-{
-  waitForExplicitFinish();
 
-  Services.prefs.setBoolPref(PREF, true);
-
-  let count = 0;
-  addTabAndOpenStyleEditor(function(panel) {
-    let UI = panel.UI;
-    UI.on("editor-added", (event, editor) => {
-      if (++count == 3) {
-        // wait for 3 editors - 1 for first style sheet, 1 for the
-        // generated style sheet, and 1 for original source after it
-        // loads and replaces the generated style sheet.
-        runTests(UI);
-      }
-    })
-  });
-
-  content.location = TESTCASE_URI;
+const contents = {
+  "sourcemaps.scss": [
+    "",
+    "$paulrougetpink: #f06;",
+    "",
+    "div {",
+    "  color: $paulrougetpink;",
+    "}",
+    "",
+    "span {",
+    "  background-color: #EEE;",
+    "}"
+  ].join("\n"),
+  "contained.scss": [
+    "$pink: #f06;",
+    "",
+    "#header {",
+    "  color: $pink;",
+    "}"
+  ].join("\n"),
+  "sourcemaps.css": [
+    "div {",
+    "  color: #ff0066; }",
+    "",
+    "span {",
+    "  background-color: #EEE; }",
+    "",
+    "/*# sourceMappingURL=sourcemaps.css.map */"
+  ].join("\n"),
+  "contained.css": [
+    "#header {",
+    "  color: #f06; }",
+    "",
+    "/*# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiIiwic291cmNlcyI6WyJzYXNzL2NvbnRhaW5lZC5zY3NzIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUVBO0VBQ0UsT0FISyIsInNvdXJjZXNDb250ZW50IjpbIiRwaW5rOiAjZjA2O1xuXG4jaGVhZGVyIHtcbiAgY29sb3I6ICRwaW5rO1xufSJdfQ==*/"
+  ].join("\n"),
+  "test-stylus.styl": [
+   "paulrougetpink = #f06;",
+   "",
+   "div",
+   "  color: paulrougetpink",
+   "",
+  "span",
+  "  background-color: #EEE",
+  ""
+  ].join("\n"),
+  "test-stylus.css": [
+    "div {",
+    "  color: #f06;",
+    "}",
+    "span {",
+    "  background-color: #eee;",
+    "}",
+    "/*# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbInRlc3Qtc3R5bHVzLnN0eWwiXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBRUE7RUFDRSxPQUFPLEtBQVA7O0FBRUY7RUFDRSxrQkFBa0IsS0FBbEIiLCJmaWxlIjoidGVzdC1zdHlsdXMuY3NzIiwic291cmNlc0NvbnRlbnQiOlsicGF1bHJvdWdldHBpbmsgPSAjZjA2O1xuXG5kaXZcbiAgY29sb3I6IHBhdWxyb3VnZXRwaW5rXG5cbnNwYW5cbiAgYmFja2dyb3VuZC1jb2xvcjogI0VFRVxuIl19 */"
+  ].join("\n")
 }
 
-function runTests(UI)
-{
-  is(UI.editors.length, 2);
+const cssNames = ["sourcemaps.css", "contained.css", "test-stylus.css"];
+const origNames = ["sourcemaps.scss", "contained.scss", "test-stylus.styl"];
 
-  let firstEditor = UI.editors[0];
-  testFirstEditor(firstEditor);
+waitForExplicitFinish();
 
-  let ScssEditor = UI.editors[1];
+add_task(function*() {
+  let {UI} = yield addTabAndOpenStyleEditors(7, null, TESTCASE_URI);
 
-  let link = getStylesheetNameLinkFor(ScssEditor);
-  link.click();
+  is(UI.editors.length, 4,
+    "correct number of editors with source maps enabled");
 
-  ScssEditor.getSourceEditor().then(() => {
-    testScssEditor(ScssEditor);
+  // Test first plain css editor
+  testFirstEditor(UI.editors[0]);
 
-    togglePref(UI);
-  });
-}
+  // Test Scss editors
+  yield testEditor(UI.editors[1], origNames);
+  yield testEditor(UI.editors[2], origNames);
+  yield testEditor(UI.editors[3], origNames);
 
-function togglePref(UI) {
-  let count = 0;
+  // Test disabling original sources
+  yield togglePref(UI);
 
-  UI.on("editor-added", (event, editor) => {
-    if (++count == 2) {
-      testTogglingPref(UI);
-    }
-  })
+  is(UI.editors.length, 4, "correct number of editors after pref toggled");
 
-  Services.prefs.setBoolPref(PREF, false);
-}
+  // Test CSS editors
+  yield testEditor(UI.editors[1], cssNames);
+  yield testEditor(UI.editors[2], cssNames);
+  yield testEditor(UI.editors[3], cssNames);
 
-function testTogglingPref(UI) {
-  is(UI.editors.length, 2, "correct number of editors after pref toggled");
-
-  let CSSEditor = UI.editors[1];
-
-  let link = getStylesheetNameLinkFor(CSSEditor);
-  link.click();
-
-  CSSEditor.getSourceEditor().then(() => {
-    testCSSEditor(CSSEditor);
-
-    finishUp();
-  })
-}
+  Services.prefs.clearUserPref(PREF);
+});
 
 function testFirstEditor(editor) {
   let name = getStylesheetNameFor(editor);
   is(name, "simple.css", "First style sheet display name is correct");
 }
 
-function testScssEditor(editor) {
+function testEditor(editor, possibleNames) {
   let name = getStylesheetNameFor(editor);
-  is(name, "sourcemaps.scss", "Original source display name is correct");
+  ok(possibleNames.indexOf(name) >= 0, name + " editor name is correct");
 
-  let text = editor.sourceEditor.getText();
+  return openEditor(editor).then(() => {
+    let expectedText = contents[name];
 
-  is(text, "\n\
-$paulrougetpink: #f06;\n\
-\n\
-div {\n\
-  color: $paulrougetpink;\n\
-}\n\
-\n\
-span {\n\
-  background-color: #EEE;\n\
-}", "Original source text is correct");
-}
+    let text = editor.sourceEditor.getText();
 
-function testCSSEditor(editor) {
-  let name = getStylesheetNameFor(editor);
-  is(name, "sourcemaps.css", "CSS source display name is correct");
-
-  let text = editor.sourceEditor.getText();
-
-  is(text, "div {\n\
-  color: #ff0066; }\n\
-\n\
-span {\n\
-  background-color: #EEE; }\n\
-\n\
-/*# sourceMappingURL=sourcemaps.css.map */", "CSS text is correct");
+    is(text, expectedText, name + " editor contains expected text");
+  });
 }
 
 /* Helpers */
-function getStylesheetNameLinkFor(editor) {
+
+function togglePref(UI) {
+  let deferred = promise.defer();
+  let count = 0;
+
+  UI.on("editor-added", (event, editor) => {
+    if (++count == 3) {
+      deferred.resolve();
+    }
+  })
+  let editorsPromise = deferred.promise;
+
+  let selectedPromise = UI.once("editor-selected");
+
+  Services.prefs.setBoolPref(PREF, false);
+
+  return promise.all([editorsPromise, selectedPromise]);
+}
+
+function openEditor(editor) {
+  getLinkFor(editor).click();
+
+  return editor.getSourceEditor();
+}
+
+function getLinkFor(editor) {
   return editor.summary.querySelector(".stylesheet-name");
 }
 
 function getStylesheetNameFor(editor) {
   return editor.summary.querySelector(".stylesheet-name > label")
          .getAttribute("value")
-}
-
-function finishUp() {
-  Services.prefs.clearUserPref(PREF);
-  finish();
 }

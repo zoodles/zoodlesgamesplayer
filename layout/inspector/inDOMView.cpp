@@ -24,9 +24,9 @@
 #include "nsITreeColumns.h"
 #include "nsITreeBoxObject.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/Services.h"
 
 #ifdef ACCESSIBILITY
-#include "nsIAccessible.h"
 #include "nsIAccessibilityService.h"
 #endif
 
@@ -39,7 +39,7 @@ class inDOMViewNode
 {
 public:
   inDOMViewNode() {}
-  inDOMViewNode(nsIDOMNode* aNode);
+  explicit inDOMViewNode(nsIDOMNode* aNode);
   ~inDOMViewNode();
 
   nsCOMPtr<nsIDOMNode> node;
@@ -93,10 +93,10 @@ inDOMView::~inDOMView()
 ////////////////////////////////////////////////////////////////////////
 // nsISupports
 
-NS_IMPL_ISUPPORTS3(inDOMView,
-                   inIDOMView,
-                   nsITreeView,
-                   nsIMutationObserver)
+NS_IMPL_ISUPPORTS(inDOMView,
+                  inIDOMView,
+                  nsITreeView,
+                  nsIMutationObserver)
 
 ////////////////////////////////////////////////////////////////////////
 // inIDOMView
@@ -329,14 +329,11 @@ inDOMView::GetCellProperties(int32_t row, nsITreeColumn* col,
 
 #ifdef ACCESSIBILITY
   if (mShowAccessibleNodes) {
-    nsCOMPtr<nsIAccessibilityService> accService(
-      do_GetService("@mozilla.org/accessibilityService;1"));
+	  nsCOMPtr<nsIAccessibilityService> accService =
+        services::GetAccessibilityService();
     NS_ENSURE_TRUE(accService, NS_ERROR_FAILURE);
 
-    nsCOMPtr<nsIAccessible> accessible;
-    nsresult rv =
-      accService->GetAccessibleFor(node->node, getter_AddRefs(accessible));
-    if (NS_SUCCEEDED(rv) && accessible)
+    if (accService->HasAccessible(node->node))
       aProps.AppendLiteral(" ACCESSIBLE_NODE");
   }
 #endif
@@ -790,7 +787,7 @@ inDOMView::ContentInserted(nsIDocument *aDocument, nsIContent* aContainer,
   nsCOMPtr<nsIDOMNode> childDOMNode(do_QueryInterface(aChild));
   nsCOMPtr<nsIDOMNode> parent;
   if (!mDOMUtils) {
-    mDOMUtils = do_GetService("@mozilla.org/inspector/dom-utils;1");
+    mDOMUtils = services::GetInDOMUtils();
     if (!mDOMUtils) {
       return;
     }
@@ -1189,7 +1186,7 @@ inDOMView::GetChildNodesFor(nsIDOMNode* aNode, nsCOMArray<nsIDOMNode>& aResult)
   if (mWhatToShow & nsIDOMNodeFilter::SHOW_ELEMENT) {
     nsCOMPtr<nsIDOMNodeList> kids;
     if (!mDOMUtils) {
-      mDOMUtils = do_GetService("@mozilla.org/inspector/dom-utils;1");
+      mDOMUtils = services::GetInDOMUtils();
       if (!mDOMUtils) {
         return NS_ERROR_FAILURE;
       }
@@ -1234,7 +1231,7 @@ inDOMView::AppendKidsToArray(nsIDOMNodeList* aKids,
 
   // Try and get DOM Utils in case we don't have one yet.
   if (!mShowWhitespaceNodes && !mDOMUtils) {
-    mDOMUtils = do_CreateInstance("@mozilla.org/inspector/dom-utils;1");
+    mDOMUtils = services::GetInDOMUtils();
   }
 
   for (uint32_t i = 0; i < l; ++i) {

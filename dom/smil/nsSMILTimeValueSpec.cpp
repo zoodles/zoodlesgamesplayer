@@ -23,7 +23,7 @@ using namespace mozilla::dom;
 //----------------------------------------------------------------------
 // Nested class: EventListener
 
-NS_IMPL_ISUPPORTS1(nsSMILTimeValueSpec::EventListener, nsIDOMEventListener)
+NS_IMPL_ISUPPORTS(nsSMILTimeValueSpec::EventListener, nsIDOMEventListener)
 
 NS_IMETHODIMP
 nsSMILTimeValueSpec::EventListener::HandleEvent(nsIDOMEvent* aEvent)
@@ -41,7 +41,7 @@ nsSMILTimeValueSpec::nsSMILTimeValueSpec(nsSMILTimedElement& aOwner,
                                          bool aIsBegin)
   : mOwner(&aOwner),
     mIsBegin(aIsBegin),
-    mReferencedElement(MOZ_THIS_IN_INITIALIZER_LIST())
+    mReferencedElement(this)
 {
 }
 

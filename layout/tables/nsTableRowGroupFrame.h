@@ -51,7 +51,7 @@ struct nsRowGroupReflowState {
  * @see nsTableFrame
  * @see nsTableRowFrame
  */
-class nsTableRowGroupFrame
+class nsTableRowGroupFrame MOZ_FINAL
   : public nsContainerFrame
   , public nsILineIterator
 {
@@ -65,7 +65,8 @@ public:
     *
     * @return           the frame that was created
     */
-  friend nsIFrame* NS_NewTableRowGroupFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
+  friend nsTableRowGroupFrame* NS_NewTableRowGroupFrame(nsIPresShell* aPresShell,
+                                                        nsStyleContext* aContext);
   virtual ~nsTableRowGroupFrame();
 
   virtual void DestroyFrom(nsIFrame* aDestructRoot) MOZ_OVERRIDE;
@@ -73,15 +74,13 @@ public:
   /** @see nsIFrame::DidSetStyleContext */
   virtual void DidSetStyleContext(nsStyleContext* aOldStyleContext) MOZ_OVERRIDE;
   
-  virtual nsresult AppendFrames(ChildListID     aListID,
-                                nsFrameList&    aFrameList) MOZ_OVERRIDE;
-
-  virtual nsresult InsertFrames(ChildListID     aListID,
-                                nsIFrame*       aPrevFrame,
-                                nsFrameList&    aFrameList) MOZ_OVERRIDE;
-
-  virtual nsresult RemoveFrame(ChildListID     aListID,
-                               nsIFrame*       aOldFrame) MOZ_OVERRIDE;
+  virtual void AppendFrames(ChildListID     aListID,
+                            nsFrameList&    aFrameList) MOZ_OVERRIDE;
+  virtual void InsertFrames(ChildListID     aListID,
+                            nsIFrame*       aPrevFrame,
+                            nsFrameList&    aFrameList) MOZ_OVERRIDE;
+  virtual void RemoveFrame(ChildListID     aListID,
+                           nsIFrame*       aOldFrame) MOZ_OVERRIDE;
 
   virtual nsMargin GetUsedMargin() const MOZ_OVERRIDE;
   virtual nsMargin GetUsedBorder() const MOZ_OVERRIDE;
@@ -100,10 +99,10 @@ public:
     *
     * @see nsIFrame::Reflow
     */
-  virtual nsresult Reflow(nsPresContext*           aPresContext,
-                          nsHTMLReflowMetrics&     aDesiredSize,
-                          const nsHTMLReflowState& aReflowState,
-                          nsReflowStatus&          aStatus) MOZ_OVERRIDE;
+  virtual void Reflow(nsPresContext*           aPresContext,
+                      nsHTMLReflowMetrics&     aDesiredSize,
+                      const nsHTMLReflowState& aReflowState,
+                      nsReflowStatus&          aStatus) MOZ_OVERRIDE;
 
   virtual bool UpdateOverflow() MOZ_OVERRIDE;
 
@@ -211,13 +210,11 @@ public:
     * @param aNumFramesOnLine  - return the numbers of cells originating in
     *                            this row
     * @param aLineBounds       - rect of the row
-    * @param aLineFlags        - unused set to 0
     */
   NS_IMETHOD GetLine(int32_t aLineNumber,
                      nsIFrame** aFirstFrameOnLine,
                      int32_t* aNumFramesOnLine,
-                     nsRect& aLineBounds,
-                     uint32_t* aLineFlags) MOZ_OVERRIDE;
+                     nsRect& aLineBounds) MOZ_OVERRIDE;
   
   /** Given a frame that's a child of the rowgroup, find which line its on.
     * @param aFrame       - frame, should be a row
@@ -229,23 +226,22 @@ public:
   virtual int32_t FindLineContaining(nsIFrame* aFrame, int32_t aStartLine = 0) MOZ_OVERRIDE;
 
   /** Find the orginating cell frame on a row that is the nearest to the
-    * coordinate X.
+    * inline-dir coordinate of aPos.
     * @param aLineNumber          - the index of the row relative to the row group
-    * @param aX                   - X coordinate in twips relative to the
+    * @param aPos                 - coordinate in twips relative to the
     *                               origin of the row group
     * @param aFrameFound          - pointer to the cellframe
-    * @param aXIsBeforeFirstFrame - the point is before the first originating
+    * @param aPosIsBeforeFirstFrame - the point is before the first originating
     *                               cellframe
-    * @param aXIsAfterLastFrame   - the point is after the last originating
+    * @param aPosIsAfterLastFrame   - the point is after the last originating
     *                               cellframe
     */
   NS_IMETHOD FindFrameAt(int32_t aLineNumber,
-                         nscoord aX,
+                         nsPoint aPos,
                          nsIFrame** aFrameFound,
-                         bool* aXIsBeforeFirstFrame,
-                         bool* aXIsAfterLastFrame) MOZ_OVERRIDE;
+                         bool* aPosIsBeforeFirstFrame,
+                         bool* aPosIsAfterLastFrame) MOZ_OVERRIDE;
 
-#ifdef IBMBIDI
    /** Check whether visual and logical order of cell frames within a line are
      * identical. As the layout will reorder them this is always the case
      * @param aLine        - the index of the row relative to the table
@@ -258,7 +254,6 @@ public:
                             bool                     *aIsReordered,
                             nsIFrame                 **aFirstVisual,
                             nsIFrame                 **aLastVisual) MOZ_OVERRIDE;
-#endif
 
   /** Find the next originating cell frame that originates in the row.    
     * @param aFrame      - cell frame to start with, will return the next cell
@@ -331,17 +326,18 @@ public:
   virtual void InvalidateFrameForRemoval() MOZ_OVERRIDE { InvalidateFrameSubtree(); }
 
 protected:
-  nsTableRowGroupFrame(nsStyleContext* aContext);
+  explicit nsTableRowGroupFrame(nsStyleContext* aContext);
 
   void InitChildReflowState(nsPresContext&     aPresContext, 
                             bool               aBorderCollapse,
                             nsHTMLReflowState& aReflowState);
   
-  virtual int GetLogicalSkipSides(const nsHTMLReflowState* aReflowState = nullptr) const MOZ_OVERRIDE;
+  virtual LogicalSides GetLogicalSkipSides(const nsHTMLReflowState* aReflowState = nullptr) const MOZ_OVERRIDE;
 
   void PlaceChild(nsPresContext*         aPresContext,
                   nsRowGroupReflowState& aReflowState,
                   nsIFrame*              aKidFrame,
+                  nsPoint                aKidPosition,
                   nsHTMLReflowMetrics&   aDesiredSize,
                   const nsRect&          aOriginalKidRect,
                   const nsRect&          aOriginalKidVisualOverflow);
@@ -360,14 +356,12 @@ protected:
    *
    * @param   aPresContext presentation context to use
    * @param   aReflowState current inline state
-   * @return  true if we successfully reflowed all the mapped children and false
-   *            otherwise, e.g. we pushed children to the next in flow
    */
-  nsresult ReflowChildren(nsPresContext*         aPresContext,
-                          nsHTMLReflowMetrics&   aDesiredSize,
-                          nsRowGroupReflowState& aReflowState,
-                          nsReflowStatus&        aStatus,
-                          bool*                aPageBreakBeforeEnd = nullptr);
+  void ReflowChildren(nsPresContext*         aPresContext,
+                      nsHTMLReflowMetrics&   aDesiredSize,
+                      nsRowGroupReflowState& aReflowState,
+                      nsReflowStatus&        aStatus,
+                      bool*                aPageBreakBeforeEnd = nullptr);
 
   nsresult SplitRowGroup(nsPresContext*           aPresContext,
                          nsHTMLReflowMetrics&     aDesiredSize,

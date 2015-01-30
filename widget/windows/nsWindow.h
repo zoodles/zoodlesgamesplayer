@@ -40,9 +40,7 @@
 #endif
 
 #include "nsUXThemeData.h"
-
 #include "nsIDOMMouseEvent.h"
-
 #include "nsIIdleServiceInternal.h"
 
 /**
@@ -75,9 +73,9 @@ class nsWindow : public nsWindowBase
   typedef mozilla::widget::TaskbarWindowPreview TaskbarWindowPreview;
   typedef mozilla::widget::NativeKey NativeKey;
   typedef mozilla::widget::MSGResult MSGResult;
+
 public:
   nsWindow();
-  virtual ~nsWindow();
 
   NS_DECL_ISUPPORTS_INHERITED
 
@@ -120,6 +118,7 @@ public:
   NS_IMETHOD              SetFocus(bool aRaise);
   NS_IMETHOD              GetBounds(nsIntRect &aRect);
   NS_IMETHOD              GetScreenBounds(nsIntRect &aRect);
+  NS_IMETHOD              GetRestoredBounds(nsIntRect &aRect) MOZ_OVERRIDE;
   NS_IMETHOD              GetClientBounds(nsIntRect &aRect);
   virtual nsIntPoint      GetClientOffset();
   void                    SetBackgroundColor(const nscolor &aColor);
@@ -127,7 +126,7 @@ public:
                                     uint32_t aHotspotX, uint32_t aHotspotY);
   NS_IMETHOD              SetCursor(nsCursor aCursor);
   virtual nsresult        ConfigureChildren(const nsTArray<Configuration>& aConfigurations);
-  NS_IMETHOD              MakeFullScreen(bool aFullScreen);
+  NS_IMETHOD              MakeFullScreen(bool aFullScreen, nsIScreen* aScreen = nullptr);
   NS_IMETHOD              HideWindowChrome(bool aShouldHide);
   NS_IMETHOD              Invalidate(bool aEraseBackground = false,
                                      bool aUpdateNCArea = false,
@@ -151,7 +150,6 @@ public:
                                           LayersBackend aBackendHint = mozilla::layers::LayersBackend::LAYERS_NONE,
                                           LayerManagerPersistence aPersistence = LAYER_MANAGER_CURRENT,
                                           bool* aAllowRetaining = nullptr);
-  gfxASurface             *GetThebesSurface();
   NS_IMETHOD              OnDefaultButtonLoaded(const nsIntRect &aButtonRect);
   NS_IMETHOD              OverrideSystemMouseScrollSpeed(double aOriginalDeltaX,
                                                          double aOriginalDeltaY,
@@ -177,7 +175,6 @@ public:
                                                            double aDeltaZ,
                                                            uint32_t aModifierFlags,
                                                            uint32_t aAdditionalFlags);
-  NS_IMETHOD              NotifyIME(const IMENotification& aIMENotification) MOZ_OVERRIDE;
   NS_IMETHOD_(void)       SetInputContext(const InputContext& aContext,
                                           const InputContextAction& aAction);
   NS_IMETHOD_(InputContext) GetInputContext();
@@ -197,6 +194,7 @@ public:
   virtual void            EndRemoteDrawing() MOZ_OVERRIDE;
 
   virtual void            UpdateThemeGeometries(const nsTArray<ThemeGeometry>& aThemeGeometries) MOZ_OVERRIDE;
+  virtual uint32_t        GetMaxTouchPoints() const MOZ_OVERRIDE;
 
   /**
    * Event helpers
@@ -240,16 +238,6 @@ public:
   virtual bool            AutoErase(HDC dc);
 
   /**
-   * Start allowing Direct3D9 to be used by widgets when GetLayerManager is
-   * called.
-   *
-   * @param aReinitialize Call GetLayerManager on widgets to ensure D3D9 is
-   *                      initialized, this is usually called when this function
-   *                      is triggered by timeout and not user/web interaction.
-   */
-  static void             StartAllowingD3D9(bool aReinitialize);
-
-  /**
    * AssociateDefaultIMC() associates or disassociates the default IMC for
    * the window.
    *
@@ -289,8 +277,12 @@ public:
   virtual bool ShouldUseOffMainThreadCompositing();
 
 protected:
+  virtual ~nsWindow();
 
   virtual void WindowUsesOMTC() MOZ_OVERRIDE;
+
+  virtual nsresult NotifyIMEInternal(
+                     const IMENotification& aIMENotification) MOZ_OVERRIDE;
 
   // A magic number to identify the FAKETRACKPOINTSCROLLABLE window created
   // when the trackpoint hack is enabled.
@@ -314,8 +306,6 @@ protected:
   static BOOL    CALLBACK ClearResourcesCallback(HWND aChild, LPARAM aParam);
   static BOOL    CALLBACK EnumAllChildWindProc(HWND aWnd, LPARAM aParam);
   static BOOL    CALLBACK EnumAllThreadWindowProc(HWND aWnd, LPARAM aParam);
-  static void             AllowD3D9Callback(nsWindow *aWindow);
-  static void             AllowD3D9WithReinitializeCallback(nsWindow *aWindow);
 
   /**
    * Window utilities
@@ -373,6 +363,8 @@ protected:
   static bool             ConvertStatus(nsEventStatus aStatus);
   static void             PostSleepWakeNotification(const bool aIsSleepMode);
   int32_t                 ClientMarginHitTestPoint(int32_t mx, int32_t my);
+  static TimeStamp        GetMessageTimeStamp(LONG aEventTime);
+  static void             UpdateFirstEventTime(DWORD aEventTime);
 
   /**
    * Event handlers
@@ -443,8 +435,8 @@ protected:
    */
   void                    StopFlashing();
   static bool             IsTopLevelMouseExit(HWND aWnd);
-  nsresult                SetWindowClipRegion(const nsTArray<nsIntRect>& aRects,
-                                              bool aIntersectWithExisting);
+  virtual nsresult        SetWindowClipRegion(const nsTArray<nsIntRect>& aRects,
+                                              bool aIntersectWithExisting) MOZ_OVERRIDE;
   nsIntRegion             GetRegionToPaint(bool aForceFullRepaint, 
                                            PAINTSTRUCT ps, HDC aDC);
   static void             ActivateOtherWindowHelper(HWND aWnd);
@@ -479,7 +471,6 @@ protected:
   nsSizeMode            mOldSizeMode;
   nsSizeMode            mLastSizeMode;
   WindowHook            mWindowHook;
-  DWORD                 mAssumeWheelIsZoomUntil;
   uint32_t              mPickerDisplayCount;
   HICON                 mIconSmall;
   HICON                 mIconBig;
@@ -496,7 +487,6 @@ protected:
   static bool           sIsInMouseCapture;
   static int            sTrimOnMinimize;
   static const char*    sDefaultMainWindowClass;
-  static bool           sAllowD3D9;
 
   // Always use the helper method to read this property.  See bug 603793.
   static TriStateBool   sHasBogusPopupsDropShadowOnMultiMonitor;
@@ -509,6 +499,10 @@ protected:
   nsIntMargin           mNonClientOffset;
   // Margins set by the owner
   nsIntMargin           mNonClientMargins;
+  // Margins we'd like to set once chrome is reshown:
+  nsIntMargin           mFutureMarginsOnceChromeShows;
+  // Indicates we need to apply margins once toggling chrome into showing:
+  bool                  mFutureMarginsToUse;
 
   // Indicates custom frames are enabled
   bool                  mCustomNonClient;
@@ -576,6 +570,11 @@ protected:
   POINT mCachedHitTestPoint;
   TimeStamp mCachedHitTestTime;
   int32_t mCachedHitTestResult;
+
+  // For converting native event times to timestamps we record the time of the
+  // first received event in each time scale.
+  static DWORD     sFirstEventTime;
+  static TimeStamp sFirstEventTimeStamp;
 
   static bool sNeedsToInitMouseWheelSettings;
   static void InitMouseWheelScrollData();

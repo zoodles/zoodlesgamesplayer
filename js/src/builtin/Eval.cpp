@@ -7,12 +7,14 @@
 #include "builtin/Eval.h"
 
 #include "mozilla/HashFunctions.h"
+#include "mozilla/Range.h"
 
 #include "jscntxt.h"
-#include "jsonparser.h"
 
 #include "frontend/BytecodeCompiler.h"
+#include "vm/Debugger.h"
 #include "vm/GlobalObject.h"
+#include "vm/JSONParser.h"
 
 #include "vm/Interpreter-inl.h"
 
@@ -20,6 +22,9 @@ using namespace js;
 
 using mozilla::AddToHash;
 using mozilla::HashString;
+using mozilla::RangedPtr;
+
+using JS::AutoCheckCannotGC;
 
 // We should be able to assert this for *any* fp->scopeChain().
 static void
@@ -27,11 +32,8 @@ AssertInnerizedScopeChain(JSContext *cx, JSObject &scopeobj)
 {
 #ifdef DEBUG
     RootedObject obj(cx);
-    for (obj = &scopeobj; obj; obj = obj->enclosingScope()) {
-        if (JSObjectOp op = obj->getClass()->ext.innerObject) {
-            JS_ASSERT(op(cx, obj) == obj);
-        }
-    }
+    for (obj = &scopeobj; obj; obj = obj->enclosingScope())
+        MOZ_ASSERT(GetInnerObject(obj) == obj);
 #endif
 }
 
@@ -50,10 +52,11 @@ IsEvalCacheCandidate(JSScript *script)
 /* static */ HashNumber
 EvalCacheHashPolicy::hash(const EvalCacheLookup &l)
 {
-    return AddToHash(HashString(l.str->chars(), l.str->length()),
-                     l.callerScript.get(),
-                     l.version,
-                     l.pc);
+    AutoCheckCannotGC nogc;
+    uint32_t hash = l.str->hasLatin1Chars()
+                    ? HashString(l.str->latin1Chars(nogc), l.str->length())
+                    : HashString(l.str->twoByteChars(nogc), l.str->length());
+    return AddToHash(hash, l.callerScript.get(), l.version, l.pc);
 }
 
 /* static */ bool
@@ -61,26 +64,15 @@ EvalCacheHashPolicy::match(const EvalCacheEntry &cacheEntry, const EvalCacheLook
 {
     JSScript *script = cacheEntry.script;
 
-    JS_ASSERT(IsEvalCacheCandidate(script));
+    MOZ_ASSERT(IsEvalCacheCandidate(script));
 
-    // Get the source string passed for safekeeping in the atom map
-    // by the prior eval to frontend::CompileScript.
-    JSAtom *keyStr = script->atoms[0];
-
-    return EqualStrings(keyStr, l.str) &&
+    return EqualStrings(cacheEntry.str, l.str) &&
            cacheEntry.callerScript == l.callerScript &&
            script->getVersion() == l.version &&
            cacheEntry.pc == l.pc;
 }
 
-// There are two things we want to do with each script executed in EvalKernel:
-//  1. notify OldDebugAPI about script creation/destruction
-//  2. add the script to the eval cache when EvalKernel is finished
-//
-// NB: Although the eval cache keeps a script alive wrt to the JS engine, from
-// an OldDebugAPI  user's perspective, we want each eval() to create and
-// destroy a script. This hides implementation details and means we don't have
-// to deal with calls to JS_GetScriptObject for scripts in the eval cache.
+// Add the script to the eval cache when EvalKernel is finished
 class EvalScriptGuard
 {
     JSContext *cx_;
@@ -90,17 +82,16 @@ class EvalScriptGuard
     EvalCacheLookup lookup_;
     EvalCache::AddPtr p_;
 
-    Rooted<JSLinearString*> lookupStr_;
+    RootedLinearString lookupStr_;
 
   public:
-    EvalScriptGuard(JSContext *cx)
+    explicit EvalScriptGuard(JSContext *cx)
         : cx_(cx), script_(cx), lookup_(cx), lookupStr_(cx) {}
 
     ~EvalScriptGuard() {
         if (script_) {
-            CallDestroyScriptHook(cx_->runtime()->defaultFreeOp(), script_);
             script_->cacheForEval();
-            EvalCacheEntry cacheEntry = {script_, lookup_.callerScript, lookup_.pc};
+            EvalCacheEntry cacheEntry = {lookupStr_, script_, lookup_.callerScript, lookup_.pc};
             lookup_.str = lookupStr_;
             if (lookup_.str && IsEvalCacheCandidate(script_))
                 cx_->runtime()->evalCache.relookupOrAdd(p_, lookup_, cacheEntry);
@@ -118,14 +109,13 @@ class EvalScriptGuard
         if (p_) {
             script_ = p_->script;
             cx_->runtime()->evalCache.remove(p_);
-            CallNewScriptHook(cx_, script_, NullPtr());
             script_->uncacheForEval();
         }
     }
 
     void setNewScript(JSScript *script) {
         // JSScript::initFromEmitter has already called js_CallNewScriptHook.
-        JS_ASSERT(!script_ && script);
+        MOZ_ASSERT(!script_ && script);
         script_ = script;
         script_->setActiveEval();
     }
@@ -135,7 +125,7 @@ class EvalScriptGuard
     }
 
     HandleScript script() {
-        JS_ASSERT(script_);
+        MOZ_ASSERT(script_);
         return script_;
     }
 };
@@ -146,23 +136,18 @@ enum EvalJSONResult {
     EvalJSON_NotJSON
 };
 
-static EvalJSONResult
-TryEvalJSON(JSContext *cx, JSScript *callerScript,
-            ConstTwoByteChars chars, size_t length, MutableHandleValue rval)
+template <typename CharT>
+static bool
+EvalStringMightBeJSON(const mozilla::Range<const CharT> chars)
 {
     // If the eval string starts with '(' or '[' and ends with ')' or ']', it may be JSON.
     // Try the JSON parser first because it's much faster.  If the eval string
     // isn't JSON, JSON parsing will probably fail quickly, so little time
     // will be lost.
-    //
-    // Don't use the JSON parser if the caller is strict mode code, because in
-    // strict mode object literals must not have repeated properties, and the
-    // JSON parser cheerfully (and correctly) accepts them.  If you're parsing
-    // JSON with eval and using strict mode, you deserve to be slow.
+    size_t length = chars.length();
     if (length > 2 &&
         ((chars[0] == '[' && chars[length - 1] == ']') ||
-        (chars[0] == '(' && chars[length - 1] == ')')) &&
-        (!callerScript || !callerScript->strict()))
+         (chars[0] == '(' && chars[length - 1] == ')')))
     {
         // Remarkably, JavaScript syntax is not a superset of JSON syntax:
         // strings in JavaScript cannot contain the Unicode line and paragraph
@@ -170,49 +155,61 @@ TryEvalJSON(JSContext *cx, JSScript *callerScript,
         // Rather than force the JSON parser to handle this quirk when used by
         // eval, we simply don't use the JSON parser when either character
         // appears in the provided string.  See bug 657367.
-        for (const jschar *cp = &chars[1], *end = &chars[length - 2]; ; cp++) {
-            if (*cp == 0x2028 || *cp == 0x2029)
-                break;
-
-            if (cp == end) {
-                bool isArray = (chars[0] == '[');
-                JSONParser parser(cx, isArray ? chars : chars + 1U, isArray ? length : length - 2,
-                                  JSONParser::NoError);
-                RootedValue tmp(cx);
-                if (!parser.parse(&tmp))
-                    return EvalJSON_Failure;
-                if (tmp.isUndefined())
-                    return EvalJSON_NotJSON;
-                rval.set(tmp);
-                return EvalJSON_Success;
+        if (sizeof(CharT) > 1) {
+            for (RangedPtr<const CharT> cp = chars.start() + 1, end = chars.end() - 1;
+                 cp < end;
+                 cp++)
+            {
+                char16_t c = *cp;
+                if (c == 0x2028 || c == 0x2029)
+                    return false;
             }
         }
+
+        return true;
     }
-    return EvalJSON_NotJSON;
+    return false;
 }
 
-static void
-MarkFunctionsWithinEvalScript(JSScript *script)
+template <typename CharT>
+static EvalJSONResult
+ParseEvalStringAsJSON(JSContext *cx, const mozilla::Range<const CharT> chars, MutableHandleValue rval)
 {
-    // Mark top level functions in an eval script as being within an eval and,
-    // if applicable, inside a with statement.
+    size_t len = chars.length();
+    MOZ_ASSERT((chars[0] == '(' && chars[len - 1] == ')') ||
+               (chars[0] == '[' && chars[len - 1] == ']'));
 
-    if (!script->hasObjects())
-        return;
+    auto jsonChars = (chars[0] == '[')
+                     ? chars
+                     : mozilla::Range<const CharT>(chars.start().get() + 1U, len - 2);
 
-    ObjectArray *objects = script->objects();
-    size_t start = script->innerObjectsStart();
+    JSONParser<CharT> parser(cx, jsonChars, JSONParserBase::NoError);
+    if (!parser.parse(rval))
+        return EvalJSON_Failure;
 
-    for (size_t i = start; i < objects->length; i++) {
-        JSObject *obj = objects->vector[i];
-        if (obj->is<JSFunction>()) {
-            JSFunction *fun = &obj->as<JSFunction>();
-            if (fun->hasScript())
-                fun->nonLazyScript()->setDirectlyInsideEval();
-            else if (fun->isInterpretedLazy())
-                fun->lazyScript()->setDirectlyInsideEval();
-        }
+    return rval.isUndefined() ? EvalJSON_NotJSON : EvalJSON_Success;
+}
+
+static EvalJSONResult
+TryEvalJSON(JSContext *cx, JSFlatString *str, MutableHandleValue rval)
+{
+    if (str->hasLatin1Chars()) {
+        AutoCheckCannotGC nogc;
+        if (!EvalStringMightBeJSON(str->latin1Range(nogc)))
+            return EvalJSON_NotJSON;
+    } else {
+        AutoCheckCannotGC nogc;
+        if (!EvalStringMightBeJSON(str->twoByteRange(nogc)))
+            return EvalJSON_NotJSON;
     }
+
+    AutoStableStringChars flatChars(cx);
+    if (!flatChars.init(cx, str))
+        return EvalJSON_Failure;
+
+    return flatChars.isLatin1()
+           ? ParseEvalStringAsJSON(cx, flatChars.latin1Range(), rval)
+           : ParseEvalStringAsJSON(cx, flatChars.twoByteRange(), rval);
 }
 
 // Define subset of ExecuteType so that casting performs the injection.
@@ -230,9 +227,9 @@ static bool
 EvalKernel(JSContext *cx, const CallArgs &args, EvalType evalType, AbstractFramePtr caller,
            HandleObject scopeobj, jsbytecode *pc)
 {
-    JS_ASSERT((evalType == INDIRECT_EVAL) == !caller);
-    JS_ASSERT((evalType == INDIRECT_EVAL) == !pc);
-    JS_ASSERT_IF(evalType == INDIRECT_EVAL, scopeobj->is<GlobalObject>());
+    MOZ_ASSERT((evalType == INDIRECT_EVAL) == !caller);
+    MOZ_ASSERT((evalType == INDIRECT_EVAL) == !pc);
+    MOZ_ASSERT_IF(evalType == INDIRECT_EVAL, scopeobj->is<GlobalObject>());
     AssertInnerizedScopeChain(cx, *scopeobj);
 
     Rooted<GlobalObject*> scopeObjGlobal(cx, &scopeobj->global());
@@ -260,7 +257,7 @@ EvalKernel(JSContext *cx, const CallArgs &args, EvalType evalType, AbstractFrame
     unsigned staticLevel;
     RootedValue thisv(cx);
     if (evalType == DIRECT_EVAL) {
-        JS_ASSERT_IF(caller.isInterpreterFrame(), !caller.asInterpreterFrame()->runningInJit());
+        MOZ_ASSERT_IF(caller.isInterpreterFrame(), !caller.asInterpreterFrame()->runningInJit());
         staticLevel = caller.script()->staticLevel() + 1;
 
         // Direct calls to eval are supposed to see the caller's |this|. If we
@@ -270,11 +267,11 @@ EvalKernel(JSContext *cx, const CallArgs &args, EvalType evalType, AbstractFrame
             return false;
         thisv = caller.thisValue();
     } else {
-        JS_ASSERT(args.callee().global() == *scopeobj);
+        MOZ_ASSERT(args.callee().global() == *scopeobj);
         staticLevel = 0;
 
         // Use the global as 'this', modulo outerization.
-        JSObject *thisobj = JSObject::thisObject(cx, scopeobj);
+        JSObject *thisobj = GetThisObject(cx, scopeobj);
         if (!thisobj)
             return false;
         thisv = ObjectValue(*thisobj);
@@ -284,11 +281,8 @@ EvalKernel(JSContext *cx, const CallArgs &args, EvalType evalType, AbstractFrame
     if (!flatStr)
         return false;
 
-    size_t length = flatStr->length();
-    ConstTwoByteChars chars(flatStr->chars(), length);
-
     RootedScript callerScript(cx, caller ? caller.script() : nullptr);
-    EvalJSONResult ejr = TryEvalJSON(cx, callerScript, chars, length, args.rval());
+    EvalJSONResult ejr = TryEvalJSON(cx, flatStr, args.rval());
     if (ejr != EvalJSON_NotJSON)
         return ejr == EvalJSON_Success;
 
@@ -298,13 +292,13 @@ EvalKernel(JSContext *cx, const CallArgs &args, EvalType evalType, AbstractFrame
         esg.lookupInEvalCache(flatStr, callerScript, pc);
 
     if (!esg.foundScript()) {
-        JSScript *maybeScript;
+        RootedScript maybeScript(cx);
         unsigned lineno;
         const char *filename;
-        JSPrincipals *originPrincipals;
+        bool mutedErrors;
         uint32_t pcOffset;
         DescribeScriptedCallerForCompilation(cx, &maybeScript, &filename, &lineno, &pcOffset,
-                                             &originPrincipals,
+                                             &mutedErrors,
                                              evalType == DIRECT_EVAL
                                              ? CALLED_FROM_JSOP_EVAL
                                              : NOT_CALLED_FROM_JSOP_EVAL);
@@ -313,20 +307,39 @@ EvalKernel(JSContext *cx, const CallArgs &args, EvalType evalType, AbstractFrame
         if (maybeScript && maybeScript->scriptSource()->introducerFilename())
             introducerFilename = maybeScript->scriptSource()->introducerFilename();
 
+        RootedObject enclosing(cx);
+        if (evalType == DIRECT_EVAL)
+            enclosing = callerScript->innermostStaticScope(pc);
+        Rooted<StaticEvalObject *> staticScope(cx, StaticEvalObject::create(cx, enclosing));
+        if (!staticScope)
+            return false;
+
         CompileOptions options(cx);
         options.setFileAndLine(filename, 1)
                .setCompileAndGo(true)
                .setForEval(true)
                .setNoScriptRval(false)
-               .setOriginPrincipals(originPrincipals)
-               .setIntroductionInfo(introducerFilename, "eval", lineno, maybeScript, pcOffset);
+               .setMutedErrors(mutedErrors)
+               .setIntroductionInfo(introducerFilename, "eval", lineno, maybeScript, pcOffset)
+               .maybeMakeStrictMode(evalType == DIRECT_EVAL && IsStrictEvalPC(pc));
+
+        AutoStableStringChars flatChars(cx);
+        if (!flatChars.initTwoByte(cx, flatStr))
+            return false;
+
+        const char16_t *chars = flatChars.twoByteRange().start().get();
+        SourceBufferHolder::Ownership ownership = flatChars.maybeGiveOwnershipToCaller()
+                                                  ? SourceBufferHolder::GiveOwnership
+                                                  : SourceBufferHolder::NoOwnership;
+        SourceBufferHolder srcBuf(chars, flatStr->length(), ownership);
         JSScript *compiled = frontend::CompileScript(cx, &cx->tempLifoAlloc(),
-                                                     scopeobj, callerScript, options,
-                                                     chars.get(), length, flatStr, staticLevel);
+                                                     scopeobj, callerScript, staticScope,
+                                                     options, srcBuf, flatStr, staticLevel);
         if (!compiled)
             return false;
 
-        MarkFunctionsWithinEvalScript(compiled);
+        if (compiled->strict())
+            staticScope->setStrict();
 
         esg.setNewScript(compiled);
     }
@@ -357,10 +370,7 @@ js::DirectEvalStringFromIon(JSContext *cx,
     if (!flatStr)
         return false;
 
-    size_t length = flatStr->length();
-    ConstTwoByteChars chars(flatStr->chars(), length);
-
-    EvalJSONResult ejr = TryEvalJSON(cx, callerScript, chars, length, vp);
+    EvalJSONResult ejr = TryEvalJSON(cx, flatStr, vp);
     if (ejr != EvalJSON_NotJSON)
         return ejr == EvalJSON_Success;
 
@@ -369,41 +379,70 @@ js::DirectEvalStringFromIon(JSContext *cx,
     esg.lookupInEvalCache(flatStr, callerScript, pc);
 
     if (!esg.foundScript()) {
-        JSScript *maybeScript;
+        RootedScript maybeScript(cx);
         const char *filename;
         unsigned lineno;
-        JSPrincipals *originPrincipals;
+        bool mutedErrors;
         uint32_t pcOffset;
         DescribeScriptedCallerForCompilation(cx, &maybeScript, &filename, &lineno, &pcOffset,
-                                              &originPrincipals, CALLED_FROM_JSOP_EVAL);
+                                              &mutedErrors, CALLED_FROM_JSOP_EVAL);
 
         const char *introducerFilename = filename;
         if (maybeScript && maybeScript->scriptSource()->introducerFilename())
             introducerFilename = maybeScript->scriptSource()->introducerFilename();
+
+        RootedObject enclosing(cx, callerScript->innermostStaticScope(pc));
+        Rooted<StaticEvalObject *> staticScope(cx, StaticEvalObject::create(cx, enclosing));
+        if (!staticScope)
+            return false;
 
         CompileOptions options(cx);
         options.setFileAndLine(filename, 1)
                .setCompileAndGo(true)
                .setForEval(true)
                .setNoScriptRval(false)
-               .setOriginPrincipals(originPrincipals)
-               .setIntroductionInfo(introducerFilename, "eval", lineno, maybeScript, pcOffset);
+               .setMutedErrors(mutedErrors)
+               .setIntroductionInfo(introducerFilename, "eval", lineno, maybeScript, pcOffset)
+               .maybeMakeStrictMode(IsStrictEvalPC(pc));
+
+        AutoStableStringChars flatChars(cx);
+        if (!flatChars.initTwoByte(cx, flatStr))
+            return false;
+
+        const char16_t *chars = flatChars.twoByteRange().start().get();
+        SourceBufferHolder::Ownership ownership = flatChars.maybeGiveOwnershipToCaller()
+                                                  ? SourceBufferHolder::GiveOwnership
+                                                  : SourceBufferHolder::NoOwnership;
+        SourceBufferHolder srcBuf(chars, flatStr->length(), ownership);
         JSScript *compiled = frontend::CompileScript(cx, &cx->tempLifoAlloc(),
-                                                     scopeobj, callerScript, options,
-                                                     chars.get(), length, flatStr, staticLevel);
+                                                     scopeobj, callerScript, staticScope,
+                                                     options, srcBuf, flatStr, staticLevel);
         if (!compiled)
             return false;
 
-        MarkFunctionsWithinEvalScript(compiled);
+        if (compiled->strict())
+            staticScope->setStrict();
 
         esg.setNewScript(compiled);
     }
 
     // Primitive 'this' values should have been filtered out by Ion. If boxed,
     // the calling frame cannot be updated to store the new object.
-    JS_ASSERT(thisValue.isObject() || thisValue.isUndefined() || thisValue.isNull());
+    MOZ_ASSERT(thisValue.isObject() || thisValue.isUndefined() || thisValue.isNull());
 
-    return ExecuteKernel(cx, esg.script(), *scopeobj, thisValue, ExecuteType(DIRECT_EVAL),
+    // When eval'ing strict code in a non-strict context, compute the 'this'
+    // value to use from what the caller passed in. This isn't necessary if
+    // the callee is not strict, as it will compute the non-strict 'this'
+    // value as necessary while it executes.
+    RootedValue nthisValue(cx, thisValue);
+    if (!callerScript->strict() && esg.script()->strict() && !thisValue.isObject()) {
+        JSObject *obj = BoxNonStrictThis(cx, thisValue);
+        if (!obj)
+            return false;
+        nthisValue = ObjectValue(*obj);
+    }
+
+    return ExecuteKernel(cx, esg.script(), *scopeobj, nthisValue, ExecuteType(DIRECT_EVAL),
                          NullFramePtr() /* evalInFrame */, vp.address());
 }
 
@@ -438,11 +477,13 @@ js::DirectEval(JSContext *cx, const CallArgs &args)
     ScriptFrameIter iter(cx);
     AbstractFramePtr caller = iter.abstractFramePtr();
 
-    JS_ASSERT(caller.scopeChain()->global().valueIsEval(args.calleev()));
-    JS_ASSERT(JSOp(*iter.pc()) == JSOP_EVAL ||
-              JSOp(*iter.pc()) == JSOP_SPREADEVAL);
-    JS_ASSERT_IF(caller.isFunctionFrame(),
-                 caller.compartment() == caller.callee()->compartment());
+    MOZ_ASSERT(caller.scopeChain()->global().valueIsEval(args.calleev()));
+    MOZ_ASSERT(JSOp(*iter.pc()) == JSOP_EVAL ||
+               JSOp(*iter.pc()) == JSOP_STRICTEVAL ||
+               JSOp(*iter.pc()) == JSOP_SPREADEVAL ||
+               JSOp(*iter.pc()) == JSOP_STRICTSPREADEVAL);
+    MOZ_ASSERT_IF(caller.isFunctionFrame(),
+                  caller.compartment() == caller.callee()->compartment());
 
     RootedObject scopeChain(cx, caller.scopeChain());
     return EvalKernel(cx, args, DIRECT_EVAL, caller, scopeChain, iter.pc());
@@ -452,4 +493,48 @@ bool
 js::IsAnyBuiltinEval(JSFunction *fun)
 {
     return fun->maybeNative() == IndirectEval;
+}
+
+JS_FRIEND_API(bool)
+js::ExecuteInGlobalAndReturnScope(JSContext *cx, HandleObject global, HandleScript scriptArg,
+                                  MutableHandleObject scopeArg)
+{
+    CHECK_REQUEST(cx);
+    assertSameCompartment(cx, global);
+    MOZ_ASSERT(global->is<GlobalObject>());
+
+    RootedScript script(cx, scriptArg);
+    if (script->compartment() != cx->compartment()) {
+        script = CloneScript(cx, NullPtr(), NullPtr(), script);
+        if (!script)
+            return false;
+
+        Rooted<GlobalObject *> global(cx, script->compileAndGo() ? &script->global() : nullptr);
+        Debugger::onNewScript(cx, script, global);
+    }
+
+    RootedObject scope(cx, JS_NewPlainObject(cx));
+    if (!scope)
+        return false;
+
+    if (!scope->setQualifiedVarObj(cx))
+        return false;
+
+    if (!scope->setUnqualifiedVarObj(cx))
+        return false;
+
+    JSObject *thisobj = GetThisObject(cx, global);
+    if (!thisobj)
+        return false;
+
+    RootedValue thisv(cx, ObjectValue(*thisobj));
+    RootedValue rval(cx);
+    if (!ExecuteKernel(cx, script, *scope, thisv, EXECUTE_GLOBAL,
+                       NullFramePtr() /* evalInFrame */, rval.address()))
+    {
+        return false;
+    }
+
+    scopeArg.set(scope);
+    return true;
 }

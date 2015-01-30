@@ -6,10 +6,17 @@
 #ifndef PROFILER_MARKERS_H
 #define PROFILER_MARKERS_H
 
-#include "JSCustomObjectBuilder.h"
-#include "JSObjectBuilder.h"
+#include "JSStreamWriter.h"
 #include "mozilla/TimeStamp.h"
+#include "mozilla/Attributes.h"
 #include "nsAutoPtr.h"
+#include "Units.h"    // For ScreenIntPoint
+
+namespace mozilla {
+namespace layers {
+class Layer;
+} // layers
+} // mozilla
 
 /**
  * This is an abstract object that can be implied to supply
@@ -29,7 +36,7 @@ public:
   /**
    * ProfilerMarkerPayload takes ownership of aStack
    */
-  ProfilerMarkerPayload(ProfilerBacktrace* aStack = nullptr);
+  explicit ProfilerMarkerPayload(ProfilerBacktrace* aStack = nullptr);
   ProfilerMarkerPayload(const mozilla::TimeStamp& aStartTime,
                         const mozilla::TimeStamp& aEndTime,
                         ProfilerBacktrace* aStack = nullptr);
@@ -42,31 +49,25 @@ public:
   /**
    * Called from the main thread
    */
-  template<typename Builder>
-  typename Builder::Object PreparePayload(Builder& b)
-  {
-    return preparePayload(b);
+  void StreamPayload(JSStreamWriter& b) {
+    return streamPayload(b);
   }
+
+  mozilla::TimeStamp GetStartTime() const { return mStartTime; }
 
 protected:
   /**
    * Called from the main thread
    */
-  template<typename Builder>
-  void prepareCommonProps(const char* aMarkerType, Builder& aBuilder,
-                          typename Builder::ObjectHandle aObject);
+  void streamCommonProps(const char* aMarkerType, JSStreamWriter& b);
 
   /**
    * Called from the main thread
    */
-  virtual JSCustomObjectBuilder::Object
-  preparePayload(JSCustomObjectBuilder& b) = 0;
+  virtual void
+  streamPayload(JSStreamWriter& b) = 0;
 
-  /**
-   * Called from the main thread
-   */
-  virtual JSObjectBuilder::Object
-  preparePayload(JSObjectBuilder& b) = 0;
+  void SetStack(ProfilerBacktrace* aStack) { mStack = aStack; }
 
 private:
   mozilla::TimeStamp  mStartTime;
@@ -78,19 +79,17 @@ class ProfilerMarkerTracing : public ProfilerMarkerPayload
 {
 public:
   ProfilerMarkerTracing(const char* aCategory, TracingMetadata aMetaData);
+  ProfilerMarkerTracing(const char* aCategory, TracingMetadata aMetaData, ProfilerBacktrace* aCause);
 
   const char *GetCategory() const { return mCategory; }
   TracingMetadata GetMetaData() const { return mMetaData; }
 
 protected:
-  virtual JSCustomObjectBuilder::Object
-  preparePayload(JSCustomObjectBuilder& b) { return preparePayloadImp(b); }
-  virtual JSObjectBuilder::Object
-  preparePayload(JSObjectBuilder& b) { return preparePayloadImp(b); }
+  virtual void
+  streamPayload(JSStreamWriter& b) { return streamPayloadImp(b); }
 
 private:
-  template<typename Builder>
-  typename Builder::Object preparePayloadImp(Builder& b);
+  void streamPayloadImp(JSStreamWriter& b);
 
 private:
   const char *mCategory;
@@ -98,21 +97,18 @@ private:
 };
 
 
-class gfxASurface;
+#include "gfxASurface.h"
 class ProfilerMarkerImagePayload : public ProfilerMarkerPayload
 {
 public:
-  ProfilerMarkerImagePayload(gfxASurface *aImg);
+  explicit ProfilerMarkerImagePayload(gfxASurface *aImg);
 
 protected:
-  virtual JSCustomObjectBuilder::Object
-  preparePayload(JSCustomObjectBuilder& b) { return preparePayloadImp(b); }
-  virtual JSObjectBuilder::Object
-  preparePayload(JSObjectBuilder& b) { return preparePayloadImp(b); }
+  virtual void
+  streamPayload(JSStreamWriter& b) { return streamPayloadImp(b); }
 
 private:
-  template<typename Builder>
-  typename Builder::Object preparePayloadImp(Builder& b);
+  void streamPayloadImp(JSStreamWriter& b);
 
   nsRefPtr<gfxASurface> mImg;
 };
@@ -126,17 +122,93 @@ public:
   ~IOMarkerPayload();
 
 protected:
-  virtual JSCustomObjectBuilder::Object
-  preparePayload(JSCustomObjectBuilder& b) { return preparePayloadImp(b); }
-  virtual JSObjectBuilder::Object
-  preparePayload(JSObjectBuilder& b) { return preparePayloadImp(b); }
+  virtual void
+  streamPayload(JSStreamWriter& b) { return streamPayloadImp(b); }
 
 private:
-  template<typename Builder>
-  typename Builder::Object preparePayloadImp(Builder& b);
+  void streamPayloadImp(JSStreamWriter& b);
 
   const char* mSource;
   char* mFilename;
+};
+
+/**
+ * Contains the translation applied to a 2d layer so we can
+ * track the layer position at each frame.
+ */
+class LayerTranslationPayload : public ProfilerMarkerPayload
+{
+public:
+  LayerTranslationPayload(mozilla::layers::Layer* aLayer,
+                          mozilla::gfx::Point aPoint);
+
+protected:
+  virtual void
+  streamPayload(JSStreamWriter& b) { return streamPayloadImpl(b); }
+
+private:
+  void streamPayloadImpl(JSStreamWriter& b);
+  mozilla::layers::Layer* mLayer;
+  mozilla::gfx::Point mPoint;
+};
+
+/**
+ * Tracks when touch events are processed by gecko, not when
+ * the touch actually occured in gonk/android.
+ */
+class TouchDataPayload : public ProfilerMarkerPayload
+{
+public:
+  explicit TouchDataPayload(const mozilla::ScreenIntPoint& aPoint);
+  virtual ~TouchDataPayload() {}
+
+protected:
+  virtual void
+  streamPayload(JSStreamWriter& b) { return streamPayloadImpl(b); }
+
+private:
+  void streamPayloadImpl(JSStreamWriter& b);
+  mozilla::ScreenIntPoint mPoint;
+};
+
+/**
+ * Tracks when a vsync occurs according to the HardwareComposer.
+ */
+class VsyncPayload : public ProfilerMarkerPayload
+{
+public:
+  explicit VsyncPayload(mozilla::TimeStamp aVsyncTimestamp);
+  virtual ~VsyncPayload() {}
+
+protected:
+  virtual void
+  streamPayload(JSStreamWriter& b) { return streamPayloadImpl(b); }
+
+private:
+  void streamPayloadImpl(JSStreamWriter& b);
+  mozilla::TimeStamp mVsyncTimestamp;
+};
+
+class GPUMarkerPayload : public ProfilerMarkerPayload
+{
+public:
+  GPUMarkerPayload(const mozilla::TimeStamp& aCpuTimeStart,
+                   const mozilla::TimeStamp& aCpuTimeEnd,
+                   uint64_t aGpuTimeStart,
+                   uint64_t aGpuTimeEnd);
+  ~GPUMarkerPayload() {}
+
+protected:
+  virtual void
+  streamPayload(JSStreamWriter& b) MOZ_OVERRIDE { return streamPayloadImp(b); }
+
+private:
+  void streamPayloadImp(JSStreamWriter& b);
+
+  mozilla::TimeStamp mCpuTimeStart;
+  mozilla::TimeStamp mCpuTimeEnd;
+  uint64_t mGpuTimeStart;
+  uint64_t mGpuTimeEnd;
 };
 
 #endif // PROFILER_MARKERS_H

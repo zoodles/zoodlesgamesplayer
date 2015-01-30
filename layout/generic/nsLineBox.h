@@ -209,7 +209,7 @@ private:
   // Overloaded new operator. Uses an arena (which comes from the presShell)
   // to perform the allocation.
   void* operator new(size_t sz, nsIPresShell* aPresShell) CPP_THROW_NEW;
-  void operator delete(void* aPtr, size_t sz) MOZ_DELETE;
+  void operator delete(void* aPtr, size_t sz) = delete;
 
 public:
   // Use these functions to allocate and destroy line boxes
@@ -342,9 +342,9 @@ private:
     MOZ_ASSERT(!mFlags.mHasHashedFrames);
     uint32_t count = GetChildCount();
     mFlags.mHasHashedFrames = 1;
-    uint32_t minSize =
-      std::max(kMinChildCountForHashtable, uint32_t(PL_DHASH_MIN_SIZE));
-    mFrames = new nsTHashtable< nsPtrHashKey<nsIFrame> >(std::max(count, minSize));
+    uint32_t minLength = std::max(kMinChildCountForHashtable,
+                                  uint32_t(PL_DHASH_DEFAULT_INITIAL_LENGTH));
+    mFrames = new nsTHashtable< nsPtrHashKey<nsIFrame> >(std::max(count, minLength));
     for (nsIFrame* f = mFirstChild; count-- > 0; f = f->GetNextSibling()) {
       mFrames->PutEntry(f);
     }
@@ -427,10 +427,10 @@ public:
     return !IsBlock() ? mFlags.mBreakType : NS_STYLE_CLEAR_NONE;
   }
 
-  // mCarriedOutBottomMargin value
-  nsCollapsingMargin GetCarriedOutBottomMargin() const;
+  // mCarriedOutBEndMargin value
+  nsCollapsingMargin GetCarriedOutBEndMargin() const;
   // Returns true if the margin changed
-  bool SetCarriedOutBottomMargin(nsCollapsingMargin aValue);
+  bool SetCarriedOutBEndMargin(nsCollapsingMargin aValue);
 
   // mFloats
   bool HasFloats() const {
@@ -446,42 +446,109 @@ public:
   // used for painting-related things, but should never be used for
   // layout (except for handling of 'overflow').
   void SetOverflowAreas(const nsOverflowAreas& aOverflowAreas);
+  mozilla::LogicalRect GetOverflowArea(nsOverflowType aType,
+                                       mozilla::WritingMode aWM,
+                                       nscoord aContainerWidth)
+  {
+    return mozilla::LogicalRect(aWM, GetOverflowArea(aType), aContainerWidth);
+  }
   nsRect GetOverflowArea(nsOverflowType aType) {
-    return mData ? mData->mOverflowAreas.Overflow(aType) : mBounds;
+    return mData ? mData->mOverflowAreas.Overflow(aType) : GetPhysicalBounds();
   }
   nsOverflowAreas GetOverflowAreas() {
     if (mData) {
       return mData->mOverflowAreas;
     }
-    return nsOverflowAreas(mBounds, mBounds);
+    nsRect bounds = GetPhysicalBounds();
+    return nsOverflowAreas(bounds, bounds);
   }
   nsRect GetVisualOverflowArea()
     { return GetOverflowArea(eVisualOverflow); }
   nsRect GetScrollableOverflowArea()
     { return GetOverflowArea(eScrollableOverflow); }
 
-  void SlideBy(nscoord aDY) {
-    mBounds.y += aDY;
+  void SlideBy(nscoord aDBCoord, nscoord aContainerWidth) {
+    NS_ASSERTION(aContainerWidth == mContainerWidth || mContainerWidth == -1,
+                 "container width doesn't match");
+    mContainerWidth = aContainerWidth;
+    mBounds.BStart(mWritingMode) += aDBCoord;
     if (mData) {
+      nsPoint physicalDelta = mozilla::LogicalPoint(mWritingMode, 0, aDBCoord).
+                                         GetPhysicalPoint(mWritingMode, 0);
       NS_FOR_FRAME_OVERFLOW_TYPES(otype) {
-        mData->mOverflowAreas.Overflow(otype).y += aDY;
+        mData->mOverflowAreas.Overflow(otype) += physicalDelta;
       }
     }
   }
 
+  // Container-width for the line is changing (and therefore if writing mode
+  // was vertical-rl, the line will move physically; this is like SlideBy,
+  // but it is the container width instead of the line's own logical coord
+  // that is changing.
+  nscoord UpdateContainerWidth(nscoord aNewContainerWidth)
+  {
+    NS_ASSERTION(mContainerWidth != -1, "container width not set");
+    nscoord delta = mContainerWidth - aNewContainerWidth;
+    mContainerWidth = aNewContainerWidth;
+    // this has a physical-coordinate effect only in vertical-rl mode
+    if (mWritingMode.IsVerticalRL() && mData) {
+      nsPoint physicalDelta = mozilla::LogicalPoint(mWritingMode, 0, delta).
+                                         GetPhysicalPoint(mWritingMode, 0);
+      NS_FOR_FRAME_OVERFLOW_TYPES(otype) {
+        mData->mOverflowAreas.Overflow(otype) += physicalDelta;
+      }
+    }
+    return delta;
+  }
+
+  void IndentBy(nscoord aDICoord, nscoord aContainerWidth) {
+    NS_ASSERTION(aContainerWidth == mContainerWidth || mContainerWidth == -1,
+                 "container width doesn't match");
+    mContainerWidth = aContainerWidth;
+    mBounds.IStart(mWritingMode) += aDICoord;
+  }
+
+  void ExpandBy(nscoord aDISize, nscoord aContainerWidth) {
+    NS_ASSERTION(aContainerWidth == mContainerWidth || mContainerWidth == -1,
+                 "container width doesn't match");
+    mContainerWidth = aContainerWidth;
+    mBounds.ISize(mWritingMode) += aDISize;
+  }
+
   /**
-   * The ascent (distance from top to baseline) of the linebox is the
-   * ascent of the anonymous inline box (for which we don't actually
-   * create a frame) that wraps all the consecutive inline children of a
-   * block.
+   * The logical ascent (distance from block-start to baseline) of the
+   * linebox is the logical ascent of the anonymous inline box (for
+   * which we don't actually create a frame) that wraps all the
+   * consecutive inline children of a block.
    *
    * This is currently unused for block lines.
    */
-  nscoord GetAscent() const { return mAscent; }
-  void SetAscent(nscoord aAscent) { mAscent = aAscent; }
+  nscoord GetLogicalAscent() const { return mAscent; }
+  void SetLogicalAscent(nscoord aAscent) { mAscent = aAscent; }
 
-  nscoord GetHeight() const {
-    return mBounds.height;
+  nscoord BStart() const {
+    return mBounds.BStart(mWritingMode);
+  }
+  nscoord BSize() const {
+    return mBounds.BSize(mWritingMode);
+  }
+  nscoord BEnd() const {
+    return mBounds.BEnd(mWritingMode);
+  }
+  nscoord IStart() const {
+    return mBounds.IStart(mWritingMode);
+  }
+  nscoord ISize() const {
+    return mBounds.ISize(mWritingMode);
+  }
+  nscoord IEnd() const {
+    return mBounds.IEnd(mWritingMode);
+  }
+  void SetBoundsEmpty() {
+    mBounds.IStart(mWritingMode) = 0;
+    mBounds.ISize(mWritingMode) = 0;
+    mBounds.BStart(mWritingMode) = 0;
+    mBounds.BSize(mWritingMode) = 0;
   }
 
   static void DeleteLineList(nsPresContext* aPresContext, nsLineList& aLines,
@@ -539,7 +606,42 @@ public:
 
   nsIFrame* mFirstChild;
 
-  nsRect mBounds;
+  mozilla::WritingMode mWritingMode;
+
+  // Physical width. Use only for physical <-> logical coordinate conversion.
+  nscoord mContainerWidth;
+
+ private:
+  mozilla::LogicalRect mBounds;
+
+ public:
+  const mozilla::LogicalRect& GetBounds() { return mBounds; }
+  nsRect GetPhysicalBounds() const
+  {
+    if (mBounds.IsAllZero()) {
+      return nsRect(0, 0, 0, 0);
+    }
+
+    NS_ASSERTION(mContainerWidth != -1, "mContainerWidth not initialized");
+    return mBounds.GetPhysicalRect(mWritingMode, mContainerWidth);
+  }
+  void SetBounds(mozilla::WritingMode aWritingMode,
+                 nscoord aIStart, nscoord aBStart,
+                 nscoord aISize, nscoord aBSize,
+                 nscoord aContainerWidth)
+  {
+    mWritingMode = aWritingMode;
+    mContainerWidth = aContainerWidth;
+    mBounds = mozilla::LogicalRect(aWritingMode, aIStart, aBStart,
+                                   aISize, aBSize);
+  }
+  void SetBounds(mozilla::WritingMode aWritingMode,
+                 nsRect aRect, nscoord aContainerWidth)
+  {
+    mWritingMode = aWritingMode;
+    mContainerWidth = aContainerWidth;
+    mBounds = mozilla::LogicalRect(aWritingMode, aRect, aContainerWidth);
+  }
 
   // mFlags.mHasHashedFrames says which one to use
   union {
@@ -569,22 +671,22 @@ public:
   };
 
   struct ExtraData {
-    ExtraData(const nsRect& aBounds) : mOverflowAreas(aBounds, aBounds) {
+    explicit ExtraData(const nsRect& aBounds) : mOverflowAreas(aBounds, aBounds) {
     }
     nsOverflowAreas mOverflowAreas;
   };
 
   struct ExtraBlockData : public ExtraData {
-    ExtraBlockData(const nsRect& aBounds)
+    explicit ExtraBlockData(const nsRect& aBounds)
       : ExtraData(aBounds),
-        mCarriedOutBottomMargin()
+        mCarriedOutBEndMargin()
     {
     }
-    nsCollapsingMargin mCarriedOutBottomMargin;
+    nsCollapsingMargin mCarriedOutBEndMargin;
   };
 
   struct ExtraInlineData : public ExtraData {
-    ExtraInlineData(const nsRect& aBounds) : ExtraData(aBounds) {
+    explicit ExtraInlineData(const nsRect& aBounds) : ExtraData(aBounds) {
     }
     nsFloatCacheList mFloats;
   };
@@ -1619,22 +1721,19 @@ public:
   NS_IMETHOD GetLine(int32_t aLineNumber,
                      nsIFrame** aFirstFrameOnLine,
                      int32_t* aNumFramesOnLine,
-                     nsRect& aLineBounds,
-                     uint32_t* aLineFlags) MOZ_OVERRIDE;
+                     nsRect& aLineBounds) MOZ_OVERRIDE;
   virtual int32_t FindLineContaining(nsIFrame* aFrame, int32_t aStartLine = 0) MOZ_OVERRIDE;
   NS_IMETHOD FindFrameAt(int32_t aLineNumber,
-                         nscoord aX,
+                         nsPoint aPos,
                          nsIFrame** aFrameFound,
-                         bool* aXIsBeforeFirstFrame,
-                         bool* aXIsAfterLastFrame) MOZ_OVERRIDE;
+                         bool* aPosIsBeforeFirstFrame,
+                         bool* aPosIsAfterLastFrame) MOZ_OVERRIDE;
 
   NS_IMETHOD GetNextSiblingOnLine(nsIFrame*& aFrame, int32_t aLineNumber) MOZ_OVERRIDE;
-#ifdef IBMBIDI
   NS_IMETHOD CheckLineOrder(int32_t                  aLine,
                             bool                     *aIsReordered,
                             nsIFrame                 **aFirstVisual,
                             nsIFrame                 **aLastVisual) MOZ_OVERRIDE;
-#endif
   nsresult Init(nsLineList& aLines, bool aRightToLeft);
 
 private:

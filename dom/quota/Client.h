@@ -28,10 +28,10 @@ class UsageInfo;
 class Client
 {
 public:
-  NS_IMETHOD_(nsrefcnt)
+  NS_IMETHOD_(MozExternalRefCountType)
   AddRef() = 0;
 
-  NS_IMETHOD_(nsrefcnt)
+  NS_IMETHOD_(MozExternalRefCountType)
   Release() = 0;
 
   enum Type {
@@ -97,7 +97,7 @@ public:
 
   virtual void
   OnOriginClearCompleted(PersistenceType aPersistenceType,
-                         const OriginOrPatternString& aOriginOrPattern) = 0;
+                         const nsACString& aOrigin) = 0;
 
   virtual void
   ReleaseIOThreadObjects() = 0;
@@ -112,12 +112,6 @@ public:
   virtual void
   WaitForStoragesToComplete(nsTArray<nsIOfflineStorage*>& aStorages,
                             nsIRunnable* aCallback) = 0;
-
-  virtual void
-  AbortTransactionsForStorage(nsIOfflineStorage* aStorage) = 0;
-
-  virtual bool
-  HasTransactionsForStorage(nsIOfflineStorage* aStorage) = 0;
 
   virtual void
   ShutdownTransactionService() = 0;

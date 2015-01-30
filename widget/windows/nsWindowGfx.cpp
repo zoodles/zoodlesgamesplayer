@@ -25,8 +25,10 @@
 using mozilla::plugins::PluginInstanceParent;
 
 #include "nsWindowGfx.h"
+#include "nsAppRunner.h"
 #include <windows.h>
 #include "gfxImageSurface.h"
+#include "gfxUtils.h"
 #include "gfxWindowsSurface.h"
 #include "gfxWindowsPlatform.h"
 #include "mozilla/gfx/2D.h"
@@ -35,24 +37,18 @@ using mozilla::plugins::PluginInstanceParent;
 #include "mozilla/RefPtr.h"
 #include "nsGfxCIID.h"
 #include "gfxContext.h"
-#include "nsRenderingContext.h"
 #include "prmem.h"
 #include "WinUtils.h"
 #include "nsIWidgetListener.h"
 #include "mozilla/unused.h"
+#include "nsDebug.h"
+#include "nsIXULRuntime.h"
 
-#ifdef MOZ_ENABLE_D3D9_LAYER
-#include "LayerManagerD3D9.h"
-#endif
-#ifdef MOZ_ENABLE_D3D10_LAYER
-#include "LayerManagerD3D10.h"
-#endif
 #include "mozilla/layers/CompositorParent.h"
 #include "ClientLayerManager.h"
 
 #include "nsUXThemeData.h"
 #include "nsUXThemeConstants.h"
-#include "mozilla/gfx/2D.h"
 
 extern "C" {
 #define PIXMAN_DONT_DEFINE_STDINT
@@ -185,14 +181,24 @@ bool nsWindow::OnPaint(HDC aDC, uint32_t aNestingLevel)
   if (mozilla::ipc::MessageChannel::IsSpinLoopActive() && mPainting)
     return false;
 
-  if (mWindowType == eWindowType_plugin) {
+  if (gfxWindowsPlatform::GetPlatform()->DidRenderingDeviceReset()) {
+    gfxWindowsPlatform::GetPlatform()->UpdateRenderMode();
+    mLayerManager = nullptr;
+    DestroyCompositor();
+    return false;
+  }
 
-    /**
-     * After we CallUpdateWindow to the child, occasionally a WM_PAINT message
-     * is posted to the parent event loop with an empty update rect. Do a
-     * dummy paint so that Windows stops dispatching WM_PAINT in an inifinite
-     * loop. See bug 543788.
-     */
+  // After we CallUpdateWindow to the child, occasionally a WM_PAINT message
+  // is posted to the parent event loop with an empty update rect. Do a
+  // dummy paint so that Windows stops dispatching WM_PAINT in an inifinite
+  // loop. See bug 543788.
+  if (IsPlugin()) {
+    // XXX Ignore for now when we're running with full blown e10s
+    if (mozilla::BrowserTabsRemoteAutostart()) {
+      printf_stderr("nsWindow::OnPaint() bailing on paint!\n");
+      ValidateRect(mWnd, nullptr);
+      return true;
+    }
     RECT updateRect;
     if (!GetUpdateRect(mWnd, &updateRect, FALSE) ||
         (updateRect.left == updateRect.right &&
@@ -265,9 +271,7 @@ bool nsWindow::OnPaint(HDC aDC, uint32_t aNestingLevel)
 #endif // WIDGET_DEBUG_OUTPUT
 
   HDC hDC = aDC ? aDC : (::BeginPaint(mWnd, &ps));
-  if (!IsRenderMode(gfxWindowsPlatform::RENDER_DIRECT2D)) {
-    mPaintDC = hDC;
-  }
+  mPaintDC = hDC;
 
 #ifdef MOZ_XUL
   bool forceRepaint = aDC || (eTransparencyTransparent == mTransparencyMode);
@@ -370,34 +374,16 @@ bool nsWindow::OnPaint(HDC aDC, uint32_t aNestingLevel)
             return false;
           }
 
-          nsRefPtr<gfxContext> thebesContext;
-          if (gfxPlatform::GetPlatform()->SupportsAzureContentForType(mozilla::gfx::BackendType::CAIRO)) {
-            RECT paintRect;
-            ::GetClientRect(mWnd, &paintRect);
-            RefPtr<mozilla::gfx::DrawTarget> dt =
-              gfxPlatform::GetPlatform()->CreateDrawTargetForSurface(targetSurface,
-                                                                     mozilla::gfx::IntSize(paintRect.right - paintRect.left,
-                                                                                           paintRect.bottom - paintRect.top));
-            thebesContext = new gfxContext(dt);
-          } else {
-            thebesContext = new gfxContext(targetSurface);
-          }
-
-          if (IsRenderMode(gfxWindowsPlatform::RENDER_DIRECT2D)) {
-            const nsIntRect* r;
-            for (nsIntRegionRectIterator iter(region);
-                 (r = iter.Next()) != nullptr;) {
-              thebesContext->Rectangle(gfxRect(r->x, r->y, r->width, r->height), true);
-            }
-            thebesContext->Clip();
-            thebesContext->SetOperator(gfxContext::OPERATOR_CLEAR);
-            thebesContext->Paint();
-            thebesContext->SetOperator(gfxContext::OPERATOR_OVER);
-          }
-
+          RECT paintRect;
+          ::GetClientRect(mWnd, &paintRect);
+          RefPtr<DrawTarget> dt =
+            gfxPlatform::GetPlatform()->CreateDrawTargetForSurface(targetSurface,
+                                                                   IntSize(paintRect.right - paintRect.left,
+                                                                   paintRect.bottom - paintRect.top));
           // don't need to double buffer with anything but GDI
           BufferMode doubleBuffering = mozilla::layers::BufferMode::BUFFER_NONE;
-          if (IsRenderMode(gfxWindowsPlatform::RENDER_GDI)) {
+          if (IsRenderMode(gfxWindowsPlatform::RENDER_GDI) ||
+              IsRenderMode(gfxWindowsPlatform::RENDER_DIRECT2D)) {
 #ifdef MOZ_XUL
             switch (mTransparencyMode) {
               case eTransparencyGlass:
@@ -409,15 +395,16 @@ bool nsWindow::OnPaint(HDC aDC, uint32_t aNestingLevel)
               case eTransparencyTransparent:
                 // If we're rendering with translucency, we're going to be
                 // rendering the whole window; make sure we clear it first
-                thebesContext->SetOperator(gfxContext::OPERATOR_CLEAR);
-                thebesContext->Paint();
-                thebesContext->SetOperator(gfxContext::OPERATOR_OVER);
+                dt->ClearRect(Rect(0.f, 0.f,
+                                   dt->GetSize().width, dt->GetSize().height));
                 break;
             }
 #else
             doubleBuffering = mozilla::layers::BufferMode::BUFFERED;
 #endif
           }
+
+          nsRefPtr<gfxContext> thebesContext = new gfxContext(dt);
 
           {
             AutoLayerManagerSetup
@@ -528,37 +515,6 @@ bool nsWindow::OnPaint(HDC aDC, uint32_t aNestingLevel)
           }
         }
         break;
-#ifdef MOZ_ENABLE_D3D9_LAYER
-      case LayersBackend::LAYERS_D3D9:
-        {
-          nsRefPtr<LayerManagerD3D9> layerManagerD3D9 =
-            static_cast<mozilla::layers::LayerManagerD3D9*>(GetLayerManager());
-          layerManagerD3D9->SetClippingRegion(region);
-          result = listener->PaintWindow(this, region);
-          if (layerManagerD3D9->DeviceWasRemoved()) {
-            mLayerManager->Destroy();
-            mLayerManager = nullptr;
-            // When our device was removed, we should have gfxWindowsPlatform
-            // check if its render mode is up to date!
-            gfxWindowsPlatform::GetPlatform()->UpdateRenderMode();
-            Invalidate();
-          }
-        }
-        break;
-#endif
-#ifdef MOZ_ENABLE_D3D10_LAYER
-      case LayersBackend::LAYERS_D3D10:
-        {
-          gfxWindowsPlatform::GetPlatform()->UpdateRenderMode();
-          LayerManagerD3D10 *layerManagerD3D10 = static_cast<mozilla::layers::LayerManagerD3D10*>(GetLayerManager());
-          if (layerManagerD3D10->device() != gfxWindowsPlatform::GetPlatform()->GetD3D10Device()) {
-            Invalidate();
-          } else {
-            result = listener->PaintWindow(this, region);
-          }
-        }
-        break;
-#endif
       case LayersBackend::LAYERS_CLIENT:
         result = listener->PaintWindow(this, region);
         break;
@@ -628,31 +584,26 @@ nsresult nsWindowGfx::CreateIcon(imgIContainer *aContainer,
              (aScaledSize.width == 0 && aScaledSize.height == 0));
 
   // Get the image data
-  nsRefPtr<gfxASurface> thebesSurface =
+  RefPtr<SourceSurface> surface =
     aContainer->GetFrame(imgIContainer::FRAME_CURRENT,
                          imgIContainer::FLAG_SYNC_DECODE);
-  NS_ENSURE_TRUE(thebesSurface, NS_ERROR_NOT_AVAILABLE);
+  NS_ENSURE_TRUE(surface, NS_ERROR_NOT_AVAILABLE);
 
-  RefPtr<SourceSurface> surface =
-    gfxPlatform::GetPlatform()->GetSourceSurfaceForSurface(nullptr,
-                                                           thebesSurface);
-  NS_ENSURE_TRUE(surface, NS_ERROR_FAILURE);
-
-  IntSize surfaceSize(surface->GetSize().width, surface->GetSize().height);
-  if (surfaceSize.IsEmpty()) {
+  IntSize frameSize = surface->GetSize();
+  if (frameSize.IsEmpty()) {
     return NS_ERROR_FAILURE;
   }
 
   IntSize iconSize(aScaledSize.width, aScaledSize.height);
   if (iconSize == IntSize(0, 0)) { // use frame's intrinsic size
-    iconSize = surfaceSize;
+    iconSize = frameSize;
   }
 
   RefPtr<DataSourceSurface> dataSurface;
   bool mappedOK;
   DataSourceSurface::MappedSurface map;
 
-  if (iconSize != surfaceSize) {
+  if (iconSize != frameSize) {
     // Scale the surface
     dataSurface = Factory::CreateDataSourceSurface(iconSize,
                                                    SurfaceFormat::B8G8R8A8);
@@ -668,28 +619,19 @@ nsresult nsWindowGfx::CreateIcon(imgIContainer *aContainer,
                                        SurfaceFormat::B8G8R8A8);
     dt->DrawSurface(surface,
                     Rect(0, 0, iconSize.width, iconSize.height),
-                    Rect(0, 0, surfaceSize.width, surfaceSize.height),
+                    Rect(0, 0, frameSize.width, frameSize.height),
                     DrawSurfaceOptions(),
                     DrawOptions(1.0f, CompositionOp::OP_SOURCE));
   } else if (surface->GetFormat() != SurfaceFormat::B8G8R8A8) {
     // Convert format to SurfaceFormat::B8G8R8A8
-    dataSurface = Factory::CreateDataSourceSurface(iconSize,
-                                                   SurfaceFormat::B8G8R8A8);
+    dataSurface = gfxUtils::
+      CopySurfaceToDataSourceSurfaceWithFormat(surface,
+                                               SurfaceFormat::B8G8R8A8);
     NS_ENSURE_TRUE(dataSurface, NS_ERROR_FAILURE);
-
-    mappedOK = dataSurface->Map(DataSourceSurface::MapType::READ_WRITE, &map);
-    NS_ENSURE_TRUE(mappedOK, NS_ERROR_FAILURE);
-
-    RefPtr<DrawTarget> dt =
-      Factory::CreateDrawTargetForData(BackendType::CAIRO,
-                                       map.mData,
-                                       dataSurface->GetSize(),
-                                       map.mStride,
-                                       SurfaceFormat::B8G8R8A8);
-    dt->CopySurface(surface, IntRect(IntPoint(0, 0), iconSize),
-                    IntPoint(0, 0));
+    mappedOK = dataSurface->Map(DataSourceSurface::MapType::READ, &map);
   } else {
     dataSurface = surface->GetDataSurface();
+    NS_ENSURE_TRUE(dataSurface, NS_ERROR_FAILURE);
     mappedOK = dataSurface->Map(DataSourceSurface::MapType::READ, &map);
   }
   NS_ENSURE_TRUE(dataSurface && mappedOK, NS_ERROR_FAILURE);

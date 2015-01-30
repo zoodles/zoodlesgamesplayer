@@ -4,7 +4,7 @@
 
 "use strict";
 
-const {Cc, Ci, Cu} = require("chrome");
+const {Cc, Ci, Cu, Cr} = require("chrome");
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 
@@ -12,7 +12,6 @@ loader.lazyGetter(this, "NetworkHelper", () => require("devtools/toolkit/webcons
 loader.lazyImporter(this, "Services", "resource://gre/modules/Services.jsm");
 loader.lazyImporter(this, "DevToolsUtils", "resource://gre/modules/devtools/DevToolsUtils.jsm");
 loader.lazyImporter(this, "NetUtil", "resource://gre/modules/NetUtil.jsm");
-loader.lazyImporter(this, "PrivateBrowsingUtils", "resource://gre/modules/PrivateBrowsingUtils.jsm");
 loader.lazyServiceGetter(this, "gActivityDistributor",
                          "@mozilla.org/network/http-activity-distributor;1",
                          "nsIHttpActivityDistributor");
@@ -57,13 +56,47 @@ function NetworkResponseListener(aOwner, aHttpActivity)
   this.receivedData = "";
   this.httpActivity = aHttpActivity;
   this.bodySize = 0;
+  let channel = this.httpActivity.channel;
+  this._wrappedNotificationCallbacks = channel.notificationCallbacks;
+  channel.notificationCallbacks = this;
 }
 exports.NetworkResponseListener = NetworkResponseListener;
 
 NetworkResponseListener.prototype = {
   QueryInterface:
     XPCOMUtils.generateQI([Ci.nsIStreamListener, Ci.nsIInputStreamCallback,
-                           Ci.nsIRequestObserver, Ci.nsISupports]),
+                           Ci.nsIRequestObserver, Ci.nsIInterfaceRequestor,
+                           Ci.nsISupports]),
+
+  // nsIInterfaceRequestor implementation
+
+  /**
+   * This object implements nsIProgressEventSink, but also needs to forward
+   * interface requests to the notification callbacks of other objects.
+   */
+  getInterface(iid) {
+    if (iid.equals(Ci.nsIProgressEventSink)) {
+      return this;
+    }
+    if (this._wrappedNotificationCallbacks) {
+      return this._wrappedNotificationCallbacks.getInterface(iid);
+    }
+    throw Cr.NS_ERROR_NO_INTERFACE;
+  },
+
+  /**
+   * Forward notifications for interfaces this object implements, in case other
+   * objects also implemented them.
+   */
+  _forwardNotification(iid, method, args) {
+    if (!this._wrappedNotificationCallbacks) {
+      return;
+    }
+    try {
+      let impl = this._wrappedNotificationCallbacks.getInterface(iid);
+      impl[method].apply(impl, args);
+    } catch(e if e.result == Cr.NS_ERROR_NO_INTERFACE) {}
+  },
 
   /**
    * This NetworkResponseListener tracks the NetworkMonitor.openResponses object
@@ -71,6 +104,12 @@ NetworkResponseListener.prototype = {
    * @private
    */
   _foundOpenResponse: false,
+
+  /**
+   * If the channel already had notificationCallbacks, hold them here internally
+   * so that we can forward getInterface requests to that object.
+   */
+  _wrappedNotificationCallbacks: null,
 
   /**
    * The response listener owner.
@@ -94,9 +133,14 @@ NetworkResponseListener.prototype = {
   receivedData: null,
 
   /**
-   * The network response body size.
+   * The uncompressed, decoded response body size.
    */
   bodySize: null,
+
+  /**
+   * Response body size on the wire, potentially compressed / encoded.
+   */
+  transferredSize: null,
 
   /**
    * The nsIRequest we are started for.
@@ -160,10 +204,25 @@ NetworkResponseListener.prototype = {
   onStartRequest: function NRL_onStartRequest(aRequest)
   {
     this.request = aRequest;
+    this._getSecurityInfo();
     this._findOpenResponse();
     // Asynchronously wait for the data coming from the request.
     this.setAsyncListener(this.sink.inputStream, this);
   },
+
+  /**
+   * Parse security state of this request and report it to the client.
+   */
+  _getSecurityInfo: DevToolsUtils.makeInfallible(function NRL_getSecurityInfo() {
+    // Take the security information from the original nsIHTTPChannel instead of
+    // the nsIRequest received in onStartRequest. If response to this request
+    // was a redirect from http to https, the request object seems to contain
+    // security info for the https request after redirect.
+    let secinfo = this.httpActivity.channel.securityInfo;
+    let info = NetworkHelper.parseSecurityInfo(secinfo, this.httpActivity);
+
+    this.httpActivity.owner.addSecurityInfo(info);
+  }),
 
   /**
    * Handle the onStopRequest by closing the sink output stream.
@@ -175,6 +234,23 @@ NetworkResponseListener.prototype = {
   {
     this._findOpenResponse();
     this.sink.outputStream.close();
+  },
+
+  // nsIProgressEventSink implementation
+
+  /**
+   * Handle progress event as data is transferred.  This is used to record the
+   * size on the wire, which may be compressed / encoded.
+   */
+  onProgress: function(request, context, progress, progressMax) {
+    this.transferredSize = progress;
+    // Need to forward as well to keep things like Download Manager's progress
+    // bar working properly.
+    this._forwardNotification(Ci.nsIProgressEventSink, "onProgress", arguments);
+  },
+
+  onStatus: function () {
+    this._forwardNotification(Ci.nsIProgressEventSink, "onStatus", arguments);
   },
 
   /**
@@ -259,6 +335,7 @@ NetworkResponseListener.prototype = {
     };
 
     response.size = response.text.length;
+    response.transferredSize = this.transferredSize;
 
     try {
       response.mimeType = this.request.contentType;
@@ -279,6 +356,7 @@ NetworkResponseListener.prototype = {
     this.httpActivity.owner.
       addResponseContent(response, this.httpActivity.discardResponseBody);
 
+    this._wrappedNotificationCallbacks = null;
     this.httpActivity.channel = null;
     this.httpActivity.owner = null;
     this.httpActivity = null;
@@ -595,9 +673,17 @@ NetworkMonitor.prototype = {
     }
 
     if (this.window) {
+      // Since frames support, this.window may not be the top level content
+      // frame, so that we can't only compare with win.top.
       let win = NetworkHelper.getWindowForRequest(aChannel);
-      if (win && win.top === this.window) {
-        return true;
+      while(win) {
+        if (win == this.window) {
+          return true;
+        }
+        if (win.parent == win) {
+          break;
+        }
+        win = win.parent;
       }
     }
 
@@ -642,7 +728,9 @@ NetworkMonitor.prototype = {
 
     // see NM__onRequestBodySent()
     httpActivity.charset = win ? win.document.characterSet : null;
-    httpActivity.private = win ? PrivateBrowsingUtils.isWindowPrivate(win) : false;
+
+    aChannel.QueryInterface(Ci.nsIPrivateBrowsingChannel);
+    httpActivity.private = aChannel.isChannelPrivate;
 
     httpActivity.timings.REQUEST_HEADER = {
       first: aTimestamp,
@@ -728,6 +816,7 @@ NetworkMonitor.prototype = {
       channel: aChannel,
       charset: null, // see NM__onRequestHeader()
       url: aChannel.URI.spec,
+      hostname: aChannel.URI.host, // needed for host specific security info
       discardRequestBody: !this.saveRequestAndResponseBodies,
       discardResponseBody: !this.saveRequestAndResponseBodies,
       timings: {}, // internal timing information, see NM_observeActivity()
@@ -1001,11 +1090,14 @@ NetworkMonitor.prototype = {
  *        The web appId of the child process.
  * @param nsIMessageManager messageManager
  *        The nsIMessageManager to use to communicate with the parent process.
+ * @param string connID
+ *        The connection ID to use for send messages to the parent process.
  * @param object owner
  *        The WebConsoleActor that is listening for the network requests.
  */
-function NetworkMonitorChild(appId, messageManager, owner) {
+function NetworkMonitorChild(appId, messageManager, connID, owner) {
   this.appId = appId;
+  this.connID = connID;
   this.owner = owner;
   this._messageManager = messageManager;
   this._onNewEvent = this._onNewEvent.bind(this);
@@ -1027,7 +1119,7 @@ NetworkMonitorChild.prototype = {
   set saveRequestAndResponseBodies(val) {
     this._saveRequestAndResponseBodies = val;
 
-    this._messageManager.sendAsyncMessage("debug:netmonitor", {
+    this._messageManager.sendAsyncMessage("debug:netmonitor:" + this.connID, {
       appId: this.appId,
       action: "setPreferences",
       preferences: {
@@ -1037,9 +1129,12 @@ NetworkMonitorChild.prototype = {
   },
 
   init: function() {
-    this._messageManager.addMessageListener("debug:netmonitor:newEvent", this._onNewEvent);
-    this._messageManager.addMessageListener("debug:netmonitor:updateEvent", this._onUpdateEvent);
-    this._messageManager.sendAsyncMessage("debug:netmonitor", {
+    let mm = this._messageManager;
+    mm.addMessageListener("debug:netmonitor:" + this.connID + ":newEvent",
+                          this._onNewEvent);
+    mm.addMessageListener("debug:netmonitor:" + this.connID + ":updateEvent",
+                          this._onUpdateEvent);
+    mm.sendAsyncMessage("debug:netmonitor:" + this.connID, {
       appId: this.appId,
       action: "start",
     });
@@ -1067,9 +1162,19 @@ NetworkMonitorChild.prototype = {
   }),
 
   destroy: function() {
-    this._messageManager.removeMessageListener("debug:netmonitor:newEvent", this._onNewEvent);
-    this._messageManager.removeMessageListener("debug:netmonitor:updateEvent", this._onUpdateEvent);
-    this._messageManager.sendAsyncMessage("debug:netmonitor", { action: "disconnect" });
+    let mm = this._messageManager;
+    try {
+      mm.removeMessageListener("debug:netmonitor:" + this.connID + ":newEvent",
+                               this._onNewEvent);
+      mm.removeMessageListener("debug:netmonitor:" + this.connID + ":updateEvent",
+                               this._onUpdateEvent);
+    } catch(e) {
+      // On b2g, when registered to a new root docshell,
+      // all message manager functions throw when trying to call them during
+      // message-manager-disconnect event.
+      // As there is no attribute/method on message manager to know
+      // if they are still usable or not, we can only catch the exception...
+    }
     this._netEvents.clear();
     this._messageManager = null;
     this.owner = null;
@@ -1090,9 +1195,12 @@ NetworkMonitorChild.prototype = {
  * @param nsIMessageManager messageManager
  *        The message manager for the child app process. This is used for
  *        communication with the NetworkMonitorChild instance of the process.
+ * @param string connID
+ *        The connection ID to use to send messages to the child process.
  */
-function NetworkEventActorProxy(messageManager) {
+function NetworkEventActorProxy(messageManager, connID) {
   this.id = gSequenceId();
+  this.connID = connID;
   this.messageManager = messageManager;
 }
 exports.NetworkEventActorProxy = NetworkEventActorProxy;
@@ -1100,7 +1208,8 @@ exports.NetworkEventActorProxy = NetworkEventActorProxy;
 NetworkEventActorProxy.methodFactory = function(method) {
   return DevToolsUtils.makeInfallible(function() {
     let args = Array.slice(arguments);
-    this.messageManager.sendAsyncMessage("debug:netmonitor:updateEvent", {
+    let mm = this.messageManager;
+    mm.sendAsyncMessage("debug:netmonitor:" + this.connID + ":updateEvent", {
       id: this.id,
       method: method,
       args: args,
@@ -1120,7 +1229,8 @@ NetworkEventActorProxy.prototype = {
    */
   init: DevToolsUtils.makeInfallible(function(event)
   {
-    this.messageManager.sendAsyncMessage("debug:netmonitor:newEvent", {
+    let mm = this.messageManager;
+    mm.sendAsyncMessage("debug:netmonitor:" + this.connID + ":newEvent", {
       id: this.id,
       event: event,
     });
@@ -1131,8 +1241,8 @@ NetworkEventActorProxy.prototype = {
 (function() {
   // Listeners for new network event data coming from the NetworkMonitor.
   let methods = ["addRequestHeaders", "addRequestCookies", "addRequestPostData",
-                 "addResponseStart", "addResponseHeaders", "addResponseCookies",
-                 "addResponseContent", "addEventTimings"];
+                 "addResponseStart", "addSecurityInfo", "addResponseHeaders",
+                 "addResponseCookies", "addResponseContent", "addEventTimings"];
   let factory = NetworkEventActorProxy.methodFactory;
   for (let method of methods) {
     NetworkEventActorProxy.prototype[method] = factory(method);
@@ -1148,16 +1258,19 @@ NetworkEventActorProxy.prototype = {
  * @constructor
  * @param nsIDOMElement frame
  *        The browser frame to work with (mozbrowser).
+ * @param string id
+ *        Instance identifier to use for messages.
  */
-function NetworkMonitorManager(frame)
+function NetworkMonitorManager(frame, id)
 {
+  this.id = id;
   let mm = frame.QueryInterface(Ci.nsIFrameLoaderOwner).frameLoader.messageManager;
   this.messageManager = mm;
   this.frame = frame;
   this.onNetMonitorMessage = this.onNetMonitorMessage.bind(this);
   this.onNetworkEvent = this.onNetworkEvent.bind(this);
 
-  mm.addMessageListener("debug:netmonitor", this.onNetMonitorMessage);
+  mm.addMessageListener("debug:netmonitor:" + id, this.onNetMonitorMessage);
 }
 exports.NetworkMonitorManager = NetworkMonitorManager;
 
@@ -1175,7 +1288,6 @@ NetworkMonitorManager.prototype = {
    */
   onNetMonitorMessage: DevToolsUtils.makeInfallible(function _onNetMonitorMessage(msg) {
     let { action, appId } = msg.json;
-
     // Pipe network monitor data from parent to child via the message manager.
     switch (action) {
       case "start":
@@ -1222,13 +1334,15 @@ NetworkMonitorManager.prototype = {
    *         data about the request is available.
    */
   onNetworkEvent: DevToolsUtils.makeInfallible(function _onNetworkEvent(event) {
-    return new NetworkEventActorProxy(this.messageManager).init(event);
+    return new NetworkEventActorProxy(this.messageManager, this.id).init(event);
   }),
 
   destroy: function()
   {
-    this.messageManager.removeMessageListener("debug:netmonitor",
-                                              this.onNetMonitorMessage);
+    if (this.messageManager) {
+      this.messageManager.removeMessageListener("debug:netmonitor:" + this.id,
+                                                this.onNetMonitorMessage);
+    }
     this.messageManager = null;
     this.filters = null;
 

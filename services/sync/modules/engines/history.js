@@ -11,6 +11,7 @@ const Cr = Components.results;
 
 const HISTORY_TTL = 5184000; // 60 days
 
+Cu.import("resource://gre/modules/PlacesUtils.jsm", this);
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://services-common/async.js");
 Cu.import("resource://gre/modules/Log.jsm");
@@ -40,7 +41,9 @@ HistoryEngine.prototype = {
   _storeObj: HistoryStore,
   _trackerObj: HistoryTracker,
   downloadLimit: MAX_HISTORY_DOWNLOAD,
-  applyIncomingBatchSize: HISTORY_STORE_BATCH_SIZE
+  applyIncomingBatchSize: HISTORY_STORE_BATCH_SIZE,
+
+  syncPriority: 7,
 };
 
 function HistoryStore(name, engine) {

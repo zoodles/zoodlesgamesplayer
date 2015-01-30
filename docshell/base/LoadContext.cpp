@@ -4,11 +4,27 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/Assertions.h"
 #include "mozilla/LoadContext.h"
 
 namespace mozilla {
 
-NS_IMPL_ISUPPORTS2(LoadContext, nsILoadContext, nsIInterfaceRequestor)
+NS_IMPL_ISUPPORTS(LoadContext, nsILoadContext, nsIInterfaceRequestor)
+
+LoadContext::LoadContext(nsIPrincipal* aPrincipal)
+  : mTopFrameElement(nullptr)
+  , mNestedFrameId(0)
+  , mIsContent(true)
+  , mUsePrivateBrowsing(false)
+  , mUseRemoteTabs(false)
+#ifdef DEBUG
+  , mIsNotNull(true)
+#endif
+{
+  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(aPrincipal->GetAppId(&mAppId)));
+  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
+    aPrincipal->GetIsInBrowserElement(&mIsInBrowserElement)));
+}
 
 //-----------------------------------------------------------------------------
 // LoadContext::nsILoadContext
@@ -37,6 +53,14 @@ LoadContext::GetTopFrameElement(nsIDOMElement** aElement)
 {
   nsCOMPtr<nsIDOMElement> element = do_QueryReferent(mTopFrameElement);
   element.forget(aElement);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+LoadContext::GetNestedFrameId(uint64_t* aId)
+{
+  NS_ENSURE_ARG(aId);
+  *aId = mNestedFrameId;
   return NS_OK;
 }
 

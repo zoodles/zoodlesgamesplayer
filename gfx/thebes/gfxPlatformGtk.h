@@ -7,6 +7,7 @@
 #define GFX_PLATFORM_GTK_H
 
 #include "gfxPlatform.h"
+#include "gfxPrefs.h"
 #include "nsAutoRef.h"
 #include "nsTArray.h"
 
@@ -31,46 +32,48 @@ public:
       CreateOffscreenSurface(const IntSize& size,
                              gfxContentType contentType) MOZ_OVERRIDE;
 
-    mozilla::TemporaryRef<mozilla::gfx::ScaledFont>
-      GetScaledFontForFont(mozilla::gfx::DrawTarget* aTarget, gfxFont *aFont);
+    virtual mozilla::TemporaryRef<mozilla::gfx::ScaledFont>
+      GetScaledFontForFont(mozilla::gfx::DrawTarget* aTarget, gfxFont *aFont) MOZ_OVERRIDE;
 
-    nsresult GetFontList(nsIAtom *aLangGroup,
-                         const nsACString& aGenericFamily,
-                         nsTArray<nsString>& aListOfFonts);
+    virtual nsresult GetFontList(nsIAtom *aLangGroup,
+                                 const nsACString& aGenericFamily,
+                                 nsTArray<nsString>& aListOfFonts) MOZ_OVERRIDE;
 
-    nsresult UpdateFontList();
+    virtual nsresult UpdateFontList() MOZ_OVERRIDE;
 
-    nsresult ResolveFontName(const nsAString& aFontName,
-                             FontResolverCallback aCallback,
-                             void *aClosure, bool& aAborted);
+    virtual nsresult GetStandardFamilyName(const nsAString& aFontName,
+                                           nsAString& aFamilyName) MOZ_OVERRIDE;
 
-    nsresult GetStandardFamilyName(const nsAString& aFontName, nsAString& aFamilyName);
-
-    gfxFontGroup *CreateFontGroup(const nsAString &aFamilies,
-                                  const gfxFontStyle *aStyle,
-                                  gfxUserFontSet *aUserFontSet);
+    virtual gfxFontGroup* CreateFontGroup(const mozilla::FontFamilyList& aFontFamilyList,
+                                          const gfxFontStyle *aStyle,
+                                          gfxUserFontSet *aUserFontSet) MOZ_OVERRIDE;
 
     /**
      * Look up a local platform font using the full font face name (needed to
      * support @font-face src local() )
      */
-    virtual gfxFontEntry* LookupLocalFont(const gfxProxyFontEntry *aProxyEntry,
-                                          const nsAString& aFontName);
+    virtual gfxFontEntry* LookupLocalFont(const nsAString& aFontName,
+                                          uint16_t aWeight,
+                                          int16_t aStretch,
+                                          bool aItalic) MOZ_OVERRIDE;
 
     /**
      * Activate a platform font (needed to support @font-face src url() )
      *
      */
-    virtual gfxFontEntry* MakePlatformFont(const gfxProxyFontEntry *aProxyEntry,
-                                           const uint8_t *aFontData,
-                                           uint32_t aLength);
+    virtual gfxFontEntry* MakePlatformFont(const nsAString& aFontName,
+                                           uint16_t aWeight,
+                                           int16_t aStretch,
+                                           bool aItalic,
+                                           const uint8_t* aFontData,
+                                           uint32_t aLength) MOZ_OVERRIDE;
 
     /**
      * Check whether format is supported on a platform or not (if unclear,
      * returns true).
      */
     virtual bool IsFontFormatSupported(nsIURI *aFontURI,
-                                         uint32_t aFormatFlags);
+                                         uint32_t aFormatFlags) MOZ_OVERRIDE;
 
 #if (MOZ_WIDGET_GTK == 2)
     static void SetGdkDrawable(cairo_surface_t *target,
@@ -92,17 +95,27 @@ public:
 #endif
     }
 
-    virtual gfxImageFormat GetOffscreenFormat();
+    bool UseImageOffscreenSurfaces() {
+        // We want to turn on image offscreen surfaces ONLY for GTK3 builds
+        // since GTK2 theme rendering still requires xlib surfaces per se.
+#if (MOZ_WIDGET_GTK == 3)
+        return gfxPrefs::UseImageOffscreenSurfaces();
+#else
+        return false;
+#endif
+    }
 
-    virtual int GetScreenDepth() const;
+    virtual gfxImageFormat GetOffscreenFormat() MOZ_OVERRIDE;
+
+    virtual int GetScreenDepth() const MOZ_OVERRIDE;
 
 protected:
     static gfxFontconfigUtils *sFontconfigUtils;
 
 private:
-    virtual void GetPlatformCMSOutputProfile(void *&mem, size_t &size);
+    virtual void GetPlatformCMSOutputProfile(void *&mem,
+                                             size_t &size) MOZ_OVERRIDE;
 
-    virtual bool SupportsOffMainThreadCompositing();
 #ifdef MOZ_X11
     static bool sUseXRender;
 #endif

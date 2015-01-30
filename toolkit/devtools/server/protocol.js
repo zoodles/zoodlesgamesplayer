@@ -4,13 +4,16 @@
 
 "use strict";
 
-let {Cu} = require("chrome");
+let { Cu } = require("chrome");
+let DevToolsUtils = require("devtools/toolkit/DevToolsUtils");
 let Services = require("Services");
-let promise = require("sdk/core/promise");
+let promise = require("promise");
 let {Class} = require("sdk/core/heritage");
 let {EventTarget} = require("sdk/event/target");
 let events = require("sdk/event/core");
 let object = require("sdk/util/object");
+
+exports.emit = events.emit;
 
 // Waiting for promise.done() to be added, see bug 851321
 function promiseDone(err) {
@@ -144,6 +147,7 @@ types.addType = function(name, typeObject={}, options={}) {
   }
 
   let type = object.merge({
+    toString() { return "[protocol type:" + name + "]"},
     name: name,
     primitive: !(typeObject.read || typeObject.write),
     read: identityWrite,
@@ -152,12 +156,25 @@ types.addType = function(name, typeObject={}, options={}) {
 
   registeredTypes.set(name, type);
 
-  if (!options.thawed) {
-    Object.freeze(type);
-  }
-
   return type;
 };
+
+/**
+ * Remove a type previously registered with the system.
+ * Primarily useful for types registered by addons.
+ */
+types.removeType = function(name) {
+  // This type may still be referenced by other types, make sure
+  // those references don't work.
+  let type = registeredTypes.get(name);
+
+  type.name = "DEFUNCT:" + name;
+  type.category = "defunct";
+  type.primitive = false;
+  type.read = type.write = function() { throw new Error("Using defunct type: " + name); };
+
+  registeredTypes.delete(name);
+}
 
 /**
  * Add an array type to the type system.
@@ -178,6 +195,7 @@ types.addArrayType = function(subtype) {
     return types.addType(name);
   }
   return types.addType(name, {
+    category: "array",
     read: (v, ctx) => [subtype.read(i, ctx) for (i of v)],
     write: (v, ctx) => [subtype.write(i, ctx) for (i of v)]
   });
@@ -195,6 +213,8 @@ types.addArrayType = function(subtype) {
  */
 types.addDictType = function(name, specializations) {
   return types.addType(name, {
+    category: "dict",
+    specializations: specializations,
     read: (v, ctx) => {
       let ret = {};
       for (let prop in v) {
@@ -241,6 +261,7 @@ types.addDictType = function(name, specializations) {
 types.addActorType = function(name) {
   let type = types.addType(name, {
     _actor: true,
+    category: "actor",
     read: (v, ctx, detail) => {
       // If we're reading a request on the server side, just
       // find the actor registered with this actorID.
@@ -253,13 +274,15 @@ types.addActorType = function(name) {
       // if it isn't found.
       let actorID = typeof(v) === "string" ? v : v.actor;
       let front = ctx.conn.getActor(actorID);
-      if (front) {
-        front.form(v, detail, ctx);
-      } else {
-        front = new type.frontClass(ctx.conn, v, detail, ctx)
+      if (!front) {
+        front = new type.frontClass(ctx.conn);
         front.actorID = actorID;
         ctx.marshallPool().manage(front);
       }
+
+      v = type.formType(detail).read(v, front, detail);
+      front.form(v, detail, ctx);
+
       return front;
     },
     write: (v, ctx, detail) => {
@@ -269,16 +292,28 @@ types.addActorType = function(name) {
         if (!v.actorID) {
           ctx.marshallPool().manage(v);
         }
-        return v.form(detail);
+        return type.formType(detail).write(v.form(detail), ctx, detail);
       }
 
       // Writing a request from the client side, just send the actor id.
       return v.actorID;
     },
-  }, {
-    // We usually freeze types, but actor types are updated when clients are
-    // created, so don't freeze yet.
-    thawed: true
+    formType: (detail) => {
+      if (!("formType" in type.actorSpec)) {
+        return types.Primitive;
+      }
+
+      let formAttr = "formType";
+      if (detail) {
+        formAttr += "#" + detail;
+      }
+
+      if (!(formAttr in type.actorSpec)) {
+        throw new Error("No type defined for " + formAttr);
+      }
+
+      return type.actorSpec[formAttr];
+    }
   });
   return type;
 }
@@ -286,6 +321,7 @@ types.addActorType = function(name) {
 types.addNullableType = function(subtype) {
   subtype = types.getType(subtype);
   return types.addType("nullable:" + subtype.name, {
+    category: "nullable",
     read: (value, ctx) => {
       if (value == null) {
         return value;
@@ -322,6 +358,7 @@ types.addActorDetail = function(name, actorType, detail) {
   }
   return types.addType(name, {
     _actor: true,
+    category: "detail",
     read: (v, ctx) => actorType.read(v, ctx, detail),
     write: (v, ctx) => actorType.write(v, ctx, detail)
   });
@@ -344,6 +381,14 @@ types.addLifetime = function(name, prop) {
 }
 
 /**
+ * Remove a previously-registered lifetime.  Useful for lifetimes registered
+ * in addons.
+ */
+types.removeLifetime = function(name) {
+  registeredLifetimes.delete(name);
+}
+
+/**
  * Register a lifetime type.  This creates an actor type tied to the given
  * lifetime.
  *
@@ -362,6 +407,7 @@ types.addLifetimeType = function(lifetime, subtype) {
   }
   let prop = registeredLifetimes.get(lifetime);
   return types.addType(lifetime + ":" + subtype.name, {
+    category: "lifetime",
     read: (value, ctx) => subtype.read(value, ctx[prop]),
     write: (value, ctx) => subtype.write(value, ctx[prop])
   })
@@ -407,6 +453,13 @@ let Arg = Class({
 
   read: function(v, ctx, outArgs) {
     outArgs[this.index] = this.type.read(v, ctx);
+  },
+
+  describe: function() {
+    return {
+      _arg: this.index,
+      type: this.type.name,
+    }
   }
 });
 exports.Arg = Arg;
@@ -435,13 +488,11 @@ let Option = Class({
   },
 
   write: function(arg, ctx, name) {
-    if (!arg) {
+    // Ignore if arg is undefined or null; allow other falsy values
+    if (arg == undefined || arg[name] == undefined) {
       return undefined;
     }
-    let v = arg[name] || undefined;
-    if (v === undefined) {
-      return undefined;
-    }
+    let v = arg[name];
     return this.type.write(v, ctx);
   },
   read: function(v, ctx, outArgs, name) {
@@ -452,6 +503,13 @@ let Option = Class({
       return;
     }
     outArgs[this.index][name] = this.type.read(v, ctx);
+  },
+
+  describe: function() {
+    return {
+      _option: this.index,
+      type: this.type.name,
+    }
   }
 });
 
@@ -474,6 +532,12 @@ let RetVal = Class({
 
   read: function(v, ctx) {
     return this.type.read(v, ctx);
+  },
+
+  describe: function() {
+    return {
+      _retval: this.type.name
+    }
   }
 });
 
@@ -518,6 +582,15 @@ function findPlaceholders(template, constructor, path=[], placeholders=[]) {
 }
 
 
+function describeTemplate(template) {
+  return JSON.parse(JSON.stringify(template, (key, value) => {
+    if (value.describe) {
+      return value.describe();
+    }
+    return value;
+  }));
+}
+
 /**
  * Manages a request template.
  *
@@ -544,7 +617,8 @@ let Request = Class({
   write: function(fnArgs, ctx) {
     let str = JSON.stringify(this.template, (key, value) => {
       if (value instanceof Arg) {
-        return value.write(fnArgs[value.index], ctx, key);
+        return value.write(value.index in fnArgs ? fnArgs[value.index] : undefined,
+                           ctx, key);
       }
       return value;
     });
@@ -570,6 +644,8 @@ let Request = Class({
     }
     return fnArgs;
   },
+
+  describe: function() { return describeTemplate(this.template); }
 });
 
 /**
@@ -624,7 +700,9 @@ let Response = Class({
     }
     let v = getPath(packet, this.path);
     return this.retVal.read(v, ctx);
-  }
+  },
+
+  describe: function() { return describeTemplate(this.template); }
 });
 
 /**
@@ -694,7 +772,7 @@ let Pool = Class({
    * Remove an actor as a child of this pool.
    */
   unmanage: function(actor) {
-    this.__poolMap.delete(actor.actorID);
+    this.__poolMap && this.__poolMap.delete(actor.actorID);
   },
 
   // true if the given actor ID exists in the pool.
@@ -736,7 +814,7 @@ let Pool = Class({
         actor.destroy = destroy;
       }
     };
-    this.conn.removeActorPool(this);
+    this.conn.removeActorPool(this, true);
     this.__poolMap.clear();
     this.__poolMap = null;
   },
@@ -784,13 +862,21 @@ let Actor = Class({
     }
   },
 
+  toString: function() { return "[Actor " + this.typeName + "/" + this.actorID + "]" },
+
   _sendEvent: function(name, ...args) {
     if (!this._actorSpec.events.has(name)) {
       // It's ok to emit events that don't go over the wire.
       return;
     }
     let request = this._actorSpec.events.get(name);
-    let packet = request.write(args, this);
+    let packet;
+    try {
+      packet = request.write(args, this);
+    } catch(ex) {
+      console.error("Error sending event: " + name);
+      throw ex;
+    }
     packet.from = packet.from || this.actorID;
     this.conn.send(packet);
   },
@@ -862,11 +948,22 @@ let actorProto = function(actorProto) {
     methods: [],
   };
 
-  // Find method specifications attached to prototype properties.
+  // Find method and form specifications attached to prototype properties.
   for (let name of Object.getOwnPropertyNames(actorProto)) {
     let desc = Object.getOwnPropertyDescriptor(actorProto, name);
     if (!desc.value) {
       continue;
+    }
+
+    if (name.startsWith("formType")) {
+      if (typeof(desc.value) === "string") {
+        protoSpec[name] = types.getType(desc.value);
+      } else if (desc.value.name && registeredTypes.has(desc.value.name)) {
+        protoSpec[name] = desc.value;
+      } else {
+        // Shorthand for a newly-registered DictType.
+        protoSpec[name] = types.addDictType(actorProto.typeName + "__" + name, desc.value);
+      }
     }
 
     if (desc.value._methodSpec) {
@@ -898,17 +995,29 @@ let actorProto = function(actorProto) {
   protoSpec.methods.forEach(spec => {
     let handler = function(packet, conn) {
       try {
-        let args = spec.request.read(packet, this);
+        let args;
+        try {
+          args = spec.request.read(packet, this);
+        } catch(ex) {
+          console.error("Error reading request: " + packet.type);
+          throw ex;
+        }
 
         let ret = this[spec.name].apply(this, args);
 
-        if (spec.oneway) {
-          // No need to send a response.
-          return;
-        }
-
         let sendReturn = (ret) => {
-          let response = spec.response.write(ret, this);
+          if (spec.oneway) {
+            // No need to send a response.
+            return;
+          }
+
+          let response;
+          try {
+            response = spec.response.write(ret, this);
+          } catch(ex) {
+            console.error("Error writing response to: " + spec.name);
+            throw ex;
+          }
           response.from = this.actorID;
           // If spec.release has been specified, destroy the object.
           if (spec.release) {
@@ -958,7 +1067,10 @@ exports.ActorClass = function(proto) {
   if (!registeredTypes.has(proto.typeName)) {
     types.addActorType(proto.typeName);
   }
-  return Class(actorProto(proto));
+  let cls = Class(actorProto(proto));
+
+  registeredTypes.get(proto.typeName).actorSpec = proto._actorSpec;
+  return cls;
 };
 
 /**
@@ -983,8 +1095,14 @@ let Front = Class({
   initialize: function(conn=null, form=null, detail=null, context=null) {
     Pool.prototype.initialize.call(this, conn);
     this._requests = [];
+
+    // protocol.js no longer uses this data in the constructor, only external
+    // uses do.  External usage of manually-constructed fronts will be
+    // drastically reduced if we convert the root and tab actors to
+    // protocol.js, in which case this can probably go away.
     if (form) {
       this.actorID = form.actor;
+      form = types.getType(this.typeName).formType(detail).read(form, this, detail);
       this.form(form, detail, context);
     }
   },
@@ -998,6 +1116,14 @@ let Front = Class({
     }
     Pool.prototype.destroy.call(this);
     this.actorID = null;
+  },
+
+  manage: function(front) {
+    if (!front.actorID) {
+      throw new Error("Can't manage front without an actor ID.\n" +
+                      "Ensure server supports " + front.typeName + ".");
+    }
+    return Pool.prototype.manage.call(this, front);
   },
 
   /**
@@ -1024,7 +1150,7 @@ let Front = Class({
       this.actor().then(actorID => {
         packet.to = actorID;
         this.conn._transport.send(packet);
-      });
+      }).then(null, e => DevToolsUtils.reportException("Front.prototype.send", e));
     }
   },
 
@@ -1043,9 +1169,17 @@ let Front = Class({
    */
   onPacket: function(packet) {
     // Pick off event packets
-    if (this._clientSpec.events && this._clientSpec.events.has(packet.type)) {
+    let type = packet.type || undefined;
+    if (this._clientSpec.events && this._clientSpec.events.has(type)) {
       let event = this._clientSpec.events.get(packet.type);
-      let args = event.request.read(packet, this);
+      let args;
+      try {
+        args = event.request.read(packet, this);
+      } catch(ex) {
+        console.error("Error reading event: " + packet.type);
+        console.exception(ex);
+        throw ex;
+      }
       if (event.pre) {
         event.pre.forEach((pre) => pre.apply(this, args));
       }
@@ -1063,7 +1197,15 @@ let Front = Class({
 
     let deferred = this._requests.shift();
     if (packet.error) {
-      deferred.reject(packet.error);
+      // "Protocol error" is here to avoid TBPL heuristics. See also
+      // https://mxr.mozilla.org/webtools-central/source/tbpl/php/inc/GeneralErrorFilter.php
+      let message;
+      if (packet.error && packet.message) {
+        message = "Protocol error (" + packet.error + "): " + packet.message;
+      } else {
+        message = packet.error;
+      }
+      deferred.reject(message);
     } else {
       deferred.resolve(packet);
     }
@@ -1153,7 +1295,13 @@ let frontProto = function(proto) {
         }
       }
 
-      let packet = spec.request.write(args, this);
+      let packet;
+      try {
+        packet = spec.request.write(args, this);
+      } catch(ex) {
+        console.error("Error writing request: " + name);
+        throw ex;
+      }
       if (spec.oneway) {
         // Fire-and-forget oneway packets.
         this.send(packet);
@@ -1161,7 +1309,13 @@ let frontProto = function(proto) {
       }
 
       return this.request(packet).then(response => {
-        let ret = spec.response.read(response, this);
+        let ret;
+        try {
+          ret = spec.response.read(response, this);
+        } catch(ex) {
+          console.error("Error reading response to: " + name);
+          throw ex;
+        }
 
         if (histogram) {
           histogram.add(+new Date - startTime);
@@ -1238,4 +1392,59 @@ exports.FrontClass = function(actorType, proto) {
   let cls = Class(frontProto(proto));
   registeredTypes.get(cls.prototype.typeName).frontClass = cls;
   return cls;
+}
+
+
+exports.dumpActorSpec = function(type) {
+  let actorSpec = type.actorSpec;
+  let ret = {
+    category: "actor",
+    typeName: type.name,
+    methods: [],
+    events: {}
+  };
+
+  for (let method of actorSpec.methods) {
+    ret.methods.push({
+      name: method.name,
+      release: method.release || undefined,
+      oneway: method.oneway || undefined,
+      request: method.request.describe(),
+      response: method.response.describe()
+    });
+  }
+
+  if (actorSpec.events) {
+    for (let [name, request] of actorSpec.events) {
+      ret.events[name] = request.describe();
+    }
+  }
+
+
+  JSON.stringify(ret);
+
+  return ret;
+}
+
+exports.dumpProtocolSpec = function() {
+  let ret = {
+    types: {},
+  };
+
+  for (let [name, type] of registeredTypes) {
+    // Force lazy instantiation if needed.
+    type = types.getType(name);
+    let category = type.category || undefined;
+    if (category === "dict") {
+      ret.types[name] = {
+        category: "dict",
+        typeName: name,
+        specializations: type.specializations
+      }
+    } else if (category === "actor") {
+      ret.types[name] = exports.dumpActorSpec(type);
+    }
+  }
+
+  return ret;
 }

@@ -36,9 +36,9 @@ namespace ipc {
 namespace dom {
 namespace gonk {
 
-class SystemWorkerManager : public nsIObserver,
-                            public nsIInterfaceRequestor,
-                            public nsISystemWorkerManager
+class SystemWorkerManager MOZ_FINAL : public nsIObserver,
+                                      public nsIInterfaceRequestor,
+                                      public nsISystemWorkerManager
 {
 public:
   NS_DECL_ISUPPORTS
@@ -59,11 +59,9 @@ private:
   SystemWorkerManager();
   ~SystemWorkerManager();
 
-  nsresult InitNetd(JSContext *cx);
   nsresult InitWifi(JSContext *cx);
   nsresult InitKeyStore(JSContext *cx);
 
-  nsCOMPtr<nsIWorkerHolder> mNetdWorker;
   nsCOMPtr<nsIWorkerHolder> mWifiWorker;
 
   nsRefPtr<ipc::KeyStore> mKeyStore;

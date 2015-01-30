@@ -22,6 +22,9 @@ public:
   FMRadioParent();
   ~FMRadioParent();
 
+  virtual void
+  ActorDestroy(ActorDestroyReason aWhy) MOZ_OVERRIDE;
+
   virtual bool
   RecvGetStatusInfo(StatusInfo* aStatusInfo) MOZ_OVERRIDE;
 
@@ -36,6 +39,9 @@ public:
 
   virtual bool
   RecvEnableAudio(const bool& aAudioEnabled) MOZ_OVERRIDE;
+
+  virtual bool
+  RecvSetRDSGroupMask(const uint32_t& aRDSGroupMask) MOZ_OVERRIDE;
 };
 
 END_FMRADIO_NAMESPACE

@@ -28,18 +28,22 @@ import org.json.simple.JSONArray;
 import org.mozilla.apache.commons.codec.binary.Base32;
 import org.mozilla.apache.commons.codec.binary.Base64;
 import org.mozilla.gecko.background.common.log.Logger;
+import org.mozilla.gecko.background.nativecode.NativeCrypto;
 import org.mozilla.gecko.sync.setup.Constants;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Bundle;
+import android.text.Spannable;
+import android.text.Spanned;
+import android.text.style.ClickableSpan;
 
 public class Utils {
 
   private static final String LOG_TAG = "Utils";
 
-  private static SecureRandom sharedSecureRandom = new SecureRandom();
+  private static final SecureRandom sharedSecureRandom = new SecureRandom();
 
   // See <http://developer.android.com/reference/android/content/Context.html#getSharedPreferences%28java.lang.String,%20int%29>
   public static final int SHARED_PREFERENCES_MODE = 0;
@@ -199,7 +203,7 @@ public class Utils {
   }
 
   public static long decimalSecondsToMilliseconds(Integer decimal) {
-    return (long)(decimal * 1000);
+    return (decimal * 1000);
   }
 
   public static byte[] sha256(byte[] in)
@@ -210,8 +214,18 @@ public class Utils {
 
   protected static byte[] sha1(final String utf8)
       throws NoSuchAlgorithmException, UnsupportedEncodingException {
-    MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
-    return sha1.digest(utf8.getBytes("UTF-8"));
+    final byte[] bytes = utf8.getBytes("UTF-8");
+    try {
+      return NativeCrypto.sha1(bytes);
+    } catch (final LinkageError e) {
+      // This will throw UnsatisifiedLinkError (missing mozglue) the first time it is called, and
+      // ClassNotDefFoundError, for the uninitialized NativeCrypto class, each subsequent time this
+      // is called; LinkageError is their common ancestor.
+      Logger.warn(LOG_TAG, "Got throwable stretching password using native sha1 implementation; " +
+          "ignoring and using Java implementation.", e);
+      final MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
+      return sha1.digest(utf8.getBytes("UTF-8"));
+    }
   }
 
   protected static String sha1Base32(final String utf8)
@@ -602,5 +616,27 @@ public class Utils {
       return language;
     }
     return language + "-" + country;
+  }
+
+  /**
+   * Make a span with a clickable chunk of text interpolated in.
+   *
+   * @param context Android context.
+   * @param messageId of string containing clickable chunk.
+   * @param clickableId of string to make clickable.
+   * @param clickableSpan to activate on click.
+   * @return Spannable.
+   */
+  public static Spannable interpolateClickableSpan(Context context, int messageId, int clickableId, ClickableSpan clickableSpan) {
+    // This horrible bit of special-casing is because we want this error message to
+    // contain a clickable, extra chunk of text, but we don't want to pollute
+    // the exception class with Android specifics.
+    final String clickablePart = context.getString(clickableId);
+    final String message = context.getString(messageId, clickablePart);
+    final int clickableStart = message.lastIndexOf(clickablePart);
+    final int clickableEnd = clickableStart + clickablePart.length();
+    final Spannable span = Spannable.Factory.getInstance().newSpannable(message);
+    span.setSpan(clickableSpan, clickableStart, clickableEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+    return span;
   }
 }

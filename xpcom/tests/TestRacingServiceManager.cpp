@@ -67,7 +67,7 @@ bool gMainThreadWaiting = false;
 class AutoCreateAndDestroyReentrantMonitor
 {
 public:
-  AutoCreateAndDestroyReentrantMonitor(ReentrantMonitor** aReentrantMonitorPtr)
+  explicit AutoCreateAndDestroyReentrantMonitor(ReentrantMonitor** aReentrantMonitorPtr)
   : mReentrantMonitorPtr(aReentrantMonitorPtr) {
     *aReentrantMonitorPtr =
       new ReentrantMonitor("TestRacingServiceManager::AutoMon");
@@ -87,6 +87,8 @@ private:
 
 class Factory MOZ_FINAL : public nsIFactory
 {
+  ~Factory() {}
+
 public:
   NS_DECL_THREADSAFE_ISUPPORTS
 
@@ -94,19 +96,21 @@ public:
 
   NS_IMETHOD CreateInstance(nsISupports* aDelegate,
                             const nsIID& aIID,
-                            void** aResult);
+                            void** aResult) MOZ_OVERRIDE;
 
-  NS_IMETHOD LockFactory(bool aLock) {
+  NS_IMETHOD LockFactory(bool aLock) MOZ_OVERRIDE {
     return NS_OK;
   }
 
   bool mFirstComponentCreated;
 };
 
-NS_IMPL_ISUPPORTS1(Factory, nsIFactory)
+NS_IMPL_ISUPPORTS(Factory, nsIFactory)
 
 class Component1 MOZ_FINAL : public nsISupports
 {
+  ~Component1() {}
+
 public:
   NS_DECL_THREADSAFE_ISUPPORTS
 
@@ -121,12 +125,13 @@ NS_IMPL_ADDREF(Component1)
 NS_IMPL_RELEASE(Component1)
 
 NS_INTERFACE_MAP_BEGIN(Component1)
-  NS_INTERFACE_MAP_ENTRY(Component1)
   NS_INTERFACE_MAP_ENTRY(nsISupports)
 NS_INTERFACE_MAP_END
 
 class Component2 MOZ_FINAL : public nsISupports
 {
+  ~Component2() {}
+
 public:
   NS_DECL_THREADSAFE_ISUPPORTS
 
@@ -141,7 +146,6 @@ NS_IMPL_ADDREF(Component2)
 NS_IMPL_RELEASE(Component2)
 
 NS_INTERFACE_MAP_BEGIN(Component2)
-  NS_INTERFACE_MAP_ENTRY(Component2)
   NS_INTERFACE_MAP_ENTRY(nsISupports)
 NS_INTERFACE_MAP_END
 

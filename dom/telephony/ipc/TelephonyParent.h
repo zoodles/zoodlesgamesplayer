@@ -9,7 +9,7 @@
 #include "mozilla/dom/telephony/TelephonyCommon.h"
 #include "mozilla/dom/telephony/PTelephonyParent.h"
 #include "mozilla/dom/telephony/PTelephonyRequestParent.h"
-#include "nsITelephonyProvider.h"
+#include "nsITelephonyService.h"
 
 BEGIN_TELEPHONY_NAMESPACE
 
@@ -26,7 +26,7 @@ protected:
   virtual ~TelephonyParent() {}
 
   virtual void
-  ActorDestroy(ActorDestroyReason why);
+  ActorDestroy(ActorDestroyReason aWhy) MOZ_OVERRIDE;
 
   virtual bool
   RecvPTelephonyRequestConstructor(PTelephonyRequestParent* aActor, const IPCTelephonyRequest& aRequest) MOZ_OVERRIDE;
@@ -45,33 +45,6 @@ protected:
 
   virtual bool
   RecvUnregisterListener() MOZ_OVERRIDE;
-
-  virtual bool
-  RecvHangUpCall(const uint32_t& aClientId, const uint32_t& aCallIndex) MOZ_OVERRIDE;
-
-  virtual bool
-  RecvAnswerCall(const uint32_t& aClientId, const uint32_t& aCallIndex) MOZ_OVERRIDE;
-
-  virtual bool
-  RecvRejectCall(const uint32_t& aClientId, const uint32_t& aCallIndex) MOZ_OVERRIDE;
-
-  virtual bool
-  RecvHoldCall(const uint32_t& aClientId, const uint32_t& aCallIndex) MOZ_OVERRIDE;
-
-  virtual bool
-  RecvResumeCall(const uint32_t& aClientId, const uint32_t& aCallIndex) MOZ_OVERRIDE;
-
-  virtual bool
-  RecvConferenceCall(const uint32_t& aClientId) MOZ_OVERRIDE;
-
-  virtual bool
-  RecvSeparateCall(const uint32_t& aClientId, const uint32_t& callIndex) MOZ_OVERRIDE;
-
-  virtual bool
-  RecvHoldConference(const uint32_t& aClientId) MOZ_OVERRIDE;
-
-  virtual bool
-  RecvResumeConference(const uint32_t& aClientId) MOZ_OVERRIDE;
 
   virtual bool
   RecvStartTone(const uint32_t& aClientId, const nsString& aTone) MOZ_OVERRIDE;
@@ -98,7 +71,7 @@ private:
 
 class TelephonyRequestParent : public PTelephonyRequestParent
                              , public nsITelephonyListener
-                             , public nsITelephonyCallback
+                             , public nsITelephonyDialCallback
 {
   friend class TelephonyParent;
 
@@ -106,22 +79,20 @@ public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSITELEPHONYLISTENER
   NS_DECL_NSITELEPHONYCALLBACK
+  NS_DECL_NSITELEPHONYDIALCALLBACK
 
 protected:
   TelephonyRequestParent();
   virtual ~TelephonyRequestParent() {}
 
   virtual void
-  ActorDestroy(ActorDestroyReason why);
+  ActorDestroy(ActorDestroyReason aWhy) MOZ_OVERRIDE;
+
+  nsresult
+  SendResponse(const IPCTelephonyResponse& aResponse);
 
 private:
   bool mActorDestroyed;
-
-  bool
-  DoRequest(const EnumerateCallsRequest& aRequest);
-
-  bool
-  DoRequest(const DialRequest& aRequest);
 };
 
 END_TELEPHONY_NAMESPACE

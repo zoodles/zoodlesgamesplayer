@@ -17,7 +17,6 @@
 class nsIDateTimeFormat;
 class nsIStringBundle;
 class nsITextToSubURI;
-class nsIUnicodeEncoder;
 
 class nsIndexedToHTML : public nsIStreamConverter,
                         public nsIDirIndexListener
@@ -30,7 +29,6 @@ public:
     NS_DECL_NSIDIRINDEXLISTENER
 
     nsIndexedToHTML();
-    virtual ~nsIndexedToHTML();
 
     nsresult Init(nsIStreamListener *aListener);
 
@@ -39,11 +37,11 @@ public:
 
 protected:
     
-    void FormatSizeString(int64_t inSize, nsString& outSizeString);
-    nsresult FormatInputStream(nsIRequest* aRequest, nsISupports *aContext, const nsAString &aBuffer);
+    void FormatSizeString(int64_t inSize, nsCString& outSizeString);
+    nsresult SendToListener(nsIRequest* aRequest, nsISupports *aContext, const nsACString &aBuffer);
     // Helper to properly implement OnStartRequest
     nsresult DoOnStartRequest(nsIRequest* request, nsISupports *aContext,
-                              nsString& aBuffer);
+                              nsCString& aBuffer);
 
 protected:
     nsCOMPtr<nsIDirIndexParser>     mParser;
@@ -53,12 +51,12 @@ protected:
     nsCOMPtr<nsIStringBundle> mBundle;
 
     nsCOMPtr<nsITextToSubURI> mTextToSubURI;
-    nsCOMPtr<nsIUnicodeEncoder> mUnicodeEncoder;
 
 private:
     // Expecting absolute locations, given by 201 lines.
     bool mExpectAbsLoc;
-    nsString mEscapedEllipsis;
+
+    virtual ~nsIndexedToHTML();
 };
 
 #endif

@@ -1,8 +1,6 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-const { DevToolsLoader } =
-  Cu.import("resource://gre/modules/devtools/Loader.jsm", {});
 Cu.import("resource://gre/modules/jsdebugger.jsm");
 addDebuggerToGlobal(this);
 
@@ -23,7 +21,7 @@ function visible_loader() {
   loader.require("devtools/css-color");
 
   let dbg = new Debugger();
-  let sandbox = loader._provider.loader.sandboxes[COLOR_URI];
+  let sandbox = loader._provider.loader.sharedGlobalSandbox;
 
   try {
     dbg.addDebuggee(sandbox);
@@ -39,7 +37,7 @@ function invisible_loader() {
   loader.require("devtools/css-color");
 
   let dbg = new Debugger();
-  let sandbox = loader._provider.loader.sandboxes[COLOR_URI];
+  let sandbox = loader._provider.loader.sharedGlobalSandbox;
 
   try {
     dbg.addDebuggee(sandbox);

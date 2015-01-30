@@ -41,7 +41,7 @@ public:
   // Whether an error was received.
   static bool sError;
 
-  UnownedCallback(mozIStorageConnection* aDBConn)
+  explicit UnownedCallback(mozIStorageConnection* aDBConn)
   : mDBConn(aDBConn)
   , mCompleted(false)
   {
@@ -50,13 +50,15 @@ public:
     sError = false;
   }
 
+private:
   ~UnownedCallback()
   {
     sAlive = false;
     blocking_async_close(mDBConn);
   }
 
-  NS_IMETHOD HandleResult(mozIStorageResultSet* aResultSet)
+public:
+  NS_IMETHOD HandleResult(mozIStorageResultSet* aResultSet) MOZ_OVERRIDE
   {
     sResult = true;
     spin_events_loop_until_true(&mCompleted);
@@ -66,7 +68,7 @@ public:
     return NS_OK;
   }
 
-  NS_IMETHOD HandleError(mozIStorageError* aError)
+  NS_IMETHOD HandleError(mozIStorageError* aError) MOZ_OVERRIDE
   {
     sError = true;
     spin_events_loop_until_true(&mCompleted);
@@ -76,7 +78,7 @@ public:
     return NS_OK;
   }
 
-  NS_IMETHOD HandleCompletion(uint16_t aReason)
+  NS_IMETHOD HandleCompletion(uint16_t aReason) MOZ_OVERRIDE
   {
     mCompleted = true;
     return NS_OK;
@@ -87,7 +89,7 @@ protected:
   bool mCompleted;
 };
 
-NS_IMPL_ISUPPORTS1(UnownedCallback, mozIStorageStatementCallback)
+NS_IMPL_ISUPPORTS(UnownedCallback, mozIStorageStatementCallback)
 
 bool UnownedCallback::sAlive = false;
 bool UnownedCallback::sResult = false;

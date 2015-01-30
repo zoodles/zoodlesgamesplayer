@@ -54,6 +54,8 @@ this.Tracker = function Tracker(name, engine) {
 
   Svc.Obs.add("weave:engine:start-tracking", this);
   Svc.Obs.add("weave:engine:stop-tracking", this);
+
+  Svc.Prefs.observe("engine." + this.engine.prefName, this);
 };
 
 Tracker.prototype = {
@@ -222,6 +224,11 @@ Tracker.prototype = {
         if (this._isTracking) {
           this.stopTracking();
           this._isTracking = false;
+        }
+        return;
+      case "nsPref:changed":
+        if (data == PREFS_BRANCH + "engine." + this.engine.prefName) {
+          this.onEngineEnabledChanged(this.engine.enabled);
         }
         return;
     }
@@ -483,7 +490,9 @@ EngineManager.prototype = {
    * N.B., does not pay attention to the declined list.
    */
   getEnabled: function () {
-    return this.getAll().filter(function(engine) engine.enabled);
+    return this.getAll()
+               .filter((engine) => engine.enabled)
+               .sort((a, b) => a.syncPriority - b.syncPriority);
   },
 
   get enabledEngineNames() {
@@ -626,7 +635,6 @@ Engine.prototype = {
 
   set enabled(val) {
     Svc.Prefs.set("engine." + this.prefName, !!val);
-    this._tracker.onEngineEnabledChanged(val);
   },
 
   get score() this._tracker.score,
@@ -700,6 +708,16 @@ SyncEngine.prototype = {
   _recordObj: CryptoWrapper,
   version: 1,
 
+  // Which sortindex to use when retrieving records for this engine.
+  _defaultSort: undefined,
+
+  // A relative priority to use when computing an order
+  // for engines to be synced. Higher-priority engines
+  // (lower numbers) are synced first.
+  // It is recommended that a unique value be used for each engine,
+  // in order to guarantee a stable sequence.
+  syncPriority: 0,
+
   // How many records to pull in a single sync. This is primarily to avoid very
   // long first syncs against profiles with many history records.
   downloadLimit: null,
@@ -750,13 +768,14 @@ SyncEngine.prototype = {
 
   get toFetch() this._toFetch,
   set toFetch(val) {
+    let cb = (error) => this._log.error(Utils.exceptionStr(error));
     // Coerce the array to a string for more efficient comparison.
     if (val + "" == this._toFetch) {
       return;
     }
     this._toFetch = val;
     Utils.namedTimer(function () {
-      Utils.jsonSave("toFetch/" + this.name, this, val);
+      Utils.jsonSave("toFetch/" + this.name, this, val, cb);
     }, 0, this, "_toFetchDelay");
   },
 
@@ -772,13 +791,14 @@ SyncEngine.prototype = {
 
   get previousFailed() this._previousFailed,
   set previousFailed(val) {
+    let cb = (error) => this._log.error(Utils.exceptionStr(error));
     // Coerce the array to a string for more efficient comparison.
     if (val + "" == this._previousFailed) {
       return;
     }
     this._previousFailed = val;
     Utils.namedTimer(function () {
-      Utils.jsonSave("failed/" + this.name, this, val);
+      Utils.jsonSave("failed/" + this.name, this, val, cb);
     }, 0, this, "_previousFailedDelay");
   },
 
@@ -916,6 +936,10 @@ SyncEngine.prototype = {
 
     if (!newitems) {
       newitems = this._itemSource();
+    }
+
+    if (this._defaultSort) {
+      newitems.sort = this._defaultSort;
     }
 
     if (isMobile) {

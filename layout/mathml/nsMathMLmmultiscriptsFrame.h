@@ -38,13 +38,13 @@ public:
                     nsMathMLContainerFrame* aForFrame,
                     nscoord              aUserSubScriptShift,
                     nscoord              aUserSupScriptShift,
-                    nscoord              aScriptSpace);
+                    float                aFontSizeInflation);
 
   uint8_t
   ScriptIncrement(nsIFrame* aFrame) MOZ_OVERRIDE;
 
 protected:
-  nsMathMLmmultiscriptsFrame(nsStyleContext* aContext) : nsMathMLContainerFrame(aContext) {}
+  explicit nsMathMLmmultiscriptsFrame(nsStyleContext* aContext) : nsMathMLContainerFrame(aContext) {}
   virtual ~nsMathMLmmultiscriptsFrame();
   
 

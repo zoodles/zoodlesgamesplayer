@@ -51,6 +51,7 @@
 #include <cutils/properties.h>
 #include <system/audio.h>
 
+#define RES_720P (720 * 1280)
 namespace android {
 
 GonkRecorder::GonkRecorder()
@@ -370,6 +371,11 @@ status_t GonkRecorder::setParamMaxFileSizeBytes(int64_t bytes) {
         RE_LOGW("Target file size (%lld bytes) is too small to be respected", bytes);
     }
 
+    if (bytes >= 0xffffffffLL) {
+        RE_LOGW("Target file size (%lld bytes) too large to be respected, clipping to 4GB", bytes);
+        bytes = 0xffffffffLL;
+    }
+
     mMaxFileSizeBytes = bytes;
     return OK;
 }
@@ -656,6 +662,13 @@ status_t GonkRecorder::setClientName(const String16& clientName) {
 }
 
 status_t GonkRecorder::prepare() {
+    if (mVideoSource != VIDEO_SOURCE_LIST_END && mVideoEncoder != VIDEO_ENCODER_LIST_END &&
+        mVideoHeight && mVideoWidth &&  // Video recording
+        (mVideoHeight * mVideoWidth >= RES_720P)) {
+        // TODO: Above check needs to be updated when mMaxFileDurationUs is set from camera app
+        RE_LOGV("Video is high resolution so setting 64-bit file offsets");
+        setParam64BitFileOffset(true);
+    }
     return OK;
 }
 
@@ -1141,7 +1154,11 @@ status_t GonkRecorder::setupMediaSource(
             return err;
         }
         *mediaSource = cameraSource;
+#if ANDROID_VERSION >= 21
+    } else if (mVideoSource == VIDEO_SOURCE_SURFACE) {
+#else
     } else if (mVideoSource == VIDEO_SOURCE_GRALLOC_BUFFER) {
+#endif
         return BAD_VALUE;
     } else {
         return INVALID_OPERATION;
@@ -1255,12 +1272,11 @@ status_t GonkRecorder::setupVideoEncoder(
     // CHECK_EQ causes an abort if the given condition fails.
     CHECK_EQ(client.connect(), (status_t)OK);
 
-    uint32_t encoder_flags = 0;
+    uint32_t encoder_flags = OMXCodec::kHardwareCodecsOnly;
     if (mIsMetaDataStoredInVideoBuffers) {
 #if defined(MOZ_WIDGET_GONK) && ANDROID_VERSION >= 17
         encoder_flags |= OMXCodec::kStoreMetaDataInVideoBuffers;
 #else
-        encoder_flags |= OMXCodec::kHardwareCodecsOnly;
         encoder_flags |= OMXCodec::kStoreMetaDataInVideoBuffers;
         encoder_flags |= OMXCodec::kOnlySubmitOneInputBufferAtOneTime;
 #endif

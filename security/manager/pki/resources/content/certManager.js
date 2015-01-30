@@ -16,6 +16,11 @@ const nsPKIParamBlock    = "@mozilla.org/security/pkiparamblock;1";
 const nsINSSCertCache = Components.interfaces.nsINSSCertCache;
 const nsNSSCertCache = "@mozilla.org/security/nsscertcache;1";
 
+const gCertFileTypes = "*.p7b; *.crt; *.cert; *.cer; *.pem; *.der";
+
+let { NetUtil } = Components.utils.import("resource://gre/modules/NetUtil.jsm", {});
+let { Services } = Components.utils.import("resource://gre/modules/Services.jsm", {});
+
 var key;
 
 var selected_certs = [];
@@ -29,11 +34,22 @@ var emailTreeView;
 var userTreeView;
 var orphanTreeView;
 
+var smartCardObserver = {
+  observe: function() {
+    onSmartCardChange();
+  }
+};
+
+function DeregisterSmartCardObservers()
+{
+  Services.obs.removeObserver(smartCardObserver, "smartcard-insert");
+  Services.obs.removeObserver(smartCardObserver, "smartcard-remove");
+}
+
 function LoadCerts()
 {
-  window.crypto.enableSmartCardEvents = true;
-  document.addEventListener("smartcard-insert", onSmartCardChange, false);
-  document.addEventListener("smartcard-remove", onSmartCardChange, false);
+  Services.obs.addObserver(smartCardObserver, "smartcard-insert", false);
+  Services.obs.addObserver(smartCardObserver, "smartcard-remove", false);
 
   certdb = Components.classes[nsX509CertDB].getService(nsIX509CertDB);
   var certcache = Components.classes[nsNSSCertCache].createInstance(nsINSSCertCache);
@@ -43,32 +59,27 @@ function LoadCerts()
   caTreeView = Components.classes[nsCertTree]
                     .createInstance(nsICertTree);
   caTreeView.loadCertsFromCache(certcache, nsIX509Cert.CA_CERT);
-  document.getElementById('ca-tree')
-   .treeBoxObject.view = caTreeView;
+  document.getElementById('ca-tree').view = caTreeView;
 
   serverTreeView = Components.classes[nsCertTree]
                         .createInstance(nsICertTree);
   serverTreeView.loadCertsFromCache(certcache, nsIX509Cert.SERVER_CERT);
-  document.getElementById('server-tree')
-   .treeBoxObject.view = serverTreeView;
+  document.getElementById('server-tree').view = serverTreeView;
 
   emailTreeView = Components.classes[nsCertTree]
                        .createInstance(nsICertTree);
   emailTreeView.loadCertsFromCache(certcache, nsIX509Cert.EMAIL_CERT);
-  document.getElementById('email-tree')
-   .treeBoxObject.view = emailTreeView; 
+  document.getElementById('email-tree').view = emailTreeView;
 
   userTreeView = Components.classes[nsCertTree]
                       .createInstance(nsICertTree);
   userTreeView.loadCertsFromCache(certcache, nsIX509Cert.USER_CERT);
-  document.getElementById('user-tree')
-   .treeBoxObject.view = userTreeView;
+  document.getElementById('user-tree').view = userTreeView;
 
   orphanTreeView = Components.classes[nsCertTree]
                       .createInstance(nsICertTree);
   orphanTreeView.loadCertsFromCache(certcache, nsIX509Cert.UNKNOWN_CERT);
-  document.getElementById('orphan-tree')
-   .treeBoxObject.view = orphanTreeView;
+  document.getElementById('orphan-tree').view = orphanTreeView;
 
   enableBackupAllButton();
 }
@@ -368,9 +379,42 @@ function restoreCerts()
           nsIFilePicker.modeOpen);
   fp.appendFilter(bundle.getString("file_browse_PKCS12_spec"),
                   "*.p12; *.pfx");
+  fp.appendFilter(bundle.getString("file_browse_Certificate_spec"),
+                  gCertFileTypes);
   fp.appendFilters(nsIFilePicker.filterAll);
   if (fp.show() == nsIFilePicker.returnOK) {
-    certdb.importPKCS12File(null, fp.file);
+    // If this is an X509 user certificate, import it as one.
+
+    var isX509FileType = false;
+    var fileTypesList = gCertFileTypes.slice(1).split('; *');
+    for (var type of fileTypesList) {
+      if (fp.file.path.endsWith(type)) {
+        isX509FileType = true;
+        break;
+      }
+    }
+
+    if (isX509FileType) {
+      let fstream = Components.classes["@mozilla.org/network/file-input-stream;1"]
+                      .createInstance(Components.interfaces.nsIFileInputStream);
+      fstream.init(fp.file, -1, 0, 0);
+      let dataString = NetUtil.readInputStreamToString(fstream, fstream.available());
+      let dataArray = [];
+      for (let i = 0; i < dataString.length; i++) {
+        dataArray.push(dataString.charCodeAt(i));
+      }
+      fstream.close();
+      let prompter = Services.ww.getNewPrompter(window);
+      let interfaceRequestor = {
+        getInterface: function() {
+          return prompter;
+        }
+      };
+      certdb.importUserCertificate(dataArray, dataArray.length, interfaceRequestor);
+    } else {
+      // Otherwise, assume it's a PKCS12 file and import it that way.
+      certdb.importPKCS12File(null, fp.file);
+    }
 
     var certcache = Components.classes[nsNSSCertCache].createInstance(nsINSSCertCache);
     certcache.cacheAllCerts();
@@ -504,7 +548,7 @@ function addCACerts()
           bundle.getString("importCACertsPrompt"),
           nsIFilePicker.modeOpen);
   fp.appendFilter(bundle.getString("file_browse_Certificate_spec"),
-                  "*.crt; *.cert; *.cer; *.pem; *.der");
+                  gCertFileTypes);
   fp.appendFilters(nsIFilePicker.filterAll);
   if (fp.show() == nsIFilePicker.returnOK) {
     certdb.importCertsFromFile(null, fp.file, nsIX509Cert.CA_CERT);
@@ -539,7 +583,7 @@ function addEmailCert()
           bundle.getString("importEmailCertPrompt"),
           nsIFilePicker.modeOpen);
   fp.appendFilter(bundle.getString("file_browse_Certificate_spec"),
-                  "*.crt; *.cert; *.cer; *.pem; *.der");
+                  gCertFileTypes);
   fp.appendFilters(nsIFilePicker.filterAll);
   if (fp.show() == nsIFilePicker.returnOK) {
     certdb.importCertsFromFile(null, fp.file, nsIX509Cert.EMAIL_CERT);
@@ -560,7 +604,7 @@ function addWebSiteCert()
           bundle.getString("importServerCertPrompt"),
           nsIFilePicker.modeOpen);
   fp.appendFilter(bundle.getString("file_browse_Certificate_spec"),
-                  "*.crt; *.cert; *.cer; *.pem; *.der");
+                  gCertFileTypes);
   fp.appendFilters(nsIFilePicker.filterAll);
   if (fp.show() == nsIFilePicker.returnOK) {
     certdb.importCertsFromFile(null, fp.file, nsIX509Cert.SERVER_CERT);
@@ -585,4 +629,3 @@ function addException()
   orphanTreeView.loadCertsFromCache(certcache, nsIX509Cert.UNKNOWN_CERT);
   orphanTreeView.selection.clearSelection();
 }
-

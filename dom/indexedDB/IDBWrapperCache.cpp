@@ -5,20 +5,30 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "IDBWrapperCache.h"
-#include "nsCycleCollector.h"
 
-USING_INDEXEDDB_NAMESPACE
+#include "mozilla/HoldDropJSObjects.h"
+#include "nsCOMPtr.h"
+#include "nsIScriptGlobalObject.h"
+#include "nsPIDOMWindow.h"
+
+#ifdef DEBUG
+#include "nsCycleCollector.h"
+#endif
+
+namespace mozilla {
+namespace dom {
+namespace indexedDB {
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(IDBWrapperCache)
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(IDBWrapperCache,
-                                                  nsDOMEventTargetHelper)
+                                                  DOMEventTargetHelper)
   // Don't need NS_IMPL_CYCLE_COLLECTION_TRAVERSE_SCRIPT_OBJECTS because
-  // nsDOMEventTargetHelper does it for us.
+  // DOMEventTargetHelper does it for us.
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(IDBWrapperCache,
-                                                nsDOMEventTargetHelper)
+                                                DOMEventTargetHelper)
   if (tmp->mScriptOwner) {
     tmp->mScriptOwner = nullptr;
     mozilla::DropJSObjects(tmp);
@@ -26,17 +36,25 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(IDBWrapperCache,
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN_INHERITED(IDBWrapperCache,
-                                               nsDOMEventTargetHelper)
+                                               DOMEventTargetHelper)
   // Don't need NS_IMPL_CYCLE_COLLECTION_TRACE_PRESERVED_WRAPPER because
-  // nsDOMEventTargetHelper does it for us.
+  // DOMEventTargetHelper does it for us.
   NS_IMPL_CYCLE_COLLECTION_TRACE_JS_MEMBER_CALLBACK(mScriptOwner)
 NS_IMPL_CYCLE_COLLECTION_TRACE_END
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(IDBWrapperCache)
-NS_INTERFACE_MAP_END_INHERITING(nsDOMEventTargetHelper)
+NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 
-NS_IMPL_ADDREF_INHERITED(IDBWrapperCache, nsDOMEventTargetHelper)
-NS_IMPL_RELEASE_INHERITED(IDBWrapperCache, nsDOMEventTargetHelper)
+NS_IMPL_ADDREF_INHERITED(IDBWrapperCache, DOMEventTargetHelper)
+NS_IMPL_RELEASE_INHERITED(IDBWrapperCache, DOMEventTargetHelper)
+
+IDBWrapperCache::IDBWrapperCache(DOMEventTargetHelper* aOwner)
+  : DOMEventTargetHelper(aOwner), mScriptOwner(nullptr)
+{ }
+
+IDBWrapperCache::IDBWrapperCache(nsPIDOMWindow* aOwner)
+  : DOMEventTargetHelper(aOwner), mScriptOwner(nullptr)
+{ }
 
 IDBWrapperCache::~IDBWrapperCache()
 {
@@ -48,7 +66,7 @@ IDBWrapperCache::~IDBWrapperCache()
 void
 IDBWrapperCache::SetScriptOwner(JSObject* aScriptOwner)
 {
-  NS_ASSERTION(aScriptOwner, "This should never be null!");
+  MOZ_ASSERT(aScriptOwner);
 
   mScriptOwner = aScriptOwner;
   mozilla::HoldJSObjects(this);
@@ -62,3 +80,7 @@ IDBWrapperCache::AssertIsRooted() const
              "Why aren't we rooted?!");
 }
 #endif
+
+} // namespace indexedDB
+} // namespace dom
+} // namespace mozilla

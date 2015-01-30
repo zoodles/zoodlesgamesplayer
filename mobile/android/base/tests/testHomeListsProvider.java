@@ -1,7 +1,11 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 package org.mozilla.gecko.tests;
 
-import android.content.ContentValues;
 import android.content.ContentUris;
+import android.content.ContentValues;
 import android.database.Cursor;
 import android.net.Uri;
 
@@ -17,11 +21,6 @@ public class testHomeListsProvider extends ContentProviderTest {
         public static final String PROVIDER_ID = null;
         public static final String TITLE = null;
         public static final String URL = null;
-    }
-
-    @Override
-    protected int getTestType() {
-        return TEST_MOCHITEST;
     }
 
     @SuppressWarnings("unused")

@@ -7,71 +7,13 @@
 #define MOZILLA_GFX_GRALLOCTEXTUREHOST_H
 #ifdef MOZ_WIDGET_GONK
 
+#include "mozilla/layers/CompositorOGL.h"
 #include "mozilla/layers/TextureHostOGL.h"
 #include "mozilla/layers/ShadowLayerUtilsGralloc.h"
 #include <ui/GraphicBuffer.h>
 
 namespace mozilla {
 namespace layers {
-
-class GrallocTextureHostOGL;
-
-class GrallocTextureSourceOGL : public NewTextureSource
-                              , public TextureSourceOGL
-{
-public:
-  friend class GrallocTextureHostOGL;
-
-  GrallocTextureSourceOGL(CompositorOGL* aCompositor,
-                          android::GraphicBuffer* aGraphicBuffer,
-                          gfx::SurfaceFormat aFormat);
-
-  virtual ~GrallocTextureSourceOGL();
-
-  virtual bool IsValid() const MOZ_OVERRIDE;
-
-  virtual void BindTexture(GLenum aTextureUnit, gfx::Filter aFilter) MOZ_OVERRIDE;
-
-  virtual gfx::IntSize GetSize() const MOZ_OVERRIDE;
-
-  virtual TextureSourceOGL* AsSourceOGL() MOZ_OVERRIDE { return this; }
-
-  virtual GLenum GetTextureTarget() const MOZ_OVERRIDE;
-
-  virtual gfx::SurfaceFormat GetFormat() const MOZ_OVERRIDE { return mFormat; }
-
-  virtual GLenum GetWrapMode() const MOZ_OVERRIDE
-  {
-    return LOCAL_GL_CLAMP_TO_EDGE;
-  }
-
-  virtual void SetCompositableBackendSpecificData(CompositableBackendSpecificData* aBackendData) MOZ_OVERRIDE;
-
-  void DeallocateDeviceData();
-
-  gl::GLContext* gl() const;
-
-  virtual void SetCompositor(Compositor* aCompositor) MOZ_OVERRIDE;
-
-  void ForgetBuffer()
-  {
-    mGraphicBuffer = nullptr;
-  }
-
-  TemporaryRef<gfx::DataSourceSurface> GetAsSurface();
-
-  GLuint GetGLTexture();
-
-  void Lock();
-
-protected:
-  CompositorOGL* mCompositor;
-  android::sp<android::GraphicBuffer> mGraphicBuffer;
-  EGLImage mEGLImage;
-  GLuint mTexture;
-  gfx::SurfaceFormat mFormat;
-  bool mNeedsReset;
-};
 
 class GrallocTextureHostOGL : public TextureHost
 #if defined(MOZ_WIDGET_GONK) && ANDROID_VERSION >= 17
@@ -101,14 +43,17 @@ public:
 
   virtual gfx::SurfaceFormat GetFormat() const;
 
-  virtual gfx::IntSize GetSize() const MOZ_OVERRIDE { return mSize; }
+  virtual gfx::IntSize GetSize() const MOZ_OVERRIDE { return mDescriptorSize; }
 
   virtual LayerRenderState GetRenderState() MOZ_OVERRIDE;
 
-  virtual NewTextureSource* GetTextureSources() MOZ_OVERRIDE
-  {
-    return mTextureSource;
-  }
+  virtual void PrepareTextureSource(CompositableTextureSourceRef& aTextureSource) MOZ_OVERRIDE;
+
+  virtual bool BindTextureSource(CompositableTextureSourceRef& aTextureSource) MOZ_OVERRIDE;
+
+  virtual void UnbindTextureSource() MOZ_OVERRIDE;
+
+  virtual TextureSource* GetTextureSources() MOZ_OVERRIDE;
 
 #if defined(MOZ_WIDGET_GONK) && ANDROID_VERSION >= 17
   virtual TextureHostOGL* AsHostOGL() MOZ_OVERRIDE
@@ -119,22 +64,26 @@ public:
 
   virtual TemporaryRef<gfx::DataSourceSurface> GetAsSurface() MOZ_OVERRIDE;
 
-  virtual void SetCompositableBackendSpecificData(CompositableBackendSpecificData* aBackendData) MOZ_OVERRIDE;
-
   bool IsValid() const;
 
   virtual const char* Name() MOZ_OVERRIDE { return "GrallocTextureHostOGL"; }
 
-  // Forget buffer actor. Used only for hacky fix for bug 966446. 
-  virtual void ForgetBufferActor()
-  {
-    mGrallocActor = nullptr;
-  }
+  gl::GLContext* GetGLContext() const { return mCompositor ? mCompositor->gl() : nullptr; }
 
 private:
-  GrallocBufferActor* mGrallocActor;
-  RefPtr<GrallocTextureSourceOGL> mTextureSource;
-  gfx::IntSize mSize; // See comment in textureClientOGL.h
+  void DestroyEGLImage();
+
+  NewSurfaceDescriptorGralloc mGrallocHandle;
+  RefPtr<GLTextureSource> mGLTextureSource;
+  RefPtr<CompositorOGL> mCompositor;
+  // Size reported by the GraphicBuffer
+  gfx::IntSize mSize;
+  // Size reported by TextureClient, can be different in some cases (video?),
+  // used by LayerRenderState.
+  gfx::IntSize mDescriptorSize;
+  gfx::SurfaceFormat mFormat;
+  EGLImage mEGLImage;
+  bool mIsOpaque;
 };
 
 } // namespace layers

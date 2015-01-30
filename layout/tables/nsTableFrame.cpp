@@ -84,22 +84,24 @@ struct nsTableReflowState {
   {
     nsTableFrame* table = static_cast<nsTableFrame*>(aTableFrame.FirstInFlow());
     nsMargin borderPadding = table->GetChildAreaOffset(&reflowState);
-    nscoord cellSpacingX = table->GetCellSpacingX();
 
-    x = borderPadding.left + cellSpacingX;
+    x = borderPadding.left + table->GetCellSpacingX(-1);
     y = borderPadding.top; //cellspacing added during reflow
 
     availSize.width  = aAvailWidth;
     if (NS_UNCONSTRAINEDSIZE != availSize.width) {
+      int32_t colCount = table->GetColCount();
       availSize.width -= borderPadding.left + borderPadding.right
-                         + (2 * cellSpacingX);
+                         + table->GetCellSpacingX(-1)
+                         + table->GetCellSpacingX(colCount);
       availSize.width = std::max(0, availSize.width);
     }
 
     availSize.height = aAvailHeight;
     if (NS_UNCONSTRAINEDSIZE != availSize.height) {
       availSize.height -= borderPadding.top + borderPadding.bottom
-                          + (2 * table->GetCellSpacingY());
+                          + table->GetCellSpacingY(-1)
+                          + table->GetCellSpacingY(table->GetRowCount());
       availSize.height = std::max(0, availSize.height);
     }
   }
@@ -132,19 +134,20 @@ struct BCPropertyData
   BCPixelSize mRightCellBorderWidth;
 };
 
-nsIFrame*
-nsTableFrame::GetParentStyleContextFrame() const
+nsStyleContext*
+nsTableFrame::GetParentStyleContext(nsIFrame** aProviderFrame) const
 {
   // Since our parent, the table outer frame, returned this frame, we
   // must return whatever our parent would normally have returned.
 
-  NS_PRECONDITION(mParent, "table constructed without outer table");
+  NS_PRECONDITION(GetParent(), "table constructed without outer table");
   if (!mContent->GetParent() && !StyleContext()->GetPseudo()) {
     // We're the root.  We have no style context parent.
+    *aProviderFrame = nullptr;
     return nullptr;
   }
 
-  return static_cast<nsFrame*>(GetParent())->DoGetParentStyleContextFrame();
+  return GetParent()->DoGetParentStyleContext(aProviderFrame);
 }
 
 
@@ -164,9 +167,9 @@ nsTableFrame::nsTableFrame(nsStyleContext* aContext)
 }
 
 void
-nsTableFrame::Init(nsIContent*      aContent,
-                   nsIFrame*        aParent,
-                   nsIFrame*        aPrevInFlow)
+nsTableFrame::Init(nsIContent*       aContent,
+                   nsContainerFrame* aParent,
+                   nsIFrame*         aPrevInFlow)
 {
   NS_PRECONDITION(!mCellMap, "Init called twice");
   NS_PRECONDITION(!aPrevInFlow ||
@@ -271,7 +274,7 @@ nsTableFrame::RegisterPositionedTablePart(nsIFrame* aFrame)
   // the potential to break sites that apply 'position: relative' to those
   // parts, expecting nothing to happen. We warn at the console to make tracking
   // down the issue easy.
-  if (nsGkAtoms::tableCellFrame != aFrame->GetType()) {
+  if (!IS_TABLE_CELL(aFrame->GetType())) {
     nsIContent* content = aFrame->GetContent();
     nsPresContext* presContext = aFrame->PresContext();
     if (content && !presContext->HasWarnedAboutPositionedTableParts()) {
@@ -332,22 +335,13 @@ nsTableFrame::UnregisterPositionedTablePart(nsIFrame* aFrame,
 
 // XXX this needs to be cleaned up so that the frame constructor breaks out col group
 // frames into a separate child list, bug 343048.
-nsresult
+void
 nsTableFrame::SetInitialChildList(ChildListID     aListID,
                                   nsFrameList&    aChildList)
 {
-
-  if (!mFrames.IsEmpty() || !mColGroups.IsEmpty()) {
-    // We already have child frames which means we've already been
-    // initialized
-    NS_NOTREACHED("unexpected second call to SetInitialChildList");
-    return NS_ERROR_UNEXPECTED;
-  }
-  if (aListID != kPrincipalList) {
-    // All we know about is the principal child list.
-    NS_NOTREACHED("unknown frame list");
-    return NS_ERROR_INVALID_ARG;
-  }
+  MOZ_ASSERT(mFrames.IsEmpty() && mColGroups.IsEmpty(),
+             "unexpected second call to SetInitialChildList");
+  MOZ_ASSERT(aListID == kPrincipalList, "unexpected child list");
 
   // XXXbz the below code is an icky cesspit that's only needed in its current
   // form for two reasons:
@@ -379,8 +373,6 @@ nsTableFrame::SetInitialChildList(ChildListID     aListID,
       SetFullBCDamageArea();
     }
   }
-
-  return NS_OK;
 }
 
 void nsTableFrame::AttributeChangedFor(nsIFrame*       aFrame,
@@ -1097,20 +1089,6 @@ nsDisplayTableItem::GetBounds(nsDisplayListBuilder* aBuilder, bool* aSnap) {
   return mFrame->GetVisualOverflowRectRelativeToSelf() + ToReferenceFrame();
 }
 
-bool
-nsDisplayTableItem::IsVaryingRelativeToMovingFrame(nsDisplayListBuilder* aBuilder,
-                                                   nsIFrame* aFrame)
-{
-  if (!mPartHasFixedBackground)
-    return false;
-
-  // If aFrame is mFrame or an ancestor in this document, and aFrame is
-  // not the viewport frame, then moving aFrame will move mFrame
-  // relative to the viewport, so our fixed-pos background will change.
-  return mFrame == aFrame ||
-    nsLayoutUtils::IsProperAncestorFrame(aFrame, mFrame);
-}
-
 /* static */ void
 nsDisplayTableItem::UpdateForFrameBackground(nsIFrame* aFrame)
 {
@@ -1392,31 +1370,44 @@ nsTableFrame::PaintTableBorderBackground(nsRenderingContext& aRenderingContext,
 
   if (StyleVisibility()->IsVisible()) {
     if (!IsBorderCollapse()) {
-      int skipSides = GetSkipSides();
+      Sides skipSides = GetSkipSides();
       nsRect rect(aPt, mRect.Size());
       nsCSSRendering::PaintBorder(presContext, aRenderingContext, this,
                                   aDirtyRect, rect, mStyleContext, skipSides);
     }
     else {
+      gfxContext* ctx = aRenderingContext.ThebesContext();
+
+      gfxPoint devPixelOffset =
+        nsLayoutUtils::PointToGfxPoint(aPt,
+                                       PresContext()->AppUnitsPerDevPixel());
+
       // XXX we should probably get rid of this translation at some stage
       // But that would mean modifying PaintBCBorders, ugh
-      nsRenderingContext::AutoPushTranslation translate(&aRenderingContext, aPt);
+      gfxContextMatrixAutoSaveRestore autoSR(ctx);
+      ctx->SetMatrix(ctx->CurrentMatrix().Translate(devPixelOffset));
+
       PaintBCBorders(aRenderingContext, aDirtyRect - aPt);
     }
   }
 }
 
-int
+nsIFrame::LogicalSides
 nsTableFrame::GetLogicalSkipSides(const nsHTMLReflowState* aReflowState) const
 {
-  int skip = 0;
+  if (MOZ_UNLIKELY(StyleBorder()->mBoxDecorationBreak ==
+                     NS_STYLE_BOX_DECORATION_BREAK_CLONE)) {
+    return LogicalSides();
+  }
+
+  LogicalSides skip;
   // frame attribute was accounted for in nsHTMLTableElement::MapTableBorderInto
   // account for pagination
   if (nullptr != GetPrevInFlow()) {
-    skip |= LOGICAL_SIDE_B_START;
+    skip |= eLogicalSideBitsBStart;
   }
   if (nullptr != GetNextInFlow()) {
-    skip |= LOGICAL_SIDE_B_END;
+    skip |= eLogicalSideBitsBEnd;
   }
   return skip;
 }
@@ -1425,18 +1416,18 @@ void
 nsTableFrame::SetColumnDimensions(nscoord         aHeight,
                                   const nsMargin& aBorderPadding)
 {
-  nscoord cellSpacingX = GetCellSpacingX();
-  nscoord cellSpacingY = GetCellSpacingY();
   nscoord colHeight = aHeight -= aBorderPadding.top + aBorderPadding.bottom +
-                                 2* cellSpacingY;
+                                 GetCellSpacingY(-1) +
+                                 GetCellSpacingY(GetRowCount());
 
   nsTableIterator iter(mColGroups);
   nsIFrame* colGroupFrame = iter.First();
   bool tableIsLTR = StyleVisibility()->mDirection == NS_STYLE_DIRECTION_LTR;
   int32_t colX =tableIsLTR ? 0 : std::max(0, GetColCount() - 1);
+  nscoord cellSpacingX = GetCellSpacingX(colX);
   int32_t tableColIncr = tableIsLTR ? 1 : -1;
-  nsPoint colGroupOrigin(aBorderPadding.left + cellSpacingX,
-                         aBorderPadding.top + cellSpacingY);
+  nsPoint colGroupOrigin(aBorderPadding.left + GetCellSpacingX(-1),
+                         aBorderPadding.top + GetCellSpacingY(-1));
   while (colGroupFrame) {
     MOZ_ASSERT(colGroupFrame->GetType() == nsGkAtoms::tableColGroupFrame);
     nscoord colGroupWidth = 0;
@@ -1450,6 +1441,7 @@ nsTableFrame::SetColumnDimensions(nscoord         aHeight,
         nscoord colWidth = GetColumnWidth(colX);
         nsRect colRect(colOrigin.x, colOrigin.y, colWidth, colHeight);
         colFrame->SetRect(colRect);
+        cellSpacingX = GetCellSpacingX(colX);
         colOrigin.x += colWidth + cellSpacingX;
         colGroupWidth += colWidth + cellSpacingX;
         colX += tableColIncr;
@@ -1501,7 +1493,7 @@ nsTableFrame::ProcessRowInserted(nscoord aNewHeight)
 }
 
 /* virtual */ void
-nsTableFrame::MarkIntrinsicWidthsDirty()
+nsTableFrame::MarkIntrinsicISizesDirty()
 {
   nsITableLayoutStrategy* tls = LayoutStrategy();
   if (MOZ_UNLIKELY(!tls)) {
@@ -1513,40 +1505,40 @@ nsTableFrame::MarkIntrinsicWidthsDirty()
     // destroyed so no need to mark anything dirty here.  See bug 595758.
     return;
   }
-  tls->MarkIntrinsicWidthsDirty();
+  tls->MarkIntrinsicISizesDirty();
 
   // XXXldb Call SetBCDamageArea?
 
-  nsContainerFrame::MarkIntrinsicWidthsDirty();
+  nsContainerFrame::MarkIntrinsicISizesDirty();
 }
 
 /* virtual */ nscoord
-nsTableFrame::GetMinWidth(nsRenderingContext *aRenderingContext)
+nsTableFrame::GetMinISize(nsRenderingContext *aRenderingContext)
 {
   if (NeedToCalcBCBorders())
     CalcBCBorders();
 
   ReflowColGroups(aRenderingContext);
 
-  return LayoutStrategy()->GetMinWidth(aRenderingContext);
+  return LayoutStrategy()->GetMinISize(aRenderingContext);
 }
 
 /* virtual */ nscoord
-nsTableFrame::GetPrefWidth(nsRenderingContext *aRenderingContext)
+nsTableFrame::GetPrefISize(nsRenderingContext *aRenderingContext)
 {
   if (NeedToCalcBCBorders())
     CalcBCBorders();
 
   ReflowColGroups(aRenderingContext);
 
-  return LayoutStrategy()->GetPrefWidth(aRenderingContext, false);
+  return LayoutStrategy()->GetPrefISize(aRenderingContext, false);
 }
 
-/* virtual */ nsIFrame::IntrinsicWidthOffsetData
-nsTableFrame::IntrinsicWidthOffsets(nsRenderingContext* aRenderingContext)
+/* virtual */ nsIFrame::IntrinsicISizeOffsetData
+nsTableFrame::IntrinsicISizeOffsets(nsRenderingContext* aRenderingContext)
 {
-  IntrinsicWidthOffsetData result =
-    nsContainerFrame::IntrinsicWidthOffsets(aRenderingContext);
+  IntrinsicISizeOffsetData result =
+    nsContainerFrame::IntrinsicISizeOffsets(aRenderingContext);
 
   result.hMargin = 0;
   result.hPctMargin = 0;
@@ -1562,24 +1554,38 @@ nsTableFrame::IntrinsicWidthOffsets(nsRenderingContext* aRenderingContext)
   return result;
 }
 
-/* virtual */ nsSize
+/* virtual */
+LogicalSize
 nsTableFrame::ComputeSize(nsRenderingContext *aRenderingContext,
-                          nsSize aCBSize, nscoord aAvailableWidth,
-                          nsSize aMargin, nsSize aBorder, nsSize aPadding,
-                          uint32_t aFlags)
+                          WritingMode aWM,
+                          const LogicalSize& aCBSize,
+                          nscoord aAvailableISize,
+                          const LogicalSize& aMargin,
+                          const LogicalSize& aBorder,
+                          const LogicalSize& aPadding,
+                          ComputeSizeFlags aFlags)
 {
-  nsSize result =
-    nsContainerFrame::ComputeSize(aRenderingContext, aCBSize, aAvailableWidth,
+  LogicalSize result =
+    nsContainerFrame::ComputeSize(aRenderingContext, aWM,
+                                  aCBSize, aAvailableISize,
                                   aMargin, aBorder, aPadding, aFlags);
+
+  // XXX The code below doesn't make sense if the caller's writing mode
+  // is orthogonal to this frame's. Not sure yet what should happen then;
+  // for now, just bail out.
+  if (aWM.IsVertical() != GetWritingMode().IsVertical()) {
+    return result;
+  }
 
   // If we're a container for font size inflation, then shrink
   // wrapping inside of us should not apply font size inflation.
   AutoMaybeDisableFontInflation an(this);
 
-  // Tables never shrink below their min width.
-  nscoord minWidth = GetMinWidth(aRenderingContext);
-  if (minWidth > result.width)
-    result.width = minWidth;
+  // Tables never shrink below their min inline-size.
+  nscoord minISize = GetMinISize(aRenderingContext);
+  if (minISize > result.ISize(aWM)) {
+    result.ISize(aWM) = minISize;
+  }
 
   return result;
 }
@@ -1593,7 +1599,7 @@ nsTableFrame::TableShrinkWidthToFit(nsRenderingContext *aRenderingContext,
   AutoMaybeDisableFontInflation an(this);
 
   nscoord result;
-  nscoord minWidth = GetMinWidth(aRenderingContext);
+  nscoord minWidth = GetMinISize(aRenderingContext);
   if (minWidth > aWidthInCB) {
     result = minWidth;
   } else {
@@ -1602,10 +1608,10 @@ nsTableFrame::TableShrinkWidthToFit(nsRenderingContext *aRenderingContext,
     // relates to handling of percentage widths on columns).  So this
     // function differs from nsFrame::ShrinkWidthToFit by only the
     // following line.
-    // Since we've already called GetMinWidth, we don't need to do any
-    // of the other stuff GetPrefWidth does.
+    // Since we've already called GetMinISize, we don't need to do any
+    // of the other stuff GetPrefISize does.
     nscoord prefWidth =
-      LayoutStrategy()->GetPrefWidth(aRenderingContext, true);
+      LayoutStrategy()->GetPrefISize(aRenderingContext, true);
     if (prefWidth > aWidthInCB) {
       result = aWidthInCB;
     } else {
@@ -1615,17 +1621,22 @@ nsTableFrame::TableShrinkWidthToFit(nsRenderingContext *aRenderingContext,
   return result;
 }
 
-/* virtual */ nsSize
+/* virtual */
+LogicalSize
 nsTableFrame::ComputeAutoSize(nsRenderingContext *aRenderingContext,
-                              nsSize aCBSize, nscoord aAvailableWidth,
-                              nsSize aMargin, nsSize aBorder, nsSize aPadding,
+                              WritingMode aWM,
+                              const LogicalSize& aCBSize,
+                              nscoord aAvailableISize,
+                              const LogicalSize& aMargin,
+                              const LogicalSize& aBorder,
+                              const LogicalSize& aPadding,
                               bool aShrinkWrap)
 {
   // Tables always shrink-wrap.
-  nscoord cbBased = aAvailableWidth - aMargin.width - aBorder.width -
-                    aPadding.width;
-  return nsSize(TableShrinkWidthToFit(aRenderingContext, cbBased),
-                NS_UNCONSTRAINEDSIZE);
+  nscoord cbBased = aAvailableISize - aMargin.ISize(aWM) - aBorder.ISize(aWM) -
+                    aPadding.ISize(aWM);
+  return LogicalSize(aWM, TableShrinkWidthToFit(aRenderingContext, cbBased),
+                     NS_UNCONSTRAINEDSIZE);
 }
 
 // Return true if aParentReflowState.frame or any of its ancestors within
@@ -1700,8 +1711,8 @@ nsTableFrame::RequestSpecialHeightReflow(const nsHTMLReflowState& aReflowState)
 }
 
 /******************************************************************************************
- * Before reflow, intrinsic width calculation is done using GetMinWidth
- * and GetPrefWidth.  This used to be known as pass 1 reflow.
+ * Before reflow, intrinsic width calculation is done using GetMinISize
+ * and GetPrefISize.  This used to be known as pass 1 reflow.
  *
  * After the intrinsic width calculation, the table determines the
  * column widths using BalanceColumnWidths() and
@@ -1759,7 +1770,8 @@ nsTableFrame::RequestSpecialHeightReflow(const nsHTMLReflowState& aReflowState)
  ******************************************************************************************/
 
 /* Layout the entire inner table. */
-nsresult nsTableFrame::Reflow(nsPresContext*           aPresContext,
+void
+nsTableFrame::Reflow(nsPresContext*           aPresContext,
                                nsHTMLReflowMetrics&     aDesiredSize,
                                const nsHTMLReflowState& aReflowState,
                                nsReflowStatus&          aStatus)
@@ -1771,9 +1783,8 @@ nsresult nsTableFrame::Reflow(nsPresContext*           aPresContext,
   aStatus = NS_FRAME_COMPLETE;
   if (!GetPrevInFlow() && !mTableLayoutStrategy) {
     NS_ASSERTION(false, "strategy should have been created in Init");
-    return NS_ERROR_NULL_POINTER;
+    return;
   }
-  nsresult rv = NS_OK;
 
   // see if collapsing borders need to be calculated
   if (!GetPrevInFlow() && IsBorderCollapse() && NeedToCalcBCBorders()) {
@@ -1795,14 +1806,14 @@ nsresult nsTableFrame::Reflow(nsPresContext*           aPresContext,
   if (NS_SUBTREE_DIRTY(this) ||
       aReflowState.ShouldReflowAllKids() ||
       IsGeometryDirty() ||
-      aReflowState.mFlags.mVResize) {
+      aReflowState.IsVResize()) {
 
     if (aReflowState.ComputedHeight() != NS_UNCONSTRAINEDSIZE ||
         // Also check mVResize, to handle the first Reflow preceding a
         // special height Reflow, when we've already had a special height
         // Reflow (where mComputedHeight would not be
         // NS_UNCONSTRAINEDSIZE, but without a style change in between).
-        aReflowState.mFlags.mVResize) {
+        aReflowState.IsVResize()) {
       // XXX Eventually, we should modify DistributeHeightToRows to use
       // nsTableRowFrame::GetHeight instead of nsIFrame::GetSize().height.
       // That way, it will make its calculations based on internal table
@@ -1861,8 +1872,8 @@ nsresult nsTableFrame::Reflow(nsPresContext*           aPresContext,
       if (lastChildReflowed && NS_FRAME_IS_NOT_COMPLETE(aStatus)) {
         // if there is an incomplete child, then set the desired height to include it but not the next one
         nsMargin borderPadding = GetChildAreaOffset(&aReflowState);
-        aDesiredSize.Height() = borderPadding.bottom + GetCellSpacingY() +
-                              lastChildReflowed->GetRect().YMost();
+        aDesiredSize.Height() = borderPadding.bottom + GetCellSpacingY(GetRowCount()) +
+                              lastChildReflowed->GetNormalRect().YMost();
       }
       haveDesiredHeight = true;
 
@@ -1913,7 +1924,6 @@ nsresult nsTableFrame::Reflow(nsPresContext*           aPresContext,
 
   FinishAndStoreOverflow(&aDesiredSize);
   NS_FRAME_SET_TRUNCATION(aStatus, aReflowState, aDesiredSize);
-  return rv;
 }
 
 void
@@ -1945,9 +1955,11 @@ nsTableFrame::FixupPositionedTableParts(nsPresContext*           aPresContext,
     // XXX(seth): Note that the dummy reflow state doesn't have a correct
     // chain of parent reflow states. It also doesn't necessarily have a
     // correct containing block.
+    WritingMode wm = positionedPart->GetWritingMode();
+    LogicalSize availSize(wm, size);
+    availSize.BSize(wm) = NS_UNCONSTRAINEDSIZE;
     nsHTMLReflowState reflowState(aPresContext, positionedPart,
-                                  aReflowState.rendContext,
-                                  nsSize(size.width, NS_UNCONSTRAINEDSIZE),
+                                  aReflowState.rendContext, availSize,
                                   nsHTMLReflowState::DUMMY_PARENT_REFLOW_STATE);
     nsReflowStatus reflowStatus = NS_FRAME_COMPLETE;
 
@@ -1955,7 +1967,8 @@ nsTableFrame::FixupPositionedTableParts(nsPresContext*           aPresContext,
     // FIXME: Unconditionally using NS_UNCONSTRAINEDSIZE for the height and
     // ignoring any change to the reflow status aren't correct. We'll never
     // paginate absolutely positioned frames.
-    overflowTracker.AddFrame(positionedPart);
+    overflowTracker.AddFrame(positionedPart,
+      OverflowChangedTracker::CHILDREN_AND_PARENT_CHANGED);
     nsFrame* positionedFrame = static_cast<nsFrame*>(positionedPart);
     positionedFrame->FinishReflowWithAbsoluteFrames(PresContext(),
                                                     desiredSize,
@@ -1991,14 +2004,13 @@ nsTableFrame::UpdateOverflow()
   return FinishAndStoreOverflow(overflowAreas, GetSize());
 }
 
-nsresult
+void
 nsTableFrame::ReflowTable(nsHTMLReflowMetrics&     aDesiredSize,
                           const nsHTMLReflowState& aReflowState,
                           nscoord                  aAvailHeight,
                           nsIFrame*&               aLastChildReflowed,
                           nsReflowStatus&          aStatus)
 {
-  nsresult rv = NS_OK;
   aLastChildReflowed = nullptr;
 
   if (!GetPrevInFlow()) {
@@ -2014,7 +2026,6 @@ nsTableFrame::ReflowTable(nsHTMLReflowMetrics&     aDesiredSize,
                  aDesiredSize.mOverflowAreas);
 
   ReflowColGroups(aReflowState.rendContext);
-  return rv;
 }
 
 nsIFrame*
@@ -2117,7 +2128,8 @@ nsTableFrame::AdjustForCollapsingRowsCols(nsHTMLReflowMetrics& aDesiredSize,
 
   nsTableFrame* firstInFlow = static_cast<nsTableFrame*>(FirstInFlow());
   nscoord width = firstInFlow->GetCollapsedWidth(aBorderPadding);
-  nscoord rgWidth = width - 2 * GetCellSpacingX();
+  nscoord rgWidth = width - GetCellSpacingX(-1) -
+                    GetCellSpacingX(GetColCount());
   nsOverflowAreas overflow;
   // Walk the list of children
   for (uint32_t childX = 0; childX < rowGroups.Length(); childX++) {
@@ -2139,8 +2151,7 @@ nscoord
 nsTableFrame::GetCollapsedWidth(nsMargin aBorderPadding)
 {
   NS_ASSERTION(!GetPrevInFlow(), "GetCollapsedWidth called on next in flow");
-  nscoord cellSpacingX = GetCellSpacingX();
-  nscoord width = cellSpacingX;
+  nscoord width = GetCellSpacingX(GetColCount());
   width += aBorderPadding.left + aBorderPadding.right;
   for (nsIFrame* groupFrame = mColGroups.FirstChild(); groupFrame;
          groupFrame = groupFrame->GetNextSibling()) {
@@ -2158,7 +2169,7 @@ nsTableFrame::GetCollapsedWidth(nsMargin aBorderPadding)
         if (!collapseGroup && !collapseCol) {
           width += colWidth;
           if (ColumnHasCellSpacingBefore(colX))
-            width += cellSpacingX;
+            width += GetCellSpacingX(colX-1);
         }
         else {
           SetNeedToCollapse(true);
@@ -2203,7 +2214,7 @@ nsTableFrame::DidSetStyleContext(nsStyleContext* aOldStyleContext)
 
 
 
-nsresult
+void
 nsTableFrame::AppendFrames(ChildListID     aListID,
                            nsFrameList&    aFrameList)
 {
@@ -2250,8 +2261,6 @@ nsTableFrame::AppendFrames(ChildListID     aListID,
   PresContext()->PresShell()->FrameNeedsReflow(this, nsIPresShell::eTreeChange,
                                                NS_FRAME_HAS_DIRTY_CHILDREN);
   SetGeometryDirty();
-
-  return NS_OK;
 }
 
 // Needs to be at file scope or ArrayLength fails to compile.
@@ -2260,7 +2269,7 @@ struct ChildListInsertions {
   nsFrameList mList;
 };
 
-nsresult
+void
 nsTableFrame::InsertFrames(ChildListID     aListID,
                            nsIFrame*       aPrevFrame,
                            nsFrameList&    aFrameList)
@@ -2277,7 +2286,8 @@ nsTableFrame::InsertFrames(ChildListID     aListID,
   if ((aPrevFrame && !aPrevFrame->GetNextSibling()) ||
       (!aPrevFrame && GetChildList(aListID).IsEmpty())) {
     // Treat this like an append; still a workaround for bug 343048.
-    return AppendFrames(aListID, aFrameList);
+    AppendFrames(aListID, aFrameList);
+    return;
   }
 
   // Collect ColGroupFrames into a separate list and insert those separately
@@ -2311,7 +2321,6 @@ nsTableFrame::InsertFrames(ChildListID     aListID,
                              insertions[i].mList);
     }
   }
-  return NS_OK;
 }
 
 void
@@ -2478,7 +2487,7 @@ nsTableFrame::DoRemoveFrame(ChildListID     aListID,
   }
 }
 
-nsresult
+void
 nsTableFrame::RemoveFrame(ChildListID     aListID,
                           nsIFrame*       aOldFrame)
 {
@@ -2512,7 +2521,6 @@ nsTableFrame::RemoveFrame(ChildListID     aListID,
   printf("=== TableFrame::RemoveFrame\n");
   Dump(true, true, true);
 #endif
-  return NS_OK;
 }
 
 /* virtual */ nsMargin
@@ -2661,7 +2669,7 @@ nsTableFrame::InitChildReflowState(nsHTMLReflowState& aReflowState)
                !aReflowState.parentReflowState->mFlags.mSpecialHeightReflow,
                "should not resize columns on special height reflow");
   if (mBits.mResizedColumns) {
-    aReflowState.mFlags.mHResize = true;
+    aReflowState.SetHResize(true);
   }
 }
 
@@ -2669,6 +2677,7 @@ nsTableFrame::InitChildReflowState(nsHTMLReflowState& aReflowState)
 // aKidRect is relative to the upper-left origin of our frame
 void nsTableFrame::PlaceChild(nsTableReflowState&  aReflowState,
                               nsIFrame*            aKidFrame,
+                              nsPoint              aKidPosition,
                               nsHTMLReflowMetrics& aKidDesiredSize,
                               const nsRect&        aOriginalKidRect,
                               const nsRect&        aOriginalKidVisualOverflow)
@@ -2678,7 +2687,7 @@ void nsTableFrame::PlaceChild(nsTableReflowState&  aReflowState,
 
   // Place and size the child
   FinishReflowChild(aKidFrame, PresContext(), aKidDesiredSize, nullptr,
-                    aReflowState.x, aReflowState.y, 0);
+                    aKidPosition.x, aKidPosition.y, 0);
 
   InvalidateTableFrame(aKidFrame, aOriginalKidRect, aOriginalKidVisualOverflow,
                        isFirstReflow);
@@ -2816,19 +2825,20 @@ nsTableFrame::SetupHeaderFooterChild(const nsTableReflowState& aReflowState,
   nsPresContext* presContext = PresContext();
   nscoord pageHeight = presContext->GetPageSize().height;
 
-  // Reflow the child with unconstrainted height
+  // Reflow the child with unconstrained height
+  WritingMode wm = aFrame->GetWritingMode();
+  LogicalSize availSize = aReflowState.reflowState.AvailableSize(wm);
+  availSize.BSize(wm) = NS_UNCONSTRAINEDSIZE;
   nsHTMLReflowState kidReflowState(presContext, aReflowState.reflowState,
-                                   aFrame,
-                                   nsSize(aReflowState.availSize.width, NS_UNCONSTRAINEDSIZE),
+                                   aFrame, availSize,
                                    -1, -1, nsHTMLReflowState::CALLER_WILL_INIT);
   InitChildReflowState(kidReflowState);
   kidReflowState.mFlags.mIsTopOfPage = true;
   nsHTMLReflowMetrics desiredSize(aReflowState.reflowState);
-  desiredSize.Width() = desiredSize.Height() = 0;
+  desiredSize.ClearSize();
   nsReflowStatus status;
-  nsresult rv = ReflowChild(aFrame, presContext, desiredSize, kidReflowState,
-                            aReflowState.x, aReflowState.y, 0, status);
-  NS_ENSURE_SUCCESS(rv, rv);
+  ReflowChild(aFrame, presContext, desiredSize, kidReflowState,
+              aReflowState.x, aReflowState.y, 0, status);
   // The child will be reflowed again "for real" so no need to place it now
 
   aFrame->SetRepeatable(IsRepeatable(desiredSize.Height(), pageHeight));
@@ -2842,31 +2852,35 @@ nsTableFrame::PlaceRepeatedFooter(nsTableReflowState& aReflowState,
                                   nscoord aFooterHeight)
 {
   nsPresContext* presContext = PresContext();
-  nsSize kidAvailSize(aReflowState.availSize);
-  kidAvailSize.height = aFooterHeight;
+  WritingMode wm = aTfoot->GetWritingMode();
+  LogicalSize kidAvailSize(wm, aReflowState.availSize);
+  kidAvailSize.BSize(wm) = aFooterHeight;
   nsHTMLReflowState footerReflowState(presContext,
                                       aReflowState.reflowState,
                                       aTfoot, kidAvailSize,
                                       -1, -1,
                                       nsHTMLReflowState::CALLER_WILL_INIT);
   InitChildReflowState(footerReflowState);
-  aReflowState.y += GetCellSpacingY();
+  aReflowState.y += GetCellSpacingY(GetRowCount());
 
   nsRect origTfootRect = aTfoot->GetRect();
   nsRect origTfootVisualOverflow = aTfoot->GetVisualOverflowRect();
           
   nsReflowStatus footerStatus;
   nsHTMLReflowMetrics desiredSize(aReflowState.reflowState);
-  desiredSize.Width() = desiredSize.Height() = 0;
+  desiredSize.ClearSize();
   ReflowChild(aTfoot, presContext, desiredSize, footerReflowState,
               aReflowState.x, aReflowState.y, 0, footerStatus);
-  PlaceChild(aReflowState, aTfoot, desiredSize, origTfootRect,
+  nsPoint kidPosition(aReflowState.x, aReflowState.y);
+  footerReflowState.ApplyRelativePositioning(&kidPosition);
+
+  PlaceChild(aReflowState, aTfoot, kidPosition, desiredSize, origTfootRect,
              origTfootVisualOverflow);
 }
                     
 // Reflow the children based on the avail size and reason in aReflowState
 // update aReflowMetrics a aStatus
-nsresult
+void
 nsTableFrame::ReflowChildren(nsTableReflowState& aReflowState,
                              nsReflowStatus&     aStatus,
                              nsIFrame*&          aLastChildReflowed,
@@ -2876,8 +2890,6 @@ nsTableFrame::ReflowChildren(nsTableReflowState& aReflowState,
   aLastChildReflowed = nullptr;
 
   nsIFrame* prevKidFrame = nullptr;
-  nsresult  rv = NS_OK;
-  nscoord   cellSpacingY = GetCellSpacingY();
 
   nsPresContext* presContext = PresContext();
   // XXXldb Should we be checking constrained height instead?
@@ -2911,20 +2923,23 @@ nsTableFrame::ReflowChildren(nsTableReflowState& aReflowState,
   if (isPaginated) {
     if (thead && !GetPrevInFlow()) {
       nscoord desiredHeight;
-      rv = SetupHeaderFooterChild(aReflowState, thead, &desiredHeight);
+      nsresult rv = SetupHeaderFooterChild(aReflowState, thead, &desiredHeight);
       if (NS_FAILED(rv))
-        return rv;
+        return;
     }
     if (tfoot) {
-      rv = SetupHeaderFooterChild(aReflowState, tfoot, &footerHeight);
+      nsresult rv = SetupHeaderFooterChild(aReflowState, tfoot, &footerHeight);
       if (NS_FAILED(rv))
-        return rv;
+        return;
     }
   }
    // if the child is a tbody in paginated mode reduce the height by a repeated footer
   bool allowRepeatedFooter = false;
-  for (uint32_t childX = 0; childX < rowGroups.Length(); childX++) {
+  for (size_t childX = 0; childX < rowGroups.Length(); childX++) {
     nsIFrame* kidFrame = rowGroups[childX];
+    nsTableRowGroupFrame* rowGroupFrame = rowGroups[childX];
+    nscoord cellSpacingY = GetCellSpacingY(rowGroupFrame->GetStartRowIndex()+
+                                           rowGroupFrame->GetRowCount());
     // Get the frame state bits
     // See if we should only reflow the dirty child frames
     if (reflowAllKids ||
@@ -2963,11 +2978,13 @@ nsTableFrame::ReflowChildren(nsTableReflowState& aReflowState,
       nsRect oldKidVisualOverflow = kidFrame->GetVisualOverflowRect();
 
       nsHTMLReflowMetrics desiredSize(aReflowState.reflowState);
-      desiredSize.Width() = desiredSize.Height() = 0;
+      desiredSize.ClearSize();
 
       // Reflow the child into the available space
       nsHTMLReflowState kidReflowState(presContext, aReflowState.reflowState,
-                                       kidFrame, kidAvailSize,
+                                       kidFrame,
+                                       LogicalSize(kidFrame->GetWritingMode(),
+                                                   kidAvailSize),
                                        -1, -1,
                                        nsHTMLReflowState::CALLER_WILL_INIT);
       InitChildReflowState(kidReflowState);
@@ -2977,7 +2994,7 @@ nsTableFrame::ReflowChildren(nsTableReflowState& aReflowState,
       // We ignore a repeated head row group in this check to avoid causing
       // infinite loops in some circumstances - see bug 344883.
       if (childX > ((thead && IsRepeatedFrame(thead)) ? 1u : 0u) &&
-          (rowGroups[childX - 1]->GetRect().YMost() > 0)) {
+          (rowGroups[childX - 1]->GetNormalRect().YMost() > 0)) {
         kidReflowState.mFlags.mIsTopOfPage = false;
       }
       aReflowState.y += cellSpacingY;
@@ -2990,8 +3007,10 @@ nsTableFrame::ReflowChildren(nsTableReflowState& aReflowState,
       if (kidFrame->GetNextInFlow())
         reorder = true;
 
-      rv = ReflowChild(kidFrame, presContext, desiredSize, kidReflowState,
-                       aReflowState.x, aReflowState.y, 0, aStatus);
+      ReflowChild(kidFrame, presContext, desiredSize, kidReflowState,
+                  aReflowState.x, aReflowState.y, 0, aStatus);
+      nsPoint kidPosition(aReflowState.x, aReflowState.y);
+      kidReflowState.ApplyRelativePositioning(&kidPosition);
 
       if (reorder) {
         // reorder row groups the reflow may have changed the nextinflows
@@ -3023,8 +3042,8 @@ nsTableFrame::ReflowChildren(nsTableReflowState& aReflowState,
           if (childX+1 < rowGroups.Length()) {
             nsIFrame* nextRowGroupFrame = rowGroups[childX + 1];
             if (nextRowGroupFrame) {
-              PlaceChild(aReflowState, kidFrame, desiredSize, oldKidRect,
-                         oldKidVisualOverflow);
+              PlaceChild(aReflowState, kidFrame, kidPosition, desiredSize,
+                         oldKidRect, oldKidVisualOverflow);
               if (allowRepeatedFooter) {
                 PlaceRepeatedFooter(aReflowState, tfoot, footerHeight);
               }
@@ -3052,8 +3071,8 @@ nsTableFrame::ReflowChildren(nsTableReflowState& aReflowState,
             break;
           }
           else { // we can't push so lets make clear how much space we need
-            PlaceChild(aReflowState, kidFrame, desiredSize, oldKidRect,
-                                     oldKidVisualOverflow);
+            PlaceChild(aReflowState, kidFrame, kidPosition, desiredSize,
+                       oldKidRect, oldKidVisualOverflow);
             aLastChildReflowed = kidFrame;
             if (allowRepeatedFooter) {
               PlaceRepeatedFooter(aReflowState, tfoot, footerHeight);
@@ -3076,7 +3095,7 @@ nsTableFrame::ReflowChildren(nsTableReflowState& aReflowState,
       }
 
       // Place the child
-      PlaceChild(aReflowState, kidFrame, desiredSize, oldKidRect,
+      PlaceChild(aReflowState, kidFrame, kidPosition, desiredSize, oldKidRect,
                  oldKidVisualOverflow);
 
       // Remember where we just were in case we end up pushing children
@@ -3123,12 +3142,12 @@ nsTableFrame::ReflowChildren(nsTableReflowState& aReflowState,
     }
     else { // it isn't being reflowed
       aReflowState.y += cellSpacingY;
-      nsRect kidRect = kidFrame->GetRect();
+      nsRect kidRect = kidFrame->GetNormalRect();
       if (kidRect.y != aReflowState.y) {
         // invalidate the old position
         kidFrame->InvalidateFrameSubtree();
-        kidRect.y = aReflowState.y;
-        kidFrame->SetRect(kidRect);        // move to the new position
+        // move to the new position
+        kidFrame->MovePositionBy(nsPoint(0, aReflowState.y - kidRect.y));
         RePositionViews(kidFrame);
         // invalidate the new position
         kidFrame->InvalidateFrameSubtree();
@@ -3147,8 +3166,6 @@ nsTableFrame::ReflowChildren(nsTableReflowState& aReflowState,
   // the children.
   mBits.mResizedColumns = false;
   ClearGeometryDirty();
-
-  return rv;
 }
 
 void
@@ -3161,8 +3178,9 @@ nsTableFrame::ReflowColGroups(nsRenderingContext *aRenderingContext)
          kidFrame = kidFrame->GetNextSibling()) {
       if (NS_SUBTREE_DIRTY(kidFrame)) {
         // The column groups don't care about dimensions or reflow states.
-        nsHTMLReflowState kidReflowState(presContext, kidFrame,
-                                       aRenderingContext, nsSize(0,0));
+        nsHTMLReflowState
+          kidReflowState(presContext, kidFrame, aRenderingContext,
+                         LogicalSize(kidFrame->GetWritingMode()));
         nsReflowStatus cgStatus;
         ReflowChild(kidFrame, presContext, kidMet, kidReflowState, 0, 0, 0,
                     cgStatus);
@@ -3182,7 +3200,6 @@ nsTableFrame::CalcDesiredHeight(const nsHTMLReflowState& aReflowState, nsHTMLRef
     aDesiredSize.Height() = 0;
     return;
   }
-  nscoord  cellSpacingY = GetCellSpacingY();
   nsMargin borderPadding = GetChildAreaOffset(&aReflowState);
 
   // get the natural height based on the last child's (row group) rect
@@ -3205,9 +3222,11 @@ nsTableFrame::CalcDesiredHeight(const nsHTMLReflowState& aReflowState, nsHTMLRef
   int32_t colCount = cellMap->GetColCount();
   nscoord desiredHeight = borderPadding.top + borderPadding.bottom;
   if (rowCount > 0 && colCount > 0) {
-    desiredHeight += cellSpacingY;
+    desiredHeight += GetCellSpacingY(-1);
     for (uint32_t rgX = 0; rgX < rowGroups.Length(); rgX++) {
-      desiredHeight += rowGroups[rgX]->GetSize().height + cellSpacingY;
+      desiredHeight += rowGroups[rgX]->GetSize().height +
+                       GetCellSpacingY(rowGroups[rgX]->GetRowCount() +
+                                       rowGroups[rgX]->GetStartRowIndex());
     }
   }
 
@@ -3235,19 +3254,16 @@ void ResizeCells(nsTableFrame& aTableFrame)
 {
   nsTableFrame::RowGroupArray rowGroups;
   aTableFrame.OrderRowGroups(rowGroups);
-  nsHTMLReflowMetrics tableDesiredSize(aTableFrame.GetWritingMode()); // ???
-  nsRect tableRect = aTableFrame.GetRect();
-  tableDesiredSize.Width() = tableRect.width;
-  tableDesiredSize.Height() = tableRect.height;
+  WritingMode wm = aTableFrame.GetWritingMode();
+  nsHTMLReflowMetrics tableDesiredSize(wm);
+  tableDesiredSize.SetSize(wm, aTableFrame.GetLogicalSize(wm));
   tableDesiredSize.SetOverflowAreasToDesiredBounds();
 
   for (uint32_t rgX = 0; rgX < rowGroups.Length(); rgX++) {
     nsTableRowGroupFrame* rgFrame = rowGroups[rgX];
 
-    nsRect rowGroupRect = rgFrame->GetRect();
-    nsHTMLReflowMetrics groupDesiredSize(tableDesiredSize.GetWritingMode());
-    groupDesiredSize.Width() = rowGroupRect.width;
-    groupDesiredSize.Height() = rowGroupRect.height;
+    nsHTMLReflowMetrics groupDesiredSize(wm);
+    groupDesiredSize.SetSize(wm, rgFrame->GetLogicalSize(wm));
     groupDesiredSize.SetOverflowAreasToDesiredBounds();
 
     nsTableRowFrame* rowFrame = rgFrame->GetFirstRow();
@@ -3267,8 +3283,6 @@ void
 nsTableFrame::DistributeHeightToRows(const nsHTMLReflowState& aReflowState,
                                      nscoord                  aAmount)
 {
-  nscoord cellSpacingY = GetCellSpacingY();
-
   nsMargin borderPadding = GetChildAreaOffset(&aReflowState);
 
   RowGroupArray rowGroups;
@@ -3278,71 +3292,72 @@ nsTableFrame::DistributeHeightToRows(const nsHTMLReflowState& aReflowState,
   // distribute space to each pct height row whose row group doesn't have a computed
   // height, and base the pct on the table height. If the row group had a computed
   // height, then this was already done in nsTableRowGroupFrame::CalculateRowHeights
-  nscoord pctBasis = aReflowState.ComputedHeight() - (GetCellSpacingY() * (GetRowCount() + 1));
-  nscoord yOriginRG = borderPadding.top + GetCellSpacingY();
+  nscoord pctBasis = aReflowState.ComputedHeight() - GetCellSpacingY(-1, GetRowCount());
+  nscoord yOriginRG = borderPadding.top + GetCellSpacingY(0);
   nscoord yEndRG = yOriginRG;
   uint32_t rgX;
   for (rgX = 0; rgX < rowGroups.Length(); rgX++) {
     nsTableRowGroupFrame* rgFrame = rowGroups[rgX];
     nscoord amountUsedByRG = 0;
     nscoord yOriginRow = 0;
-    nsRect rgRect = rgFrame->GetRect();
+    nsRect rgNormalRect = rgFrame->GetNormalRect();
     if (!rgFrame->HasStyleHeight()) {
       nsTableRowFrame* rowFrame = rgFrame->GetFirstRow();
       while (rowFrame) {
-        nsRect rowRect = rowFrame->GetRect();
+        nsRect rowNormalRect = rowFrame->GetNormalRect();
+        nscoord cellSpacingY = GetCellSpacingY(rowFrame->GetRowIndex());
         if ((amountUsed < aAmount) && rowFrame->HasPctHeight()) {
           nscoord pctHeight = rowFrame->GetHeight(pctBasis);
-          nscoord amountForRow = std::min(aAmount - amountUsed, pctHeight - rowRect.height);
+          nscoord amountForRow = std::min(aAmount - amountUsed,
+                                          pctHeight - rowNormalRect.height);
           if (amountForRow > 0) {
-            nsRect oldRowRect = rowRect;
-            rowRect.height += amountForRow;
-            // XXXbz we don't need to change rowRect.y to be yOriginRow?
-            rowFrame->SetRect(rowRect);
-            yOriginRow += rowRect.height + cellSpacingY;
-            yEndRG += rowRect.height + cellSpacingY;
+            // XXXbz we don't need to move the row's y position to yOriginRow?
+            nsRect origRowRect = rowFrame->GetRect();
+            nscoord newRowHeight = rowNormalRect.height + amountForRow;
+            rowFrame->SetSize(nsSize(rowNormalRect.width, newRowHeight));
+            yOriginRow += newRowHeight + cellSpacingY;
+            yEndRG += newRowHeight + cellSpacingY;
             amountUsed += amountForRow;
             amountUsedByRG += amountForRow;
             //rowFrame->DidResize();
             nsTableFrame::RePositionViews(rowFrame);
 
-            rgFrame->InvalidateFrameWithRect(oldRowRect);
+            rgFrame->InvalidateFrameWithRect(origRowRect);
             rgFrame->InvalidateFrame();
           }
         }
         else {
-          if (amountUsed > 0 && yOriginRow != rowRect.y &&
+          if (amountUsed > 0 && yOriginRow != rowNormalRect.y &&
               !(GetStateBits() & NS_FRAME_FIRST_REFLOW)) {
             rowFrame->InvalidateFrameSubtree();
-            rowFrame->SetPosition(nsPoint(rowRect.x, yOriginRow));
+            rowFrame->MovePositionBy(nsPoint(0, yOriginRow - rowNormalRect.y));
             nsTableFrame::RePositionViews(rowFrame);
             rowFrame->InvalidateFrameSubtree();
           }
-          yOriginRow += rowRect.height + cellSpacingY;
-          yEndRG += rowRect.height + cellSpacingY;
+          yOriginRow += rowNormalRect.height + cellSpacingY;
+          yEndRG += rowNormalRect.height + cellSpacingY;
         }
         rowFrame = rowFrame->GetNextRow();
       }
       if (amountUsed > 0) {
-        if (rgRect.y != yOriginRG) {
+        if (rgNormalRect.y != yOriginRG) {
           rgFrame->InvalidateFrameSubtree();
         }
 
-        nsRect origRgRect = rgRect;
+        nsRect origRgNormalRect = rgFrame->GetRect();
         nsRect origRgVisualOverflow = rgFrame->GetVisualOverflowRect();
 
-        rgRect.y = yOriginRG;
-        rgRect.height += amountUsedByRG;
+        rgFrame->MovePositionBy(nsPoint(0, yOriginRG - rgNormalRect.y));
+        rgFrame->SetSize(nsSize(rgNormalRect.width,
+                                rgNormalRect.height + amountUsedByRG));
 
-        rgFrame->SetRect(rgRect);
-
-        nsTableFrame::InvalidateTableFrame(rgFrame, origRgRect,
+        nsTableFrame::InvalidateTableFrame(rgFrame, origRgNormalRect,
                                            origRgVisualOverflow, false);
       }
     }
-    else if (amountUsed > 0 && yOriginRG != rgRect.y) {
+    else if (amountUsed > 0 && yOriginRG != rgNormalRect.y) {
       rgFrame->InvalidateFrameSubtree();
-      rgFrame->SetPosition(nsPoint(rgRect.x, yOriginRG));
+      rgFrame->MovePositionBy(nsPoint(0, yOriginRG - rgNormalRect.y));
       // Make sure child views are properly positioned
       nsTableFrame::RePositionViews(rgFrame);
       rgFrame->InvalidateFrameSubtree();
@@ -3416,19 +3431,20 @@ nsTableFrame::DistributeHeightToRows(const nsHTMLReflowState& aReflowState,
   }
   // allocate the extra height to the unstyled row groups and rows
   nscoord heightToDistribute = aAmount - amountUsed;
-  yOriginRG = borderPadding.top + cellSpacingY;
+  yOriginRG = borderPadding.top + GetCellSpacingY(-1);
   yEndRG = yOriginRG;
   for (rgX = 0; rgX < rowGroups.Length(); rgX++) {
     nsTableRowGroupFrame* rgFrame = rowGroups[rgX];
     nscoord amountUsedByRG = 0;
     nscoord yOriginRow = 0;
-    nsRect rgRect = rgFrame->GetRect();
+    nsRect rgNormalRect = rgFrame->GetNormalRect();
     nsRect rgVisualOverflow = rgFrame->GetVisualOverflowRect();
     // see if there is an eligible row group or we distribute to all rows
     if (!firstUnStyledRG || !rgFrame->HasStyleHeight() || !eligibleRows) {
       nsTableRowFrame* rowFrame = rgFrame->GetFirstRow();
       while (rowFrame) {
-        nsRect rowRect = rowFrame->GetRect();
+        nscoord cellSpacingY = GetCellSpacingY(rowFrame->GetRowIndex());
+        nsRect rowNormalRect = rowFrame->GetNormalRect();
         nsRect rowVisualOverflow = rowFrame->GetVisualOverflowRect();
         // see if there is an eligible row or we distribute to all rows
         if (!firstUnStyledRow || !rowFrame->HasStyleHeight() || !eligibleRows) {
@@ -3437,7 +3453,7 @@ nsTableFrame::DistributeHeightToRows(const nsHTMLReflowState& aReflowState,
             if (!expandEmptyRows) {
               // The amount of additional space each row gets is proportional to
               // its height
-              ratio = float(rowRect.height) / float(divisor);
+              ratio = float(rowNormalRect.height) / float(divisor);
             } else {
               // empty rows get all the same additional space
               ratio = 1.0f / float(eligibleRows);
@@ -3453,17 +3469,18 @@ nsTableFrame::DistributeHeightToRows(const nsHTMLReflowState& aReflowState,
                                  ? aAmount - amountUsed : NSToCoordRound(((float)(heightToDistribute)) * ratio);
           amountForRow = std::min(amountForRow, aAmount - amountUsed);
 
-          if (yOriginRow != rowRect.y) {
+          if (yOriginRow != rowNormalRect.y) {
             rowFrame->InvalidateFrameSubtree();
           }
 
           // update the row height
-          nsRect newRowRect(rowRect.x, yOriginRow, rowRect.width,
-                            rowRect.height + amountForRow);
-          rowFrame->SetRect(newRowRect);
+          nsRect origRowRect = rowFrame->GetRect();
+          nscoord newRowHeight = rowNormalRect.height + amountForRow;
+          rowFrame->MovePositionBy(nsPoint(0, yOriginRow - rowNormalRect.y));
+          rowFrame->SetSize(nsSize(rowNormalRect.width, newRowHeight));
 
-          yOriginRow += newRowRect.height + cellSpacingY;
-          yEndRG += newRowRect.height + cellSpacingY;
+          yOriginRow += newRowHeight + cellSpacingY;
+          yEndRG += newRowHeight + cellSpacingY;
 
           amountUsed += amountForRow;
           amountUsedByRG += amountForRow;
@@ -3471,37 +3488,39 @@ nsTableFrame::DistributeHeightToRows(const nsHTMLReflowState& aReflowState,
           //rowFrame->DidResize();
           nsTableFrame::RePositionViews(rowFrame);
 
-          nsTableFrame::InvalidateTableFrame(rowFrame, rowRect, rowVisualOverflow,
-                                             false);
+          nsTableFrame::InvalidateTableFrame(rowFrame, origRowRect,
+                                             rowVisualOverflow, false);
         }
         else {
-          if (amountUsed > 0 && yOriginRow != rowRect.y) {
+          if (amountUsed > 0 && yOriginRow != rowNormalRect.y) {
             rowFrame->InvalidateFrameSubtree();
-            rowFrame->SetPosition(nsPoint(rowRect.x, yOriginRow));
+            rowFrame->MovePositionBy(nsPoint(0, yOriginRow - rowNormalRect.y));
             nsTableFrame::RePositionViews(rowFrame);
             rowFrame->InvalidateFrameSubtree();
           }
-          yOriginRow += rowRect.height + cellSpacingY;
-          yEndRG += rowRect.height + cellSpacingY;
+          yOriginRow += rowNormalRect.height + cellSpacingY;
+          yEndRG += rowNormalRect.height + cellSpacingY;
         }
         rowFrame = rowFrame->GetNextRow();
       }
       if (amountUsed > 0) {
-        if (rgRect.y != yOriginRG) {
+        if (rgNormalRect.y != yOriginRG) {
           rgFrame->InvalidateFrameSubtree();
         }
 
-        rgFrame->SetRect(nsRect(rgRect.x, yOriginRG, rgRect.width,
-                                rgRect.height + amountUsedByRG));
+        nsRect origRgNormalRect = rgFrame->GetRect();
+        rgFrame->MovePositionBy(nsPoint(0, yOriginRG - rgNormalRect.y));
+        rgFrame->SetSize(nsSize(rgNormalRect.width,
+                                rgNormalRect.height + amountUsedByRG));
 
-        nsTableFrame::InvalidateTableFrame(rgFrame, rgRect, rgVisualOverflow,
-                                           false);
+        nsTableFrame::InvalidateTableFrame(rgFrame, origRgNormalRect,
+                                           rgVisualOverflow, false);
       }
       // Make sure child views are properly positioned
     }
-    else if (amountUsed > 0 && yOriginRG != rgRect.y) {
+    else if (amountUsed > 0 && yOriginRG != rgNormalRect.y) {
       rgFrame->InvalidateFrameSubtree();
-      rgFrame->SetPosition(nsPoint(rgRect.x, yOriginRG));
+      rgFrame->MovePositionBy(nsPoint(0, yOriginRG - rgNormalRect.y));
       // Make sure child views are properly positioned
       nsTableFrame::RePositionViews(rgFrame);
       rgFrame->InvalidateFrameSubtree();
@@ -3522,7 +3541,6 @@ int32_t nsTableFrame::GetColumnWidth(int32_t aColIndex)
   return firstInFlow->GetColumnWidth(aColIndex);
 }
 
-// XXX: could cache this.  But be sure to check style changes if you do!
 nscoord nsTableFrame::GetCellSpacingX()
 {
   if (IsBorderCollapse())
@@ -3531,7 +3549,31 @@ nscoord nsTableFrame::GetCellSpacingX()
   return StyleTableBorder()->mBorderSpacingX;
 }
 
-// XXX: could cache this. But be sure to check style changes if you do!
+// XXX: could cache this.  But be sure to check style changes if you do!
+nscoord nsTableFrame::GetCellSpacingX(int32_t aColIndex)
+{
+  NS_ASSERTION(aColIndex >= -1 && aColIndex <= GetColCount(),
+               "Column index exceeds the bounds of the table");
+  // Index is irrelevant for ordinary tables.  We check that it falls within
+  // appropriate bounds to increase confidence of correctness in situations
+  // where it does matter.
+  return GetCellSpacingX();
+}
+
+nscoord nsTableFrame::GetCellSpacingX(int32_t aStartColIndex,
+                                      int32_t aEndColIndex)
+{
+  NS_ASSERTION(aStartColIndex >= -1 && aStartColIndex <= GetColCount(),
+               "Start column index exceeds the bounds of the table");
+  NS_ASSERTION(aEndColIndex >= -1 && aEndColIndex <= GetColCount(),
+               "End column index exceeds the bounds of the table");
+  NS_ASSERTION(aStartColIndex <= aEndColIndex,
+               "End index must not be less than start index");
+  // Only one possible value so just multiply it out. Tables where index
+  // matters will override this function
+  return GetCellSpacingX() * (aEndColIndex - aStartColIndex);
+}
+
 nscoord nsTableFrame::GetCellSpacingY()
 {
   if (IsBorderCollapse())
@@ -3540,29 +3582,64 @@ nscoord nsTableFrame::GetCellSpacingY()
   return StyleTableBorder()->mBorderSpacingY;
 }
 
+// XXX: could cache this. But be sure to check style changes if you do!
+nscoord nsTableFrame::GetCellSpacingY(int32_t aRowIndex)
+{
+  NS_ASSERTION(aRowIndex >= -1 && aRowIndex <= GetRowCount(),
+               "Row index exceeds the bounds of the table");
+  // Index is irrelevant for ordinary tables.  We check that it falls within
+  // appropriate bounds to increase confidence of correctness in situations
+  // where it does matter.
+  return GetCellSpacingY();
+}
+
+nscoord nsTableFrame::GetCellSpacingY(int32_t aStartRowIndex,
+                                      int32_t aEndRowIndex)
+{
+  NS_ASSERTION(aStartRowIndex >= -1 && aStartRowIndex <= GetRowCount(),
+               "Start row index exceeds the bounds of the table");
+  NS_ASSERTION(aEndRowIndex >= -1 && aEndRowIndex <= GetRowCount(),
+               "End row index exceeds the bounds of the table");
+  NS_ASSERTION(aStartRowIndex <= aEndRowIndex,
+               "End index must not be less than start index");
+  // Only one possible value so just multiply it out. Tables where index
+  // matters will override this function
+  return GetCellSpacingY() * (aEndRowIndex - aStartRowIndex);
+}
 
 /* virtual */ nscoord
-nsTableFrame::GetBaseline() const
+nsTableFrame::GetLogicalBaseline(WritingMode aWritingMode) const
 {
   nscoord ascent = 0;
   RowGroupArray orderedRowGroups;
   OrderRowGroups(orderedRowGroups);
   nsTableRowFrame* firstRow = nullptr;
+  // XXX not sure if this should be the width of the containing block instead.
+  nscoord containerWidth = mRect.width;
   for (uint32_t rgIndex = 0; rgIndex < orderedRowGroups.Length(); rgIndex++) {
     nsTableRowGroupFrame* rgFrame = orderedRowGroups[rgIndex];
     if (rgFrame->GetRowCount()) {
       firstRow = rgFrame->GetFirstRow();
-      ascent = rgFrame->GetRect().y + firstRow->GetRect().y + firstRow->GetRowBaseline();
+
+      nscoord rgNormalBStart =
+        LogicalRect(aWritingMode, rgFrame->GetNormalRect(), containerWidth)
+        .Origin(aWritingMode).B(aWritingMode);
+      nscoord firstRowNormalBStart =
+        LogicalRect(aWritingMode, firstRow->GetNormalRect(), containerWidth)
+        .Origin(aWritingMode).B(aWritingMode);
+
+      ascent = rgNormalBStart + firstRowNormalBStart +
+               firstRow->GetRowBaseline(aWritingMode);
       break;
     }
   }
   if (!firstRow)
-    ascent = GetRect().height;
+    ascent = BSize(aWritingMode);
   return ascent;
 }
 /* ----- global methods ----- */
 
-nsIFrame*
+nsTableFrame*
 NS_NewTableFrame(nsIPresShell* aPresShell, nsStyleContext* aContext)
 {
   return new (aPresShell) nsTableFrame(aContext);
@@ -3639,7 +3716,7 @@ nsTableFrame::IsAutoLayout()
     return true;
   // a fixed-layout inline-table must have a width
   // and tables with 'width: -moz-max-content' must be auto-layout
-  // (at least as long as FixedTableLayoutStrategy::GetPrefWidth returns
+  // (at least as long as FixedTableLayoutStrategy::GetPrefISize returns
   // nscoord_MAX)
   const nsStyleCoord &width = StylePosition()->mWidth;
   return (width.GetUnit() == eStyleUnit_Auto) ||
@@ -4025,7 +4102,7 @@ class BCMapCellIterator;
  ****************************************************************/
 struct BCMapCellInfo
 {
-  BCMapCellInfo(nsTableFrame* aTableFrame);
+  explicit BCMapCellInfo(nsTableFrame* aTableFrame);
   void ResetCellInfo();
   void SetInfo(nsTableRowFrame*   aNewRow,
                int32_t            aColIndex,
@@ -4685,7 +4762,7 @@ GetColorAndStyle(const nsIFrame*  aFrame,
 
 class nsDelayedCalcBCBorders : public nsRunnable {
 public:
-  nsDelayedCalcBCBorders(nsIFrame* aFrame) :
+  explicit nsDelayedCalcBCBorders(nsIFrame* aFrame) :
     mFrame(aFrame) {}
 
   NS_IMETHOD Run() MOZ_OVERRIDE {
@@ -6184,7 +6261,7 @@ class BCPaintBorderIterator
 public:
 
 
-  BCPaintBorderIterator(nsTableFrame* aTable);
+  explicit BCPaintBorderIterator(nsTableFrame* aTable);
   ~BCPaintBorderIterator() { if (mVerInfo) {
                               delete [] mVerInfo;
                            }}
@@ -6869,6 +6946,10 @@ BCVerticalSeg::Paint(BCPaintBorderIterator& aIter,
   uint8_t style = NS_STYLE_BORDER_STYLE_SOLID;
   nscolor color = 0xFFFFFFFF;
 
+  // All the tables frames have the same presContext, so we just use any one
+  // that exists here:
+  int32_t appUnitsPerDevPixel = col->PresContext()->AppUnitsPerDevPixel();
+
   switch (mOwner) {
     case eTableOwner:
       owner = aIter.mTable;
@@ -6929,6 +7010,7 @@ BCVerticalSeg::Paint(BCPaintBorderIterator& aIter,
                          NS_SIDE_RIGHT : NS_SIDE_LEFT;
   nsCSSRendering::DrawTableBorderSegment(aRenderingContext, style, color,
                                          aIter.mTableBgColor, segRect,
+                                         appUnitsPerDevPixel,
                                          nsPresContext::AppUnitsPerCSSPixel(),
                                          topBevelSide, mTopBevelOffset,
                                          bottomBevelSide, bottomBevelOffset);
@@ -7049,6 +7131,10 @@ BCHorizontalSeg::Paint(BCPaintBorderIterator& aIter,
   nsIFrame* col;
   nsIFrame* owner = nullptr;
 
+  // All the tables frames have the same presContext, so we just use any one
+  // that exists here:
+  int32_t appUnitsPerDevPixel = row->PresContext()->AppUnitsPerDevPixel();
+
   uint8_t style = NS_STYLE_BORDER_STYLE_SOLID;
   nscolor color = 0xFFFFFFFF;
 
@@ -7111,6 +7197,7 @@ BCHorizontalSeg::Paint(BCPaintBorderIterator& aIter,
   if (aIter.mTableIsLTR) {
     nsCSSRendering::DrawTableBorderSegment(aRenderingContext, style, color,
                                            aIter.mTableBgColor, segRect,
+                                           appUnitsPerDevPixel,
                                            nsPresContext::AppUnitsPerCSSPixel(),
                                            mLeftBevelSide,
                                            nsPresContext::CSSPixelsToAppUnits(mLeftBevelOffset),
@@ -7120,6 +7207,7 @@ BCHorizontalSeg::Paint(BCPaintBorderIterator& aIter,
     segRect.x -= segRect.width;
     nsCSSRendering::DrawTableBorderSegment(aRenderingContext, style, color,
                                            aIter.mTableBgColor, segRect,
+                                           appUnitsPerDevPixel,
                                            nsPresContext::AppUnitsPerCSSPixel(),
                                            mRightBevelSide, mRightBevelOffset,
                                            mLeftBevelSide,

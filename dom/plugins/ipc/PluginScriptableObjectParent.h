@@ -16,9 +16,9 @@
 namespace mozilla {
 namespace plugins {
 
+class PluginAsyncSurrogate;
 class PluginInstanceParent;
 class PluginScriptableObjectParent;
-class PPluginIdentifierParent;
 
 struct ParentNPObject : NPObject
 {
@@ -36,7 +36,7 @@ class PluginScriptableObjectParent : public PPluginScriptableObjectParent
   friend class PluginInstanceParent;
 
 public:
-  PluginScriptableObjectParent(ScriptableObjectType aType);
+  explicit PluginScriptableObjectParent(ScriptableObjectType aType);
   virtual ~PluginScriptableObjectParent();
 
   void
@@ -45,45 +45,48 @@ public:
   void
   InitializeLocal(NPObject* aObject);
 
+  virtual void
+  ActorDestroy(ActorDestroyReason aWhy) MOZ_OVERRIDE;
+
   virtual bool
-  AnswerHasMethod(PPluginIdentifierParent* aId,
+  AnswerHasMethod(const PluginIdentifier& aId,
                   bool* aHasMethod) MOZ_OVERRIDE;
 
   virtual bool
-  AnswerInvoke(PPluginIdentifierParent* aId,
-               const InfallibleTArray<Variant>& aArgs,
+  AnswerInvoke(const PluginIdentifier& aId,
+               InfallibleTArray<Variant>&& aArgs,
                Variant* aResult,
                bool* aSuccess) MOZ_OVERRIDE;
 
   virtual bool
-  AnswerInvokeDefault(const InfallibleTArray<Variant>& aArgs,
+  AnswerInvokeDefault(InfallibleTArray<Variant>&& aArgs,
                       Variant* aResult,
                       bool* aSuccess) MOZ_OVERRIDE;
 
   virtual bool
-  AnswerHasProperty(PPluginIdentifierParent* aId,
+  AnswerHasProperty(const PluginIdentifier& aId,
                     bool* aHasProperty) MOZ_OVERRIDE;
 
   virtual bool
-  AnswerGetParentProperty(PPluginIdentifierParent* aId,
+  AnswerGetParentProperty(const PluginIdentifier& aId,
                           Variant* aResult,
                           bool* aSuccess) MOZ_OVERRIDE;
 
   virtual bool
-  AnswerSetProperty(PPluginIdentifierParent* aId,
+  AnswerSetProperty(const PluginIdentifier& aId,
                     const Variant& aValue,
                     bool* aSuccess) MOZ_OVERRIDE;
 
   virtual bool
-  AnswerRemoveProperty(PPluginIdentifierParent* aId,
+  AnswerRemoveProperty(const PluginIdentifier& aId,
                        bool* aSuccess) MOZ_OVERRIDE;
 
   virtual bool
-  AnswerEnumerate(InfallibleTArray<PPluginIdentifierParent*>* aProperties,
+  AnswerEnumerate(InfallibleTArray<PluginIdentifier>* aProperties,
                   bool* aSuccess) MOZ_OVERRIDE;
 
   virtual bool
-  AnswerConstruct(const InfallibleTArray<Variant>& aArgs,
+  AnswerConstruct(InfallibleTArray<Variant>&& aArgs,
                   Variant* aResult,
                   bool* aSuccess) MOZ_OVERRIDE;
 

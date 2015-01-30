@@ -18,6 +18,7 @@
 #include "RestyleManager.h"
 #include "nsDisplayList.h"
 #include "mozilla/Likely.h"
+#include "SVGTextFrame.h"
 
 #ifdef DEBUG
 #undef NOISY_PUSHING
@@ -31,7 +32,7 @@ using namespace mozilla::layout;
 
 // Basic nsInlineFrame methods
 
-nsIFrame*
+nsInlineFrame*
 NS_NewInlineFrame(nsIPresShell* aPresShell, nsStyleContext* aContext)
 {
   return new (aPresShell) nsInlineFrame(aContext);
@@ -103,26 +104,43 @@ nsInlineFrame::IsSelfEmpty()
   const nsStyleMargin* margin = StyleMargin();
   const nsStyleBorder* border = StyleBorder();
   const nsStylePadding* padding = StylePadding();
-  // XXX Top and bottom removed, since they shouldn't affect things, but this
+  // Block-start and -end ignored, since they shouldn't affect things, but this
   // doesn't really match with nsLineLayout.cpp's setting of
   // ZeroEffectiveSpanBox, anymore, so what should this really be?
-  bool haveRight =
-    border->GetComputedBorderWidth(NS_SIDE_RIGHT) != 0 ||
-    !nsLayoutUtils::IsPaddingZero(padding->mPadding.GetRight()) ||
-    !IsMarginZero(margin->mMargin.GetRight());
-  bool haveLeft =
-    border->GetComputedBorderWidth(NS_SIDE_LEFT) != 0 ||
-    !nsLayoutUtils::IsPaddingZero(padding->mPadding.GetLeft()) ||
-    !IsMarginZero(margin->mMargin.GetLeft());
-  if (haveLeft || haveRight) {
-    if (GetStateBits() & NS_FRAME_PART_OF_IBSPLIT) {
-      bool haveStart, haveEnd;
-      if (NS_STYLE_DIRECTION_LTR == StyleVisibility()->mDirection) {
-        haveStart = haveLeft;
-        haveEnd = haveRight;
-      } else {
-        haveStart = haveRight;
-        haveEnd = haveLeft;
+  WritingMode wm = GetWritingMode();
+  bool haveStart, haveEnd;
+  // Initially set up haveStart and haveEnd in terms of visual (LTR/TTB)
+  // coordinates; we'll exchange them later if bidi-RTL is in effect to
+  // get logical start and end flags.
+  if (wm.IsVertical()) {
+    haveStart =
+      border->GetComputedBorderWidth(NS_SIDE_TOP) != 0 ||
+      !nsLayoutUtils::IsPaddingZero(padding->mPadding.GetTop()) ||
+      !IsMarginZero(margin->mMargin.GetTop());
+    haveEnd =
+      border->GetComputedBorderWidth(NS_SIDE_BOTTOM) != 0 ||
+      !nsLayoutUtils::IsPaddingZero(padding->mPadding.GetBottom()) ||
+      !IsMarginZero(margin->mMargin.GetBottom());
+  } else {
+    haveStart =
+      border->GetComputedBorderWidth(NS_SIDE_LEFT) != 0 ||
+      !nsLayoutUtils::IsPaddingZero(padding->mPadding.GetLeft()) ||
+      !IsMarginZero(margin->mMargin.GetLeft());
+    haveEnd =
+      border->GetComputedBorderWidth(NS_SIDE_RIGHT) != 0 ||
+      !nsLayoutUtils::IsPaddingZero(padding->mPadding.GetRight()) ||
+      !IsMarginZero(margin->mMargin.GetRight());
+  }
+  if (haveStart || haveEnd) {
+    // We skip this block and return false for box-decoration-break:clone since
+    // in that case all the continuations will have the border/padding/margin.
+    if ((GetStateBits() & NS_FRAME_PART_OF_IBSPLIT) &&
+        StyleBorder()->mBoxDecorationBreak ==
+          NS_STYLE_BOX_DECORATION_BREAK_SLICE) {
+      // When direction=rtl, we need to consider logical rather than visual
+      // start and end, so swap the flags.
+      if (!wm.IsBidiLTR()) {
+        Swap(haveStart, haveEnd);
       }
       // For ib-split frames, ignore things we know we'll skip in GetSkipSides.
       // XXXbz should we be doing this for non-ib-split frames too, in a more
@@ -173,6 +191,20 @@ nsInlineFrame::PeekOffsetCharacter(bool aForward, int32_t* aOffset,
 }
 
 void
+nsInlineFrame::DestroyFrom(nsIFrame* aDestructRoot)
+{
+  nsFrameList* overflowFrames = GetOverflowFrames();
+  if (overflowFrames) {
+    // Fixup the parent pointers for any child frames on the OverflowList.
+    // nsIFrame::DestroyFrom depends on that to find the sticky scroll
+    // container (an ancestor).
+    nsIFrame* lineContainer = nsLayoutUtils::FindNearestBlockAncestor(this);
+    DrainSelfOverflowListInternal(eForDestroy, lineContainer);
+  }
+  nsContainerFrame::DestroyFrom(aDestructRoot);
+}
+
+void
 nsInlineFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
                                 const nsRect&           aDirtyRect,
                                 const nsDisplayListSet& aLists)
@@ -192,27 +224,32 @@ nsInlineFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
 // Reflow methods
 
 /* virtual */ void
-nsInlineFrame::AddInlineMinWidth(nsRenderingContext *aRenderingContext,
-                                 nsIFrame::InlineMinWidthData *aData)
+nsInlineFrame::AddInlineMinISize(nsRenderingContext *aRenderingContext,
+                                 nsIFrame::InlineMinISizeData *aData)
 {
-  DoInlineIntrinsicWidth(aRenderingContext, aData, nsLayoutUtils::MIN_WIDTH);
+  DoInlineIntrinsicISize(aRenderingContext, aData, nsLayoutUtils::MIN_ISIZE);
 }
 
 /* virtual */ void
-nsInlineFrame::AddInlinePrefWidth(nsRenderingContext *aRenderingContext,
-                                  nsIFrame::InlinePrefWidthData *aData)
+nsInlineFrame::AddInlinePrefISize(nsRenderingContext *aRenderingContext,
+                                  nsIFrame::InlinePrefISizeData *aData)
 {
-  DoInlineIntrinsicWidth(aRenderingContext, aData, nsLayoutUtils::PREF_WIDTH);
+  DoInlineIntrinsicISize(aRenderingContext, aData, nsLayoutUtils::PREF_ISIZE);
 }
 
-/* virtual */ nsSize
+/* virtual */
+LogicalSize
 nsInlineFrame::ComputeSize(nsRenderingContext *aRenderingContext,
-                           nsSize aCBSize, nscoord aAvailableWidth,
-                           nsSize aMargin, nsSize aBorder, nsSize aPadding,
-                           uint32_t aFlags)
+                           WritingMode aWM,
+                           const LogicalSize& aCBSize,
+                           nscoord aAvailableISize,
+                           const LogicalSize& aMargin,
+                           const LogicalSize& aBorder,
+                           const LogicalSize& aPadding,
+                           ComputeSizeFlags aFlags)
 {
   // Inlines and text don't compute size before reflow.
-  return nsSize(NS_UNCONSTRAINEDSIZE, NS_UNCONSTRAINEDSIZE);
+  return LogicalSize(aWM, NS_UNCONSTRAINEDSIZE, NS_UNCONSTRAINEDSIZE);
 }
 
 nsRect
@@ -286,10 +323,11 @@ ReparentChildListStyle(nsPresContext* aPresContext,
   for (nsFrameList::Enumerator e(aFrames); !e.AtEnd(); e.Next()) {
     NS_ASSERTION(e.get()->GetParent() == aParentFrame, "Bogus parentage");
     restyleManager->ReparentStyleContext(e.get());
+    nsLayoutUtils::MarkDescendantsDirty(e.get());
   }
 }
 
-nsresult
+void
 nsInlineFrame::Reflow(nsPresContext*          aPresContext,
                       nsHTMLReflowMetrics&     aMetrics,
                       const nsHTMLReflowState& aReflowState,
@@ -298,10 +336,11 @@ nsInlineFrame::Reflow(nsPresContext*          aPresContext,
   DO_GLOBAL_REFLOW_COUNT("nsInlineFrame");
   DISPLAY_REFLOW(aPresContext, this, aReflowState, aMetrics, aStatus);
   if (nullptr == aReflowState.mLineLayout) {
-    return NS_ERROR_INVALID_ARG;
+    NS_ERROR("must have non-null aReflowState.mLineLayout");
+    return;
   }
   if (IsFrameTreeTooDeep(aReflowState, aMetrics, aStatus)) {
-    return NS_OK;
+    return;
   }
 
   bool    lazilySetParentPointer = false;
@@ -384,7 +423,6 @@ nsInlineFrame::Reflow(nsPresContext*          aPresContext,
   irs.mNextInFlow = (nsInlineFrame*) GetNextInFlow();
   irs.mSetParentPointer = lazilySetParentPointer;
 
-  nsresult rv;
   if (mFrames.IsEmpty()) {
     // Try to pull over one frame before starting so that we know
     // whether we have an anonymous block or not.
@@ -392,7 +430,7 @@ nsInlineFrame::Reflow(nsPresContext*          aPresContext,
     (void) PullOneFrame(aPresContext, irs, &complete);
   }
 
-  rv = ReflowFrames(aPresContext, aReflowState, irs, aMetrics, aStatus);
+  ReflowFrames(aPresContext, aReflowState, irs, aMetrics, aStatus);
 
   ReflowAbsoluteFrames(aPresContext, aMetrics, aReflowState, aStatus);
 
@@ -400,7 +438,28 @@ nsInlineFrame::Reflow(nsPresContext*          aPresContext,
   // overflow-rect state for us.
 
   NS_FRAME_SET_TRUNCATION(aStatus, aReflowState, aMetrics);
-  return rv;
+}
+
+nsresult 
+nsInlineFrame::AttributeChanged(int32_t aNameSpaceID,
+                                nsIAtom* aAttribute,
+                                int32_t aModType)
+{
+  nsresult rv =
+    nsInlineFrameBase::AttributeChanged(aNameSpaceID, aAttribute, aModType);
+
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+
+  if (IsSVGText()) {
+    SVGTextFrame* f = static_cast<SVGTextFrame*>(
+      nsLayoutUtils::GetClosestFrameOfType(this, nsGkAtoms::svgTextFrame));
+    f->HandleAttributeChangeInDescendant(mContent->AsElement(),
+                                         aNameSpaceID, aAttribute);
+  }
+
+  return NS_OK;
 }
 
 bool
@@ -418,12 +477,14 @@ nsInlineFrame::DrainSelfOverflowListInternal(DrainFlags aFlags,
       if (aLineContainer && aLineContainer->GetPrevContinuation()) {
         ReparentFloatsForInlineChild(aLineContainer, firstChild, true);
       }
-      const bool inFirstLine = (aFlags & eInFirstLine);
+      const bool doReparentSC =
+        (aFlags & eInFirstLine) && !(aFlags & eForDestroy);
       RestyleManager* restyleManager = PresContext()->RestyleManager();
       for (nsIFrame* f = firstChild; f; f = f->GetNextSibling()) {
         f->SetParent(this);
-        if (inFirstLine) {
+        if (doReparentSC) {
           restyleManager->ReparentStyleContext(f);
+          nsLayoutUtils::MarkDescendantsDirty(f);
         }
       }
     }
@@ -474,32 +535,39 @@ nsInlineFrame::PullOverflowsFromPrevInFlow()
   }
 }
 
-nsresult
+void
 nsInlineFrame::ReflowFrames(nsPresContext* aPresContext,
                             const nsHTMLReflowState& aReflowState,
                             InlineReflowState& irs,
                             nsHTMLReflowMetrics& aMetrics,
                             nsReflowStatus& aStatus)
 {
-  nsresult rv = NS_OK;
   aStatus = NS_FRAME_COMPLETE;
 
   nsLineLayout* lineLayout = aReflowState.mLineLayout;
   bool inFirstLine = aReflowState.mLineLayout->GetInFirstLine();
   RestyleManager* restyleManager = aPresContext->RestyleManager();
-  WritingMode wm = aReflowState.GetWritingMode();
+  WritingMode frameWM = aReflowState.GetWritingMode();
+  WritingMode lineWM = aReflowState.mLineLayout->mRootSpan->mWritingMode;
+  LogicalMargin framePadding = aReflowState.ComputedLogicalBorderPadding();
   nscoord startEdge = 0;
+  const bool boxDecorationBreakClone =
+    MOZ_UNLIKELY(StyleBorder()->mBoxDecorationBreak ==
+                   NS_STYLE_BOX_DECORATION_BREAK_CLONE);
   // Don't offset by our start borderpadding if we have a prev continuation or
-  // if we're in a part of an {ib} split other than the first one.
-  if (!GetPrevContinuation() && !FrameIsNonFirstInIBSplit()) {
-    startEdge = aReflowState.ComputedLogicalBorderPadding().IStart(wm);
+  // if we're in a part of an {ib} split other than the first one. For
+  // box-decoration-break:clone we always offset our start since all
+  // continuations have border/padding.
+  if ((!GetPrevContinuation() && !FrameIsNonFirstInIBSplit()) ||
+      boxDecorationBreakClone) {
+    startEdge = framePadding.IStart(frameWM);
   }
   nscoord availableISize = aReflowState.AvailableISize();
   NS_ASSERTION(availableISize != NS_UNCONSTRAINEDSIZE,
                "should no longer use available widths");
   // Subtract off inline axis border+padding from availableISize
   availableISize -= startEdge;
-  availableISize -= aReflowState.ComputedLogicalBorderPadding().IEnd(wm);
+  availableISize -= framePadding.IEnd(frameWM);
   lineLayout->BeginSpan(this, &aReflowState, startEdge,
                         startEdge + availableISize, &mBaseline);
 
@@ -529,6 +597,7 @@ nsInlineFrame::ReflowFrames(nsPresContext* aPresContext,
         child->SetParent(this);
         if (inFirstLine) {
           restyleManager->ReparentStyleContext(child);
+          nsLayoutUtils::MarkDescendantsDirty(child);
         }
         // We also need to do the same for |frame|'s next-in-flows that are in
         // the sibling list. Otherwise, if we reflow |frame| and it's complete
@@ -563,6 +632,7 @@ nsInlineFrame::ReflowFrames(nsPresContext* aPresContext,
               nextInFlow->SetParent(this);
               if (inFirstLine) {
                 restyleManager->ReparentStyleContext(nextInFlow);
+                nsLayoutUtils::MarkDescendantsDirty(nextInFlow);
               }
             }
             else {
@@ -584,9 +654,8 @@ nsInlineFrame::ReflowFrames(nsPresContext* aPresContext,
 
     if (!done) {
       bool reflowingFirstLetter = lineLayout->GetFirstLetterStyleOK();
-      rv = ReflowInlineFrame(aPresContext, aReflowState, irs, frame, aStatus);
-      done = NS_FAILED(rv) ||
-             NS_INLINE_IS_BREAK(aStatus) || 
+      ReflowInlineFrame(aPresContext, aReflowState, irs, frame, aStatus);
+      done = NS_INLINE_IS_BREAK(aStatus) || 
              (!reflowingFirstLetter && NS_FRAME_IS_NOT_COMPLETE(aStatus));
       if (done) {
         if (!irs.mSetParentPointer) {
@@ -623,9 +692,8 @@ nsInlineFrame::ReflowFrames(nsPresContext* aPresContext,
         }
         break;
       }
-      rv = ReflowInlineFrame(aPresContext, aReflowState, irs, frame, aStatus);
-      if (NS_FAILED(rv) ||
-          NS_INLINE_IS_BREAK(aStatus) || 
+      ReflowInlineFrame(aPresContext, aReflowState, irs, frame, aStatus);
+      if (NS_INLINE_IS_BREAK(aStatus) || 
           (!reflowingFirstLetter && NS_FRAME_IS_NOT_COMPLETE(aStatus))) {
         break;
       }
@@ -644,15 +712,23 @@ nsInlineFrame::ReflowFrames(nsPresContext* aPresContext,
   // line-height calculations. However, continuations of an inline
   // that are empty we force to empty so that things like collapsed
   // whitespace in an inline element don't affect the line-height.
-  aMetrics.ISize() = lineLayout->EndSpan(this);
+  aMetrics.ISize(lineWM) = lineLayout->EndSpan(this);
 
   // Compute final width.
 
+  // XXX Note that that the padding start and end are in the frame's
+  //     writing mode, but the metrics' inline-size is in the line's
+  //     writing mode. This makes sense if the line and frame are both
+  //     vertical or both horizontal, but what should happen with
+  //     orthogonal inlines?
+
   // Make sure to not include our start border and padding if we have a prev
   // continuation or if we're in a part of an {ib} split other than the first
-  // one.
-  if (!GetPrevContinuation() && !FrameIsNonFirstInIBSplit()) {
-    aMetrics.ISize() += aReflowState.ComputedLogicalBorderPadding().IStart(wm);
+  // one.  For box-decoration-break:clone we always include our start border
+  // and padding since all continuations have them.
+  if ((!GetPrevContinuation() && !FrameIsNonFirstInIBSplit()) ||
+      boxDecorationBreakClone) {
+    aMetrics.ISize(lineWM) += framePadding.IStart(frameWM);
   }
 
   /*
@@ -660,39 +736,18 @@ nsInlineFrame::ReflowFrames(nsPresContext* aPresContext,
    * continuation and either not in an {ib} split or the last part of it.  To
    * be the last continuation we have to be complete (so that we won't get a
    * next-in-flow) and have no non-fluid continuations on our continuation
-   * chain.
+   * chain.  For box-decoration-break:clone we always apply the end border and
+   * padding since all continuations have them.
    */
-  if (NS_FRAME_IS_COMPLETE(aStatus) &&
-      !LastInFlow()->GetNextContinuation() &&
-      !FrameIsNonLastInIBSplit()) {
-    aMetrics.Width() += aReflowState.ComputedLogicalBorderPadding().IEnd(wm);
+  if ((NS_FRAME_IS_COMPLETE(aStatus) &&
+       !LastInFlow()->GetNextContinuation() &&
+       !FrameIsNonLastInIBSplit()) ||
+      boxDecorationBreakClone) {
+    aMetrics.ISize(lineWM) += framePadding.IEnd(frameWM);
   }
 
-  nsRefPtr<nsFontMetrics> fm;
-  float inflation = nsLayoutUtils::FontSizeInflationFor(this);
-  nsLayoutUtils::GetFontMetricsForFrame(this, getter_AddRefs(fm), inflation);
-  aReflowState.rendContext->SetFont(fm);
-
-  if (fm) {
-    // Compute final height of the frame.
-    //
-    // Do things the standard css2 way -- though it's hard to find it
-    // in the css2 spec! It's actually found in the css1 spec section
-    // 4.4 (you will have to read between the lines to really see
-    // it).
-    //
-    // The height of our box is the sum of our font size plus the top
-    // and bottom border and padding. The height of children do not
-    // affect our height.
-    aMetrics.SetTopAscent(fm->MaxAscent());
-    aMetrics.Height() = fm->MaxHeight();
-  } else {
-    NS_WARNING("Cannot get font metrics - defaulting sizes to 0");
-    aMetrics.SetTopAscent(aMetrics.Height() = 0);
-  }
-  aMetrics.SetTopAscent(aMetrics.TopAscent() + aReflowState.ComputedPhysicalBorderPadding().top);
-  aMetrics.Height() += aReflowState.ComputedPhysicalBorderPadding().top +
-    aReflowState.ComputedPhysicalBorderPadding().bottom;
+  nsLayoutUtils::SetBSizeFromFontMetrics(this, aMetrics,
+                                         framePadding, lineWM, frameWM);
 
   // For now our overflow area is zero. The real value will be
   // computed in |nsLineLayout::RelativePositionFrames|.
@@ -703,11 +758,9 @@ nsInlineFrame::ReflowFrames(nsPresContext* aPresContext,
   printf(": metrics=%d,%d ascent=%d\n",
          aMetrics.Width(), aMetrics.Height(), aMetrics.TopAscent());
 #endif
-
-  return rv;
 }
 
-nsresult
+void
 nsInlineFrame::ReflowInlineFrame(nsPresContext* aPresContext,
                                  const nsHTMLReflowState& aReflowState,
                                  InlineReflowState& irs,
@@ -717,13 +770,8 @@ nsInlineFrame::ReflowInlineFrame(nsPresContext* aPresContext,
   nsLineLayout* lineLayout = aReflowState.mLineLayout;
   bool reflowingFirstLetter = lineLayout->GetFirstLetterStyleOK();
   bool pushedFrame;
-  nsresult rv =
-    lineLayout->ReflowFrame(aFrame, aStatus, nullptr, pushedFrame);
+  lineLayout->ReflowFrame(aFrame, aStatus, nullptr, pushedFrame);
   
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
-
   if (NS_INLINE_IS_BREAK_BEFORE(aStatus)) {
     if (aFrame != mFrames.FirstChild()) {
       // Change break-before status into break-after since we have
@@ -738,16 +786,12 @@ nsInlineFrame::ReflowInlineFrame(nsPresContext* aPresContext,
       // Preserve reflow status when breaking-before our first child
       // and propagate it upward without modification.
     }
-    return NS_OK;
+    return;
   }
 
   // Create a next-in-flow if needed.
   if (!NS_FRAME_IS_FULLY_COMPLETE(aStatus)) {
-    nsIFrame* newFrame;
-    rv = CreateNextInFlow(aFrame, newFrame);
-    if (NS_FAILED(rv)) {
-      return rv;
-    }
+    CreateNextInFlow(aFrame);
   }
 
   if (NS_INLINE_IS_BREAK_AFTER(aStatus)) {
@@ -768,7 +812,7 @@ nsInlineFrame::ReflowInlineFrame(nsPresContext* aPresContext,
         nextInFlow = static_cast<nsInlineFrame*>(nextInFlow->GetNextInFlow());
       }
     }
-    return NS_OK;
+    return;
   }
 
   if (!NS_FRAME_IS_FULLY_COMPLETE(aStatus) && !reflowingFirstLetter) {
@@ -777,7 +821,6 @@ nsInlineFrame::ReflowInlineFrame(nsPresContext* aPresContext,
       PushFrames(aPresContext, nextFrame, aFrame, irs);
     }
   }
-  return NS_OK;
 }
 
 nsIFrame*
@@ -865,17 +908,22 @@ nsInlineFrame::PushFrames(nsPresContext* aPresContext,
 
 //////////////////////////////////////////////////////////////////////
 
-int
+nsIFrame::LogicalSides
 nsInlineFrame::GetLogicalSkipSides(const nsHTMLReflowState* aReflowState) const
 {
-  int skip = 0;
+  if (MOZ_UNLIKELY(StyleBorder()->mBoxDecorationBreak ==
+                     NS_STYLE_BOX_DECORATION_BREAK_CLONE)) {
+    return LogicalSides();
+  }
+
+  LogicalSides skip;
   if (!IsFirst()) {
     nsInlineFrame* prev = (nsInlineFrame*) GetPrevContinuation();
     if ((GetStateBits() & NS_INLINE_FRAME_BIDI_VISUAL_STATE_IS_SET) ||
         (prev && (prev->mRect.height || prev->mRect.width))) {
       // Prev continuation is not empty therefore we don't render our start
       // border edge.
-      skip |= LOGICAL_SIDE_I_START;
+      skip |= eLogicalSideBitsIStart;
     }
     else {
       // If the prev continuation is empty, then go ahead and let our start
@@ -888,7 +936,7 @@ nsInlineFrame::GetLogicalSkipSides(const nsHTMLReflowState* aReflowState) const
         (next && (next->mRect.height || next->mRect.width))) {
       // Next continuation is not empty therefore we don't render our end
       // border edge.
-      skip |= LOGICAL_SIDE_I_END;
+      skip |= eLogicalSideBitsIEnd;
     }
     else {
       // If the next continuation is empty, then go ahead and let our end
@@ -902,15 +950,15 @@ nsInlineFrame::GetLogicalSkipSides(const nsHTMLReflowState* aReflowState) const
     // a split should skip the "start" side.  But figuring out which part of
     // the split we are involves getting our first continuation, which might be
     // expensive.  So don't bother if we already have the relevant bits set.
-    if (skip != LOGICAL_SIDES_I_BOTH) {
+    if (skip != LogicalSides(eLogicalSideBitsIBoth)) {
       // We're missing one of the skip bits, so check whether we need to set it.
       // Only get the first continuation once, as an optimization.
       nsIFrame* firstContinuation = FirstContinuation();
       if (firstContinuation->FrameIsNonLastInIBSplit()) {
-        skip |= LOGICAL_SIDE_I_END;
+        skip |= eLogicalSideBitsIEnd;
       }
       if (firstContinuation->FrameIsNonFirstInIBSplit()) {
-        skip |= LOGICAL_SIDE_I_START;
+        skip |= eLogicalSideBitsIStart;
       }
     }
   }
@@ -919,7 +967,7 @@ nsInlineFrame::GetLogicalSkipSides(const nsHTMLReflowState* aReflowState) const
 }
 
 nscoord
-nsInlineFrame::GetBaseline() const
+nsInlineFrame::GetLogicalBaseline(mozilla::WritingMode aWritingMode) const
 {
   return mBaseline;
 }
@@ -944,7 +992,7 @@ nsInlineFrame::AccessibleType()
 
 // nsLineFrame implementation
 
-nsIFrame*
+nsFirstLineFrame*
 NS_NewFirstLineFrame(nsIPresShell* aPresShell, nsStyleContext* aContext)
 {
   return new (aPresShell) nsFirstLineFrame(aContext);
@@ -953,8 +1001,9 @@ NS_NewFirstLineFrame(nsIPresShell* aPresShell, nsStyleContext* aContext)
 NS_IMPL_FRAMEARENA_HELPERS(nsFirstLineFrame)
 
 void
-nsFirstLineFrame::Init(nsIContent* aContent, nsIFrame* aParent,
-                       nsIFrame* aPrevInFlow)
+nsFirstLineFrame::Init(nsIContent*       aContent,
+                       nsContainerFrame* aParent,
+                       nsIFrame*         aPrevInFlow)
 {
   nsInlineFrame::Init(aContent, aParent, aPrevInFlow);
   if (!aPrevInFlow) {
@@ -1005,18 +1054,19 @@ nsFirstLineFrame::PullOneFrame(nsPresContext* aPresContext, InlineReflowState& i
     // style-context that we just pulled.
     NS_ASSERTION(frame->GetParent() == this, "Incorrect parent?");
     aPresContext->RestyleManager()->ReparentStyleContext(frame);
+    nsLayoutUtils::MarkDescendantsDirty(frame);
   }
   return frame;
 }
 
-nsresult
+void
 nsFirstLineFrame::Reflow(nsPresContext* aPresContext,
                          nsHTMLReflowMetrics& aMetrics,
                          const nsHTMLReflowState& aReflowState,
                          nsReflowStatus& aStatus)
 {
   if (nullptr == aReflowState.mLineLayout) {
-    return NS_ERROR_INVALID_ARG;
+    return;  // XXX does this happen? why?
   }
 
   nsIFrame* lineContainer = aReflowState.mLineLayout->LineContainerFrame();
@@ -1050,7 +1100,6 @@ nsFirstLineFrame::Reflow(nsPresContext* aPresContext,
   irs.mLineLayout = aReflowState.mLineLayout;
   irs.mNextInFlow = (nsInlineFrame*) GetNextInFlow();
 
-  nsresult rv;
   bool wasEmpty = mFrames.IsEmpty();
   if (wasEmpty) {
     // Try to pull over one frame before starting so that we know
@@ -1081,14 +1130,12 @@ nsFirstLineFrame::Reflow(nsPresContext* aPresContext,
   NS_ASSERTION(!aReflowState.mLineLayout->GetInFirstLine(),
                "Nested first-line frames? BOGUS");
   aReflowState.mLineLayout->SetInFirstLine(true);
-  rv = ReflowFrames(aPresContext, aReflowState, irs, aMetrics, aStatus);
+  ReflowFrames(aPresContext, aReflowState, irs, aMetrics, aStatus);
   aReflowState.mLineLayout->SetInFirstLine(false);
 
   ReflowAbsoluteFrames(aPresContext, aMetrics, aReflowState, aStatus);
 
   // Note: the line layout code will properly compute our overflow state for us
-
-  return rv;
 }
 
 /* virtual */ void

@@ -33,10 +33,11 @@ static PRLogModuleInfo *gTestLog = nullptr;
 
 class InputTestConsumer : public nsIStreamListener
 {
+  virtual ~InputTestConsumer();
+
 public:
 
   InputTestConsumer();
-  virtual ~InputTestConsumer();
 
   NS_DECL_ISUPPORTS
   NS_DECL_NSIREQUESTOBSERVER
@@ -51,9 +52,9 @@ InputTestConsumer::~InputTestConsumer()
 {
 }
 
-NS_IMPL_ISUPPORTS2(InputTestConsumer,
-                   nsIStreamListener,
-                   nsIRequestObserver)
+NS_IMPL_ISUPPORTS(InputTestConsumer,
+                  nsIStreamListener,
+                  nsIRequestObserver)
 
 NS_IMETHODIMP
 InputTestConsumer::OnStartRequest(nsIRequest *request, nsISupports* context)

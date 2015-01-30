@@ -8,9 +8,16 @@
 #define mozilla_dom_ContentChild_h
 
 #include "mozilla/Attributes.h"
+#include "mozilla/dom/ContentBridgeParent.h"
+#include "mozilla/dom/nsIContentChild.h"
+#include "mozilla/dom/PBrowserOrId.h"
 #include "mozilla/dom/PContentChild.h"
-#include "mozilla/dom/ipc/Blob.h"
+#include "nsHashKeys.h"
+#include "nsIObserver.h"
+#include "nsTHashtable.h"
+
 #include "nsWeakPtr.h"
+
 
 struct ChromePackage;
 class nsIDOMBlob;
@@ -19,14 +26,16 @@ struct ResourceMapping;
 struct OverrideMapping;
 
 namespace mozilla {
+class RemoteSpellcheckEngineChild;
 
 namespace ipc {
 class OptionalURIParams;
+class PFileDescriptorSetChild;
 class URIParams;
 }// namespace ipc
 
 namespace jsipc {
-class JavaScriptChild;
+class JavaScriptShared;
 }
 
 namespace layers {
@@ -40,19 +49,22 @@ class PrefObserver;
 class ConsoleListener;
 class PStorageChild;
 class ClonedMessageData;
-class PFileDescriptorSetChild;
+class TabChild;
 
 class ContentChild : public PContentChild
+                   , public nsIContentChild
 {
     typedef mozilla::dom::ClonedMessageData ClonedMessageData;
     typedef mozilla::ipc::OptionalURIParams OptionalURIParams;
+    typedef mozilla::ipc::PFileDescriptorSetChild PFileDescriptorSetChild;
     typedef mozilla::ipc::URIParams URIParams;
 
 public:
     ContentChild();
     virtual ~ContentChild();
-    nsrefcnt AddRef() { return 1; }
-    nsrefcnt Release() { return 1; }
+    NS_IMETHOD QueryInterface(REFNSIID aIID, void** aInstancePtr) MOZ_OVERRIDE;
+    NS_IMETHOD_(MozExternalRefCountType) AddRef(void) MOZ_OVERRIDE { return 1; }
+    NS_IMETHOD_(MozExternalRefCountType) Release(void) MOZ_OVERRIDE { return 1; }
 
     struct AppInfo
     {
@@ -60,6 +72,8 @@ public:
         nsCString buildID;
         nsCString name;
         nsCString UAName;
+        nsCString ID;
+        nsCString vendor;
     };
 
     bool Init(MessageLoop* aIOLoop,
@@ -75,18 +89,51 @@ public:
     const AppInfo& GetAppInfo() {
         return mAppInfo;
     }
-
     void SetProcessName(const nsAString& aName, bool aDontOverride = false);
     void GetProcessName(nsAString& aName);
     void GetProcessName(nsACString& aName);
+    bool IsAlive();
     static void AppendProcessId(nsACString& aName);
+
+    ContentBridgeParent* GetLastBridge() {
+        MOZ_ASSERT(mLastBridge);
+        ContentBridgeParent* parent = mLastBridge;
+        mLastBridge = nullptr;
+        return parent;
+    }
+    nsRefPtr<ContentBridgeParent> mLastBridge;
+
+    PPluginModuleParent *
+    AllocPPluginModuleParent(mozilla::ipc::Transport* transport,
+                             base::ProcessId otherProcess) MOZ_OVERRIDE;
+
+    PContentBridgeParent*
+    AllocPContentBridgeParent(mozilla::ipc::Transport* transport,
+                              base::ProcessId otherProcess) MOZ_OVERRIDE;
+    PContentBridgeChild*
+    AllocPContentBridgeChild(mozilla::ipc::Transport* transport,
+                             base::ProcessId otherProcess) MOZ_OVERRIDE;
 
     PCompositorChild*
     AllocPCompositorChild(mozilla::ipc::Transport* aTransport,
                           base::ProcessId aOtherProcess) MOZ_OVERRIDE;
+
+    PSharedBufferManagerChild*
+    AllocPSharedBufferManagerChild(mozilla::ipc::Transport* aTransport,
+                                    base::ProcessId aOtherProcess) MOZ_OVERRIDE;
+
     PImageBridgeChild*
     AllocPImageBridgeChild(mozilla::ipc::Transport* aTransport,
                            base::ProcessId aOtherProcess) MOZ_OVERRIDE;
+
+    PProcessHangMonitorChild*
+    AllocPProcessHangMonitorChild(Transport* aTransport,
+                                  ProcessId aOtherProcess) MOZ_OVERRIDE;
+
+#if defined(XP_WIN) && defined(MOZ_CONTENT_SANDBOX)
+    // Cleans up any resources used by the process when sandboxed.
+    void CleanUpSandboxEnvironment();
+#endif
 
     virtual bool RecvSetProcessSandbox() MOZ_OVERRIDE;
 
@@ -94,18 +141,27 @@ public:
     AllocPBackgroundChild(Transport* aTransport, ProcessId aOtherProcess)
                           MOZ_OVERRIDE;
 
-    virtual PBrowserChild* AllocPBrowserChild(const IPCTabContext &aContext,
-                                              const uint32_t &chromeFlags);
-    virtual bool DeallocPBrowserChild(PBrowserChild*);
+    virtual PBrowserChild* AllocPBrowserChild(const TabId& aTabId,
+                                              const IPCTabContext& aContext,
+                                              const uint32_t& aChromeFlags,
+                                              const ContentParentId& aCpID,
+                                              const bool& aIsForApp,
+                                              const bool& aIsForBrowser)
+                                              MOZ_OVERRIDE;
+    virtual bool DeallocPBrowserChild(PBrowserChild*) MOZ_OVERRIDE;
 
-    virtual PDeviceStorageRequestChild* AllocPDeviceStorageRequestChild(const DeviceStorageParams&);
-    virtual bool DeallocPDeviceStorageRequestChild(PDeviceStorageRequestChild*);
+    virtual PDeviceStorageRequestChild* AllocPDeviceStorageRequestChild(const DeviceStorageParams&)
+                                                                        MOZ_OVERRIDE;
+    virtual bool DeallocPDeviceStorageRequestChild(PDeviceStorageRequestChild*)
+                                                   MOZ_OVERRIDE;
 
-    virtual PFileSystemRequestChild* AllocPFileSystemRequestChild(const FileSystemParams&);
-    virtual bool DeallocPFileSystemRequestChild(PFileSystemRequestChild*);
+    virtual PFileSystemRequestChild* AllocPFileSystemRequestChild(const FileSystemParams&)
+                                                                  MOZ_OVERRIDE;
+    virtual bool DeallocPFileSystemRequestChild(PFileSystemRequestChild*) MOZ_OVERRIDE;
 
-    virtual PBlobChild* AllocPBlobChild(const BlobConstructorParams& aParams);
-    virtual bool DeallocPBlobChild(PBlobChild*);
+    virtual PBlobChild* AllocPBlobChild(const BlobConstructorParams& aParams)
+                                        MOZ_OVERRIDE;
+    virtual bool DeallocPBlobChild(PBlobChild* aActor) MOZ_OVERRIDE;
 
     virtual PCrashReporterChild*
     AllocPCrashReporterChild(const mozilla::dom::NativeThreadId& id,
@@ -116,37 +172,64 @@ public:
     virtual PHalChild* AllocPHalChild() MOZ_OVERRIDE;
     virtual bool DeallocPHalChild(PHalChild*) MOZ_OVERRIDE;
 
-    virtual PIndexedDBChild* AllocPIndexedDBChild() MOZ_OVERRIDE;
-    virtual bool DeallocPIndexedDBChild(PIndexedDBChild* aActor) MOZ_OVERRIDE;
-
     virtual PMemoryReportRequestChild*
-    AllocPMemoryReportRequestChild(const uint32_t& generation,
-                                   const bool &minimizeMemoryUsage,
-                                   const nsString &aDMDDumpIdent) MOZ_OVERRIDE;
+    AllocPMemoryReportRequestChild(const uint32_t& aGeneration,
+                                   const bool& aAnonymize,
+                                   const bool& aMinimizeMemoryUsage,
+                                   const MaybeFileDesc& aDMDFile) MOZ_OVERRIDE;
     virtual bool
     DeallocPMemoryReportRequestChild(PMemoryReportRequestChild* actor) MOZ_OVERRIDE;
 
     virtual bool
-    RecvPMemoryReportRequestConstructor(PMemoryReportRequestChild* child,
-                                        const uint32_t& generation,
-                                        const bool &minimizeMemoryUsage,
-                                        const nsString &aDMDDumpIdent) MOZ_OVERRIDE;
+    RecvPMemoryReportRequestConstructor(PMemoryReportRequestChild* aChild,
+                                        const uint32_t& aGeneration,
+                                        const bool& aAnonymize,
+                                        const bool &aMinimizeMemoryUsage,
+                                        const MaybeFileDesc &aDMDFile) MOZ_OVERRIDE;
+
+    virtual PCycleCollectWithLogsChild*
+    AllocPCycleCollectWithLogsChild(const bool& aDumpAllTraces,
+                                    const FileDescriptor& aGCLog,
+                                    const FileDescriptor& aCCLog) MOZ_OVERRIDE;
+    virtual bool
+    DeallocPCycleCollectWithLogsChild(PCycleCollectWithLogsChild* aActor) MOZ_OVERRIDE;
+    virtual bool
+    RecvPCycleCollectWithLogsConstructor(PCycleCollectWithLogsChild* aChild,
+                                         const bool& aDumpAllTraces,
+                                         const FileDescriptor& aGCLog,
+                                         const FileDescriptor& aCCLog) MOZ_OVERRIDE;
 
     virtual bool
     RecvAudioChannelNotify() MOZ_OVERRIDE;
 
     virtual bool
-    RecvDumpGCAndCCLogsToFile(const nsString& aIdentifier,
-                              const bool& aDumpAllTraces,
-                              const bool& aDumpChildProcesses) MOZ_OVERRIDE;
+    RecvDataStoreNotify(const uint32_t& aAppId, const nsString& aName,
+                        const nsString& aManifestURL) MOZ_OVERRIDE;
 
     virtual PTestShellChild* AllocPTestShellChild() MOZ_OVERRIDE;
     virtual bool DeallocPTestShellChild(PTestShellChild*) MOZ_OVERRIDE;
     virtual bool RecvPTestShellConstructor(PTestShellChild*) MOZ_OVERRIDE;
-    jsipc::JavaScriptChild *GetCPOWManager();
+    jsipc::CPOWManager* GetCPOWManager() MOZ_OVERRIDE;
+
+    PMobileConnectionChild*
+    SendPMobileConnectionConstructor(PMobileConnectionChild* aActor,
+                                     const uint32_t& aClientId);
+    virtual PMobileConnectionChild*
+    AllocPMobileConnectionChild(const uint32_t& aClientId) MOZ_OVERRIDE;
+    virtual bool
+    DeallocPMobileConnectionChild(PMobileConnectionChild* aActor) MOZ_OVERRIDE;
 
     virtual PNeckoChild* AllocPNeckoChild() MOZ_OVERRIDE;
     virtual bool DeallocPNeckoChild(PNeckoChild*) MOZ_OVERRIDE;
+
+    virtual PPrintingChild* AllocPPrintingChild() MOZ_OVERRIDE;
+    virtual bool DeallocPPrintingChild(PPrintingChild*) MOZ_OVERRIDE;
+
+    virtual PScreenManagerChild*
+    AllocPScreenManagerChild(uint32_t* aNumberOfScreens,
+                             float* aSystemDefaultScale,
+                             bool* aSuccess) MOZ_OVERRIDE;
+    virtual bool DeallocPScreenManagerChild(PScreenManagerChild*) MOZ_OVERRIDE;
 
     virtual PExternalHelperAppChild *AllocPExternalHelperAppChild(
             const OptionalURIParams& uri,
@@ -160,11 +243,19 @@ public:
             PBrowserChild* aBrowser) MOZ_OVERRIDE;
     virtual bool DeallocPExternalHelperAppChild(PExternalHelperAppChild *aService) MOZ_OVERRIDE;
 
+    virtual PCellBroadcastChild* AllocPCellBroadcastChild() MOZ_OVERRIDE;
+    PCellBroadcastChild* SendPCellBroadcastConstructor(PCellBroadcastChild* aActor);
+    virtual bool DeallocPCellBroadcastChild(PCellBroadcastChild* aActor) MOZ_OVERRIDE;
+
     virtual PSmsChild* AllocPSmsChild() MOZ_OVERRIDE;
     virtual bool DeallocPSmsChild(PSmsChild*) MOZ_OVERRIDE;
 
     virtual PTelephonyChild* AllocPTelephonyChild() MOZ_OVERRIDE;
     virtual bool DeallocPTelephonyChild(PTelephonyChild*) MOZ_OVERRIDE;
+
+    virtual PVoicemailChild* AllocPVoicemailChild() MOZ_OVERRIDE;
+    PVoicemailChild* SendPVoicemailConstructor(PVoicemailChild* aActor);
+    virtual bool DeallocPVoicemailChild(PVoicemailChild*) MOZ_OVERRIDE;
 
     virtual PStorageChild* AllocPStorageChild() MOZ_OVERRIDE;
     virtual bool DeallocPStorageChild(PStorageChild* aActor) MOZ_OVERRIDE;
@@ -185,13 +276,17 @@ public:
     virtual PSpeechSynthesisChild* AllocPSpeechSynthesisChild() MOZ_OVERRIDE;
     virtual bool DeallocPSpeechSynthesisChild(PSpeechSynthesisChild* aActor) MOZ_OVERRIDE;
 
-    virtual bool RecvRegisterChrome(const InfallibleTArray<ChromePackage>& packages,
-                                    const InfallibleTArray<ResourceMapping>& resources,
-                                    const InfallibleTArray<OverrideMapping>& overrides,
-                                    const nsCString& locale) MOZ_OVERRIDE;
+    virtual bool RecvRegisterChrome(InfallibleTArray<ChromePackage>&& packages,
+                                    InfallibleTArray<ResourceMapping>&& resources,
+                                    InfallibleTArray<OverrideMapping>&& overrides,
+                                    const nsCString& locale,
+                                    const bool& reset) MOZ_OVERRIDE;
+    virtual bool RecvRegisterChromeItem(const ChromeRegistryItem& item) MOZ_OVERRIDE;
 
     virtual mozilla::jsipc::PJavaScriptChild* AllocPJavaScriptChild() MOZ_OVERRIDE;
     virtual bool DeallocPJavaScriptChild(mozilla::jsipc::PJavaScriptChild*) MOZ_OVERRIDE;
+    virtual PRemoteSpellcheckEngineChild* AllocPRemoteSpellcheckEngineChild() MOZ_OVERRIDE;
+    virtual bool DeallocPRemoteSpellcheckEngineChild(PRemoteSpellcheckEngineChild*) MOZ_OVERRIDE;
 
     virtual bool RecvSetOffline(const bool& offline) MOZ_OVERRIDE;
 
@@ -201,6 +296,9 @@ public:
     // auto remove when alertfinished is received.
     nsresult AddRemoteAlertObserver(const nsString& aData, nsIObserver* aObserver);
 
+    virtual bool RecvSystemMemoryAvailable(const uint64_t& aGetterId,
+                                           const uint32_t& aMemoryAvailable) MOZ_OVERRIDE;
+
     virtual bool RecvPreferenceUpdate(const PrefSetting& aPref) MOZ_OVERRIDE;
 
     virtual bool RecvNotifyAlertsObserver(const nsCString& aType,
@@ -208,10 +306,14 @@ public:
 
     virtual bool RecvAsyncMessage(const nsString& aMsg,
                                   const ClonedMessageData& aData,
-                                  const InfallibleTArray<CpowEntry>& aCpows,
+                                  InfallibleTArray<CpowEntry>&& aCpows,
                                   const IPC::Principal& aPrincipal) MOZ_OVERRIDE;
 
     virtual bool RecvGeolocationUpdate(const GeoPosition& somewhere) MOZ_OVERRIDE;
+
+    virtual bool RecvGeolocationError(const uint16_t& errorCode) MOZ_OVERRIDE;
+
+    virtual bool RecvUpdateDictionaryList(InfallibleTArray<nsString>&& aDictionaries) MOZ_OVERRIDE;
 
     virtual bool RecvAddPermission(const IPC::Permission& permission) MOZ_OVERRIDE;
 
@@ -225,7 +327,8 @@ public:
     virtual bool RecvCycleCollect() MOZ_OVERRIDE;
 
     virtual bool RecvAppInfo(const nsCString& version, const nsCString& buildID,
-                             const nsCString& name, const nsCString& UAName) MOZ_OVERRIDE;
+                             const nsCString& name, const nsCString& UAName,
+                             const nsCString& ID, const nsCString& vendor) MOZ_OVERRIDE;
 
     virtual bool RecvLastPrivateDocShellDestroyed() MOZ_OVERRIDE;
 
@@ -239,7 +342,11 @@ public:
                                       const int32_t& aMountGeneration,
                                       const bool& aIsMediaPresent,
                                       const bool& aIsSharing,
-                                      const bool& aIsFormatting) MOZ_OVERRIDE;
+                                      const bool& aIsFormatting,
+                                      const bool& aIsFake,
+                                      const bool& aIsUnmounting,
+                                      const bool& aIsRemovable,
+                                      const bool& aIsHotSwappable) MOZ_OVERRIDE;
 
     virtual bool RecvNuwaFork() MOZ_OVERRIDE;
 
@@ -253,11 +360,29 @@ public:
 
     virtual bool RecvNotifyPhoneStateChange(const nsString& state) MOZ_OVERRIDE;
 
+    virtual bool RecvNuwaFreeze() MOZ_OVERRIDE;
+
     void AddIdleObserver(nsIObserver* aObserver, uint32_t aIdleTimeInS);
     void RemoveIdleObserver(nsIObserver* aObserver, uint32_t aIdleTimeInS);
     virtual bool RecvNotifyIdleObserver(const uint64_t& aObserver,
                                         const nsCString& aTopic,
                                         const nsString& aData) MOZ_OVERRIDE;
+
+    virtual bool RecvOnAppThemeChanged() MOZ_OVERRIDE;
+
+    virtual bool RecvAssociatePluginId(const uint32_t& aPluginId,
+                                       const base::ProcessId& aProcessId) MOZ_OVERRIDE;
+    virtual bool RecvLoadPluginResult(const uint32_t& aPluginId,
+                                      const bool& aResult) MOZ_OVERRIDE;
+
+    virtual bool RecvStartProfiler(const uint32_t& aEntries,
+                                   const double& aInterval,
+                                   nsTArray<nsCString>&& aFeatures,
+                                   nsTArray<nsCString>&& aThreadNameFilters) MOZ_OVERRIDE;
+    virtual bool RecvStopProfiler() MOZ_OVERRIDE;
+    virtual bool RecvGetProfile(nsCString* aProfile) MOZ_OVERRIDE;
+    virtual bool RecvShutdown() MOZ_OVERRIDE;
+
 #ifdef ANDROID
     gfxIntSize GetScreenSize() { return mScreenSize; }
 #endif
@@ -266,12 +391,14 @@ public:
     // cache the value
     nsString &GetIndexedDBPath();
 
-    uint64_t GetID() { return mID; }
+    ContentParentId GetID() { return mID; }
 
     bool IsForApp() { return mIsForApp; }
     bool IsForBrowser() { return mIsForBrowser; }
 
-    BlobChild* GetOrCreateActorForBlob(nsIDOMBlob* aBlob);
+    virtual PBlobChild*
+    SendPBlobConstructor(PBlobChild* actor,
+                         const BlobConstructorParams& params) MOZ_OVERRIDE;
 
     virtual PFileDescriptorSetChild*
     AllocPFileDescriptorSetChild(const FileDescriptor&) MOZ_OVERRIDE;
@@ -279,10 +406,36 @@ public:
     virtual bool
     DeallocPFileDescriptorSetChild(PFileDescriptorSetChild*) MOZ_OVERRIDE;
 
-protected:
-    virtual bool RecvPBrowserConstructor(PBrowserChild* actor,
+    virtual bool SendPBrowserConstructor(PBrowserChild* actor,
+                                         const TabId& aTabId,
                                          const IPCTabContext& context,
-                                         const uint32_t& chromeFlags) MOZ_OVERRIDE;
+                                         const uint32_t& chromeFlags,
+                                         const ContentParentId& aCpID,
+                                         const bool& aIsForApp,
+                                         const bool& aIsForBrowser) MOZ_OVERRIDE;
+
+    virtual bool RecvPBrowserConstructor(PBrowserChild* aCctor,
+                                         const TabId& aTabId,
+                                         const IPCTabContext& aContext,
+                                         const uint32_t& aChromeFlags,
+                                         const ContentParentId& aCpID,
+                                         const bool& aIsForApp,
+                                         const bool& aIsForBrowser) MOZ_OVERRIDE;
+    virtual PDocAccessibleChild* AllocPDocAccessibleChild(PDocAccessibleChild*, const uint64_t&) MOZ_OVERRIDE;
+    virtual bool DeallocPDocAccessibleChild(PDocAccessibleChild*) MOZ_OVERRIDE;
+
+    void GetAvailableDictionaries(InfallibleTArray<nsString>& aDictionaries);
+
+    PBrowserOrId
+    GetBrowserOrId(TabChild* aTabChild);
+
+    virtual POfflineCacheUpdateChild* AllocPOfflineCacheUpdateChild(
+            const URIParams& manifestURI,
+            const URIParams& documentURI,
+            const bool& stickDocument,
+            const TabId& aTabId) MOZ_OVERRIDE;
+    virtual bool
+    DeallocPOfflineCacheUpdateChild(POfflineCacheUpdateChild* offlineCacheUpdate) MOZ_OVERRIDE;
 
 private:
     virtual void ActorDestroy(ActorDestroyReason why) MOZ_OVERRIDE;
@@ -298,6 +451,10 @@ private:
     InfallibleTArray<nsAutoPtr<AlertObserver> > mAlertObservers;
     nsRefPtr<ConsoleListener> mConsoleListener;
 
+    nsTHashtable<nsPtrHashKey<nsIObserver>> mIdleObservers;
+
+    InfallibleTArray<nsString> mAvailableDictionaries;
+
     /**
      * An ID unique to the process containing our corresponding
      * content parent.
@@ -305,7 +462,7 @@ private:
      * We expect our content parent to set this ID immediately after opening a
      * channel to us.
      */
-    uint64_t mID;
+    ContentParentId mID;
 
     AppInfo mAppInfo;
 
@@ -316,6 +473,7 @@ private:
     bool mIsForApp;
     bool mIsForBrowser;
     bool mCanOverrideProcessName;
+    bool mIsAlive;
     nsString mProcessName;
 
     static ContentChild* sSingleton;

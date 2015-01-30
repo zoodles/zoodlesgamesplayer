@@ -21,17 +21,22 @@ class AudioChannelServiceChild : public AudioChannelService
 public:
 
   /**
-   * Returns the AudioChannelServce singleton. Only to be called from main
-   * thread.
-   *
-   * @return NS_OK on proper assignment, NS_ERROR_FAILURE otherwise.
+   * Returns the AudioChannelServce singleton or null if the process havn't create it before.
+   * Only to be called from main thread.
    */
   static AudioChannelService* GetAudioChannelService();
+
+  /**
+   * Returns the AudioChannelServce singleton.
+   * If AudioChannelServce is not exist, create and return new one.
+   * Only to be called from main thread.
+   */
+  static AudioChannelService* GetOrCreateAudioChannelService();
 
   static void Shutdown();
 
   virtual void RegisterAudioChannelAgent(AudioChannelAgent* aAgent,
-                                         AudioChannelType aType,
+                                         AudioChannel aChannel,
                                          bool aWithVideo);
   virtual void UnregisterAudioChannelAgent(AudioChannelAgent* aAgent);
 
@@ -42,7 +47,8 @@ public:
   virtual AudioChannelState GetState(AudioChannelAgent* aAgent,
                                      bool aElementHidden);
 
-  virtual void SetDefaultVolumeControlChannel(AudioChannelType aType, bool aHidden);
+  virtual void SetDefaultVolumeControlChannel(int32_t aChannel,
+                                              bool aHidden);
 
 protected:
   AudioChannelServiceChild();

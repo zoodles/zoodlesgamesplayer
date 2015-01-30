@@ -35,7 +35,6 @@
 #include "nsCRT.h"
 #include "nsDirectoryServiceDefs.h"
 #include "nsUnicharUtils.h"
-#include "gfxASurface.h"
 #include "gfxContext.h"
 #include "nsRect.h"
 #include "nsMathUtils.h"
@@ -215,6 +214,8 @@ nsDragService::InvokeDragSession(nsIDOMNode *aDOMNode,
       anArrayTransferables->GetElementAt(i, getter_AddRefs(supports));
       nsCOMPtr<nsITransferable> trans(do_QueryInterface(supports));
       if (trans) {
+        // set the requestingNode on the transferable
+        trans->SetRequestingNode(aDOMNode);
         nsRefPtr<IDataObject> dataObj;
         rv = nsClipboard::CreateNativeDataObject(trans,
                                                  getter_AddRefs(dataObj), uri);
@@ -232,6 +233,8 @@ nsDragService::InvokeDragSession(nsIDOMNode *aDOMNode,
     anArrayTransferables->GetElementAt(0, getter_AddRefs(supports));
     nsCOMPtr<nsITransferable> trans(do_QueryInterface(supports));
     if (trans) {
+      // set the requestingNode on the transferable
+      trans->SetRequestingNode(aDOMNode);
       rv = nsClipboard::CreateNativeDataObject(trans,
                                                getter_AddRefs(itemToDrag),
                                                uri);
@@ -425,7 +428,7 @@ nsDragService::GetData(nsITransferable * aTransferable, uint32_t anItem)
     // multiple items, use |anItem| as an index into our collection
     nsDataObjCollection * dataObjCol = GetDataObjCollection(mDataObject);
     uint32_t cnt = dataObjCol->GetNumDataObjects();
-    if (anItem >= 0 && anItem < cnt) {
+    if (anItem < cnt) {
       IDataObject * dataObj = dataObjCol->GetDataObjectAt(anItem);
       dataFound = nsClipboard::GetDataFromDataObject(dataObj, 0, nullptr,
                                                      aTransferable);
@@ -592,6 +595,13 @@ nsDragService::IsCollectionObject(IDataObject* inDataObj)
 NS_IMETHODIMP
 nsDragService::EndDragSession(bool aDoneDrag)
 {
+  // Bug 100180: If we've got mouse events captured, make sure we release it -
+  // that way, if we happen to call EndDragSession before diving into a nested
+  // event loop, we can still respond to mouse events.
+  if (::GetCapture()) {
+    ::ReleaseCapture();
+  }
+
   nsBaseDragService::EndDragSession(aDoneDrag);
   NS_IF_RELEASE(mDataObject);
 

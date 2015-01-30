@@ -10,11 +10,9 @@
 #include "gfxPlatform.h"
 #include "gfxUtils.h"
 #include "nsISVGChildFrame.h"
-#include "nsRenderingContext.h"
 #include "mozilla/dom/SVGFilterElement.h"
 #include "nsReferencedElement.h"
 #include "nsSVGFilterFrame.h"
-#include "nsSVGFilterPaintCallback.h"
 #include "nsSVGUtils.h"
 #include "SVGContentUtils.h"
 #include "FilterSupport.h"
@@ -25,11 +23,18 @@ using namespace mozilla::dom;
 using namespace mozilla::gfx;
 
 nsSVGFilterInstance::nsSVGFilterInstance(const nsStyleFilter& aFilter,
-                                         nsIFrame *aTargetFrame,
-                                         const gfxRect& aTargetBBox) :
+                                         nsIContent* aTargetContent,
+                                         const UserSpaceMetrics& aMetrics,
+                                         const gfxRect& aTargetBBox,
+                                         const gfxSize& aUserSpaceToFilterSpaceScale,
+                                         const gfxSize& aFilterSpaceToUserSpaceScale) :
   mFilter(aFilter),
-  mTargetFrame(aTargetFrame),
+  mTargetContent(aTargetContent),
+  mMetrics(aMetrics),
   mTargetBBox(aTargetBBox),
+  mUserSpaceToFilterSpaceScale(aUserSpaceToFilterSpaceScale),
+  mFilterSpaceToUserSpaceScale(aFilterSpaceToUserSpaceScale),
+  mSourceAlphaAvailable(false),
   mInitialized(false) {
 
   // Get the filter frame.
@@ -48,32 +53,12 @@ nsSVGFilterInstance::nsSVGFilterInstance(const nsStyleFilter& aFilter,
   mPrimitiveUnits =
     mFilterFrame->GetEnumValue(SVGFilterElement::PRIMITIVEUNITS);
 
-  nsresult rv = ComputeUserSpaceToIntermediateSpaceScale();
-  if (NS_FAILED(rv)) {
-    return;
-  }
-
-  rv = ComputeBounds();
+  nsresult rv = ComputeBounds();
   if (NS_FAILED(rv)) {
     return;
   }
 
   mInitialized = true;
-}
-
-nsresult
-nsSVGFilterInstance::ComputeUserSpaceToIntermediateSpaceScale()
-{
-  gfxMatrix canvasTransform =
-    nsSVGUtils::GetCanvasTM(mTargetFrame, nsISVGChildFrame::FOR_OUTERSVG_TM);
-  if (canvasTransform.IsSingular()) {
-    // Nothing should be rendered.
-    return NS_ERROR_FAILURE;
-  }
-  mUserSpaceToIntermediateSpaceScale = canvasTransform.ScaleFactors(true);
-  mIntermediateSpaceToUserSpaceScale = gfxSize(1.0 / mUserSpaceToIntermediateSpaceScale.width,
-                                               1.0 / mUserSpaceToIntermediateSpaceScale.height);
-  return NS_OK;
 }
 
 nsresult
@@ -88,12 +73,12 @@ nsSVGFilterInstance::ComputeBounds()
   // deprecate that, since it's too confusing for a bare number to be sometimes
   // interpreted as a fraction of the bounding box and sometimes as user-space
   // units). So really only percentage values should be used in this case.
-  
+
   // Set the user space bounds (i.e. the filter region in user space).
   nsSVGLength2 XYWH[4];
   NS_ABORT_IF_FALSE(sizeof(mFilterElement->mLengthAttributes) == sizeof(XYWH),
                     "XYWH size incorrect");
-  memcpy(XYWH, mFilterElement->mLengthAttributes, 
+  memcpy(XYWH, mFilterElement->mLengthAttributes,
     sizeof(mFilterElement->mLengthAttributes));
   XYWH[0] = *mFilterFrame->GetLengthValue(SVGFilterElement::ATTR_X);
   XYWH[1] = *mFilterFrame->GetLengthValue(SVGFilterElement::ATTR_Y);
@@ -101,32 +86,27 @@ nsSVGFilterInstance::ComputeBounds()
   XYWH[3] = *mFilterFrame->GetLengthValue(SVGFilterElement::ATTR_HEIGHT);
   uint16_t filterUnits =
     mFilterFrame->GetEnumValue(SVGFilterElement::FILTERUNITS);
-  mUserSpaceBounds = nsSVGUtils::GetRelativeRect(filterUnits,
-    XYWH, mTargetBBox, mTargetFrame);
+  gfxRect userSpaceBounds = nsSVGUtils::GetRelativeRect(filterUnits,
+    XYWH, mTargetBBox, mMetrics);
 
-  // Temporarily transform the user space bounds to intermediate space, so we
+  // Transform the user space bounds to filter space, so we
   // can align them with the pixel boundries of the offscreen surface.
-  // The offscreen surface has the same scale as intermediate space.
-  mUserSpaceBounds = UserSpaceToIntermediateSpace(mUserSpaceBounds);
-  mUserSpaceBounds.RoundOut();
-  if (mUserSpaceBounds.Width() <= 0 || mUserSpaceBounds.Height() <= 0) {
+  // The offscreen surface has the same scale as filter space.
+  gfxRect filterSpaceBounds = UserSpaceToFilterSpace(userSpaceBounds);
+  filterSpaceBounds.RoundOut();
+  if (filterSpaceBounds.width <= 0 || filterSpaceBounds.height <= 0) {
     // 0 disables rendering, < 0 is error. dispatch error console warning
     // or error as appropriate.
     return NS_ERROR_FAILURE;
   }
 
-  // Set the intermediate space bounds.
-  if (!gfxUtils::GfxRectToIntRect(mUserSpaceBounds, &mIntermediateSpaceBounds)) {
+  // Set the filter space bounds.
+  if (!gfxUtils::GfxRectToIntRect(filterSpaceBounds, &mFilterSpaceBounds)) {
     // The filter region is way too big if there is float -> int overflow.
     return NS_ERROR_FAILURE;
   }
 
-  // Set the filter space bounds.
-  mFilterSpaceBounds = mIntermediateSpaceBounds;
-  mFilterSpaceBounds.MoveTo(0, 0);
-
-  // Undo the temporary transformation of the user space bounds.
-  mUserSpaceBounds = IntermediateSpaceToUserSpace(mUserSpaceBounds);
+  mUserSpaceBounds = FilterSpaceToUserSpace(filterSpaceBounds);
 
   return NS_OK;
 }
@@ -147,16 +127,14 @@ nsSVGFilterInstance::GetFilterFrame()
 
   // Get the target element to use as a point of reference for looking up the
   // filter element.
-  nsIContent* targetElement = mTargetFrame->GetContent();
-  if (!targetElement) {
-    // There is no element associated with the target frame.
+  if (!mTargetContent) {
     return nullptr;
   }
 
   // Look up the filter element by URL.
   nsReferencedElement filterElement;
   bool watch = false;
-  filterElement.Reset(targetElement, url, watch);
+  filterElement.Reset(mTargetContent, url, watch);
   Element* element = filterElement.get();
   if (!element) {
     // The URL points to no element.
@@ -165,8 +143,9 @@ nsSVGFilterInstance::GetFilterFrame()
 
   // Get the frame of the filter element.
   nsIFrame* frame = element->GetPrimaryFrame();
-  if (frame->GetType() != nsGkAtoms::svgFilterFrame) {
-    // The URL points to an element that's not an SVG filter element.
+  if (!frame || frame->GetType() != nsGkAtoms::svgFilterFrame) {
+    // The URL points to an element that's not an SVG filter element, or to an
+    // element that hasn't had its frame constructed yet.
     return nullptr;
   }
 
@@ -184,19 +163,19 @@ nsSVGFilterInstance::GetPrimitiveNumber(uint8_t aCtxType, float aValue) const
   if (mPrimitiveUnits == SVG_UNIT_TYPE_OBJECTBOUNDINGBOX) {
     value = nsSVGUtils::ObjectSpace(mTargetBBox, &val);
   } else {
-    value = nsSVGUtils::UserSpace(mTargetFrame, &val);
+    value = nsSVGUtils::UserSpace(mMetrics, &val);
   }
 
   switch (aCtxType) {
   case SVGContentUtils::X:
-    return value * mUserSpaceToIntermediateSpaceScale.width;
+    return value * mUserSpaceToFilterSpaceScale.width;
   case SVGContentUtils::Y:
-    return value * mUserSpaceToIntermediateSpaceScale.height;
+    return value * mUserSpaceToFilterSpaceScale.height;
   case SVGContentUtils::XY:
   default:
     return value * SVGContentUtils::ComputeNormalizedHypotenuse(
-                     mUserSpaceToIntermediateSpaceScale.width,
-                     mUserSpaceToIntermediateSpaceScale.height);
+                     mUserSpaceToFilterSpaceScale.width,
+                     mUserSpaceToFilterSpaceScale.height);
   }
 }
 
@@ -215,7 +194,7 @@ nsSVGFilterInstance::ConvertLocation(const Point3D& aPoint) const
               nsIDOMSVGLength::SVG_LENGTHTYPE_NUMBER);
 
   gfxRect feArea = nsSVGUtils::GetRelativeRect(mPrimitiveUnits,
-    val, mTargetBBox, mTargetFrame);
+    val, mTargetBBox, mMetrics);
   gfxRect r = UserSpaceToFilterSpace(feArea);
   return Point3D(r.x, r.y, GetPrimitiveNumber(SVGContentUtils::XY, aPoint.z));
 }
@@ -223,24 +202,18 @@ nsSVGFilterInstance::ConvertLocation(const Point3D& aPoint) const
 gfxRect
 nsSVGFilterInstance::UserSpaceToFilterSpace(const gfxRect& aUserSpaceRect) const
 {
-  return UserSpaceToIntermediateSpace(aUserSpaceRect - mUserSpaceBounds.TopLeft());
+  gfxRect filterSpaceRect = aUserSpaceRect;
+  filterSpaceRect.Scale(mUserSpaceToFilterSpaceScale.width,
+                        mUserSpaceToFilterSpaceScale.height);
+  return filterSpaceRect;
 }
 
 gfxRect
-nsSVGFilterInstance::UserSpaceToIntermediateSpace(const gfxRect& aUserSpaceRect) const
+nsSVGFilterInstance::FilterSpaceToUserSpace(const gfxRect& aFilterSpaceRect) const
 {
-  gfxRect intermediateSpaceRect = aUserSpaceRect;
-  intermediateSpaceRect.Scale(mUserSpaceToIntermediateSpaceScale.width,
-                              mUserSpaceToIntermediateSpaceScale.height);
-  return intermediateSpaceRect;
-}
-
-gfxRect
-nsSVGFilterInstance::IntermediateSpaceToUserSpace(const gfxRect& aIntermediateSpaceRect) const
-{
-  gfxRect userSpaceRect = aIntermediateSpaceRect;
-  userSpaceRect.Scale(mIntermediateSpaceToUserSpaceScale.width,
-                      mIntermediateSpaceToUserSpaceScale.height);
+  gfxRect userSpaceRect = aFilterSpaceRect;
+  userSpaceRect.Scale(mFilterSpaceToUserSpaceScale.width,
+                      mFilterSpaceToUserSpaceScale.height);
   return userSpaceRect;
 }
 
@@ -255,9 +228,10 @@ nsSVGFilterInstance::ComputeFilterPrimitiveSubregion(nsSVGFE* aFilterElement,
   if (fE->SubregionIsUnionOfRegions()) {
     for (uint32_t i = 0; i < aInputIndices.Length(); ++i) {
       int32_t inputIndex = aInputIndices[i];
-      IntRect inputSubregion = inputIndex >= 0 ?
-        aPrimitiveDescrs[inputIndex].PrimitiveSubregion() :
-        ToIntRect(mFilterSpaceBounds);
+      bool isStandardInput = inputIndex < 0 || inputIndex == mSourceGraphicIndex;
+      IntRect inputSubregion = isStandardInput ?
+        ToIntRect(mFilterSpaceBounds) :
+        aPrimitiveDescrs[inputIndex].PrimitiveSubregion();
 
       defaultFilterSubregion = defaultFilterSubregion.Union(inputSubregion);
     }
@@ -266,7 +240,7 @@ nsSVGFilterInstance::ComputeFilterPrimitiveSubregion(nsSVGFE* aFilterElement,
   }
 
   gfxRect feArea = nsSVGUtils::GetRelativeRect(mPrimitiveUnits,
-    &fE->mLengthAttributes[nsSVGFE::ATTR_X], mTargetBBox, mTargetFrame);
+    &fE->mLengthAttributes[nsSVGFE::ATTR_X], mTargetBBox, mMetrics);
   Rect region = ToRect(UserSpaceToFilterSpace(feArea));
 
   if (!fE->mLengthAttributes[nsSVGFE::ATTR_X].IsExplicitlySet())
@@ -282,7 +256,6 @@ nsSVGFilterInstance::ComputeFilterPrimitiveSubregion(nsSVGFE* aFilterElement,
   // Following the spec, any pixel partially in the region is included
   // in the region.
   region.RoundOut();
-
   return RoundedToInt(region);
 }
 
@@ -311,9 +284,46 @@ GetLastResultIndex(const nsTArray<FilterPrimitiveDescription>& aPrimitiveDescrs)
     numPrimitiveDescrs - 1;
 }
 
+int32_t
+nsSVGFilterInstance::GetOrCreateSourceAlphaIndex(nsTArray<FilterPrimitiveDescription>& aPrimitiveDescrs)
+{
+  // If the SourceAlpha index has already been determined or created for this
+  // SVG filter, just return it.
+  if (mSourceAlphaAvailable)
+    return mSourceAlphaIndex;
+
+  // If this is the first filter in the chain, we can just use the
+  // kPrimitiveIndexSourceAlpha keyword to refer to the SourceAlpha of the
+  // original image.
+  if (mSourceGraphicIndex < 0) {
+    mSourceAlphaIndex = FilterPrimitiveDescription::kPrimitiveIndexSourceAlpha;
+    mSourceAlphaAvailable = true;
+    return mSourceAlphaIndex;
+  }
+
+  // Otherwise, create a primitive description to turn the previous filter's
+  // output into a SourceAlpha input.
+  FilterPrimitiveDescription descr(PrimitiveType::ToAlpha);
+  descr.SetInputPrimitive(0, mSourceGraphicIndex);
+
+  const FilterPrimitiveDescription& sourcePrimitiveDescr =
+    aPrimitiveDescrs[mSourceGraphicIndex];
+  descr.SetPrimitiveSubregion(sourcePrimitiveDescr.PrimitiveSubregion());
+  descr.SetIsTainted(sourcePrimitiveDescr.IsTainted());
+
+  ColorSpace colorSpace = sourcePrimitiveDescr.OutputColorSpace();
+  descr.SetInputColorSpace(0, colorSpace);
+  descr.SetOutputColorSpace(colorSpace);
+
+  aPrimitiveDescrs.AppendElement(descr);
+  mSourceAlphaIndex = aPrimitiveDescrs.Length() - 1;
+  mSourceAlphaAvailable = true;
+  return mSourceAlphaIndex;
+}
+
 nsresult
 nsSVGFilterInstance::GetSourceIndices(nsSVGFE* aPrimitiveElement,
-                                      const nsTArray<FilterPrimitiveDescription>& aPrimitiveDescrs,
+                                      nsTArray<FilterPrimitiveDescription>& aPrimitiveDescrs,
                                       const nsDataHashtable<nsStringHashKey, int32_t>& aImageTable,
                                       nsTArray<int32_t>& aSourceIndices)
 {
@@ -328,7 +338,7 @@ nsSVGFilterInstance::GetSourceIndices(nsSVGFE* aPrimitiveElement,
     if (str.EqualsLiteral("SourceGraphic")) {
       sourceIndex = mSourceGraphicIndex;
     } else if (str.EqualsLiteral("SourceAlpha")) {
-      sourceIndex = FilterPrimitiveDescription::kPrimitiveIndexSourceAlpha;
+      sourceIndex = GetOrCreateSourceAlphaIndex(aPrimitiveDescrs);
     } else if (str.EqualsLiteral("FillPaint")) {
       sourceIndex = FilterPrimitiveDescription::kPrimitiveIndexFillPaint;
     } else if (str.EqualsLiteral("StrokePaint")) {
@@ -355,6 +365,12 @@ nsSVGFilterInstance::BuildPrimitives(nsTArray<FilterPrimitiveDescription>& aPrim
 {
   mSourceGraphicIndex = GetLastResultIndex(aPrimitiveDescrs);
 
+  // Clip previous filter's output to this filter's filter region.
+  if (mSourceGraphicIndex >= 0) {
+    FilterPrimitiveDescription& sourceDescr = aPrimitiveDescrs[mSourceGraphicIndex];
+    sourceDescr.SetPrimitiveSubregion(sourceDescr.PrimitiveSubregion().Intersect(ToIntRect(mFilterSpaceBounds)));
+  }
+
   // Get the filter primitive elements.
   nsTArray<nsRefPtr<nsSVGFE> > primitives;
   for (nsIContent* child = mFilterElement->nsINode::GetFirstChild();
@@ -368,10 +384,10 @@ nsSVGFilterInstance::BuildPrimitives(nsTArray<FilterPrimitiveDescription>& aPrim
   }
 
   // Maps source image name to source index.
-  nsDataHashtable<nsStringHashKey, int32_t> imageTable(10);
+  nsDataHashtable<nsStringHashKey, int32_t> imageTable(8);
 
   // The principal that we check principals of any loaded images against.
-  nsCOMPtr<nsIPrincipal> principal = mTargetFrame->GetContent()->NodePrincipal();
+  nsCOMPtr<nsIPrincipal> principal = mTargetContent->NodePrincipal();
 
   for (uint32_t primitiveElementIndex = 0;
        primitiveElementIndex < primitives.Length();
@@ -394,7 +410,8 @@ nsSVGFilterInstance::BuildPrimitives(nsTArray<FilterPrimitiveDescription>& aPrim
       filter->GetPrimitiveDescription(this, primitiveSubregion, sourcesAreTainted, aInputImages);
 
     descr.SetIsTainted(filter->OutputIsTainted(sourcesAreTainted, principal));
-    descr.SetPrimitiveSubregion(primitiveSubregion);
+    descr.SetFilterSpaceBounds(ToIntRect(mFilterSpaceBounds));
+    descr.SetPrimitiveSubregion(primitiveSubregion.Intersect(descr.FilterSpaceBounds()));
 
     for (uint32_t i = 0; i < sourceIndices.Length(); i++) {
       int32_t inputIndex = sourceIndices[i];

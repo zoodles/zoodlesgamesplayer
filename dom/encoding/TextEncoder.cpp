@@ -1,3 +1,4 @@
+/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -34,11 +35,11 @@ TextEncoder::Init(const nsAString& aEncoding, ErrorResult& aRv)
   mEncoder = EncodingUtils::EncoderForEncoding(mEncoding);
 }
 
-JSObject*
+void
 TextEncoder::Encode(JSContext* aCx,
                     JS::Handle<JSObject*> aObj,
                     const nsAString& aString,
-                    const bool aStream,
+                    JS::MutableHandle<JSObject*> aRetval,
                     ErrorResult& aRv)
 {
   // Run the steps of the encoding algorithm.
@@ -48,7 +49,7 @@ TextEncoder::Encode(JSContext* aCx,
   nsresult rv = mEncoder->GetMaxLength(data, srcLen, &maxLen);
   if (NS_FAILED(rv)) {
     aRv.Throw(rv);
-    return nullptr;
+    return;
   }
   // Need a fallible allocator because the caller may be a content
   // and the content can specify the length of the string.
@@ -56,37 +57,35 @@ TextEncoder::Encode(JSContext* aCx,
   nsAutoArrayPtr<char> buf(new (fallible) char[maxLen + 1]);
   if (!buf) {
     aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
-    return nullptr;
+    return;
   }
 
   int32_t dstLen = maxLen;
   rv = mEncoder->Convert(data, &srcLen, buf, &dstLen);
 
-  // If the internal streaming flag is not set, then reset
-  // the encoding algorithm state to the default values for encoding.
-  if (!aStream) {
-    int32_t finishLen = maxLen - dstLen;
-    rv = mEncoder->Finish(buf + dstLen, &finishLen);
-    if (NS_SUCCEEDED(rv)) {
-      dstLen += finishLen;
-    }
+  // Now reset the encoding algorithm state to the default values for encoding.
+  int32_t finishLen = maxLen - dstLen;
+  rv = mEncoder->Finish(buf + dstLen, &finishLen);
+  if (NS_SUCCEEDED(rv)) {
+    dstLen += finishLen;
   }
 
   JSObject* outView = nullptr;
   if (NS_SUCCEEDED(rv)) {
     buf[dstLen] = '\0';
-    outView = Uint8Array::Create(aCx, aObj, dstLen,
+    JSAutoCompartment ac(aCx, aObj);
+    outView = Uint8Array::Create(aCx, dstLen,
                                  reinterpret_cast<uint8_t*>(buf.get()));
     if (!outView) {
       aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
-      return nullptr;
+      return;
     }
   }
 
   if (NS_FAILED(rv)) {
     aRv.Throw(rv);
   }
-  return outView;
+  aRetval.set(outView);
 }
 
 void

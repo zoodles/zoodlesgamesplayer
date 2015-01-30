@@ -94,28 +94,24 @@ StorageSQLiteDistinguishedAmount()
 nsresult
 ReportConn(nsIHandleReportCallback *aHandleReport,
            nsISupports *aData,
-           sqlite3 *aConn,
+           Connection *aConn,
            const nsACString &aPathHead,
            const nsACString &aKind,
            const nsACString &aDesc,
-           int aOption,
+           int32_t aOption,
            size_t *aTotal)
 {
   nsCString path(aPathHead);
   path.Append(aKind);
   path.AppendLiteral("-used");
 
-  int curr = 0, max = 0;
-  int rc = ::sqlite3_db_status(aConn, aOption, &curr, &max, 0);
-  nsresult rv = convertResultCode(rc);
+  int32_t val = aConn->getSqliteRuntimeStatus(aOption);
+  nsresult rv = aHandleReport->Callback(EmptyCString(), path,
+                                        nsIMemoryReporter::KIND_HEAP,
+                                        nsIMemoryReporter::UNITS_BYTES,
+                                        int64_t(val), aDesc, aData);
   NS_ENSURE_SUCCESS(rv, rv);
-
-  rv = aHandleReport->Callback(EmptyCString(), path,
-                               nsIMemoryReporter::KIND_HEAP,
-                               nsIMemoryReporter::UNITS_BYTES, int64_t(curr),
-                               aDesc, aData);
-  NS_ENSURE_SUCCESS(rv, rv);
-  *aTotal += curr;
+  *aTotal += val;
 
   return NS_OK;
 }
@@ -128,7 +124,7 @@ ReportConn(nsIHandleReportCallback *aHandleReport,
 // any delays in that case aren't so bad.
 NS_IMETHODIMP
 Service::CollectReports(nsIHandleReportCallback *aHandleReport,
-                        nsISupports *aData)
+                        nsISupports *aData, bool aAnonymize)
 {
   nsresult rv;
   size_t totalConnSize = 0;
@@ -147,15 +143,16 @@ Service::CollectReports(nsIHandleReportCallback *aHandleReport,
       }
 
       nsCString pathHead("explicit/storage/sqlite/");
+      // This filename isn't privacy-sensitive, and so is never anonymized.
       pathHead.Append(conn->getFilename());
-      pathHead.AppendLiteral("/");
+      pathHead.Append('/');
 
       SQLiteMutexAutoLock lockedScope(conn->sharedDBMutex);
 
       NS_NAMED_LITERAL_CSTRING(stmtDesc,
         "Memory (approximate) used by all prepared statements used by "
         "connections to this database.");
-      rv = ReportConn(aHandleReport, aData, *conn.get(), pathHead,
+      rv = ReportConn(aHandleReport, aData, conn, pathHead,
                       NS_LITERAL_CSTRING("stmt"), stmtDesc,
                       SQLITE_DBSTATUS_STMT_USED, &totalConnSize);
       NS_ENSURE_SUCCESS(rv, rv);
@@ -163,7 +160,7 @@ Service::CollectReports(nsIHandleReportCallback *aHandleReport,
       NS_NAMED_LITERAL_CSTRING(cacheDesc,
         "Memory (approximate) used by all pager caches used by connections "
         "to this database.");
-      rv = ReportConn(aHandleReport, aData, *conn.get(), pathHead,
+      rv = ReportConn(aHandleReport, aData, conn, pathHead,
                       NS_LITERAL_CSTRING("cache"), cacheDesc,
                       SQLITE_DBSTATUS_CACHE_USED, &totalConnSize);
       NS_ENSURE_SUCCESS(rv, rv);
@@ -171,7 +168,7 @@ Service::CollectReports(nsIHandleReportCallback *aHandleReport,
       NS_NAMED_LITERAL_CSTRING(schemaDesc,
         "Memory (approximate) used to store the schema for all databases "
         "associated with connections to this database.");
-      rv = ReportConn(aHandleReport, aData, *conn.get(), pathHead,
+      rv = ReportConn(aHandleReport, aData, conn, pathHead,
                       NS_LITERAL_CSTRING("schema"), schemaDesc,
                       SQLITE_DBSTATUS_SCHEMA_USED, &totalConnSize);
       NS_ENSURE_SUCCESS(rv, rv);
@@ -201,7 +198,7 @@ Service::CollectReports(nsIHandleReportCallback *aHandleReport,
 ////////////////////////////////////////////////////////////////////////////////
 //// Service
 
-NS_IMPL_ISUPPORTS3(
+NS_IMPL_ISUPPORTS(
   Service,
   mozIStorageService,
   nsIObserver,
@@ -350,22 +347,32 @@ Service::minimizeMemory()
 
   for (uint32_t i = 0; i < connections.Length(); i++) {
     nsRefPtr<Connection> conn = connections[i];
-    if (conn->ConnectionReady()) {
-      NS_NAMED_LITERAL_CSTRING(shrinkPragma, "PRAGMA shrink_memory");
-      nsCOMPtr<mozIStorageConnection> syncConn = do_QueryInterface(
-        NS_ISUPPORTS_CAST(mozIStorageAsyncConnection*, conn));
-      DebugOnly<nsresult> rv;
+    if (!conn->connectionReady())
+      continue;
 
-      if (!syncConn) {
-        nsCOMPtr<mozIStoragePendingStatement> ps;
-        rv = connections[i]->ExecuteSimpleSQLAsync(shrinkPragma, nullptr,
-          getter_AddRefs(ps));
-      } else {
-        rv = connections[i]->ExecuteSimpleSQL(shrinkPragma);
-      }
+    NS_NAMED_LITERAL_CSTRING(shrinkPragma, "PRAGMA shrink_memory");
+    nsCOMPtr<mozIStorageConnection> syncConn = do_QueryInterface(
+      NS_ISUPPORTS_CAST(mozIStorageAsyncConnection*, conn));
+    bool onOpenedThread = false;
 
-      MOZ_ASSERT(NS_SUCCEEDED(rv),
-        "Should have been able to purge sqlite caches");
+    if (!syncConn) {
+      // This is a mozIStorageAsyncConnection, it can only be used on the main
+      // thread, so we can do a straight API call.
+      nsCOMPtr<mozIStoragePendingStatement> ps;
+      DebugOnly<nsresult> rv =
+        conn->ExecuteSimpleSQLAsync(shrinkPragma, nullptr, getter_AddRefs(ps));
+      MOZ_ASSERT(NS_SUCCEEDED(rv), "Should have purged sqlite caches");
+    } else if (NS_SUCCEEDED(conn->threadOpenedOn->IsOnCurrentThread(&onOpenedThread)) &&
+               onOpenedThread) {
+      // We are on the opener thread, so we can just proceed.
+      conn->ExecuteSimpleSQL(shrinkPragma);
+    } else {
+      // We are on the wrong thread, the query should be executed on the
+      // opener thread, so we must dispatch to it.
+      nsCOMPtr<nsIRunnable> event =
+        NS_NewRunnableMethodWithArg<const nsCString>(
+          conn, &Connection::ExecuteSimpleSQL, shrinkPragma);
+      conn->threadOpenedOn->Dispatch(event, NS_DISPATCH_NORMAL);
     }
   }
 }
@@ -918,9 +925,6 @@ Service::Observe(nsISupports *, const char *aTopic, const char16_t *)
       anyOpen = false;
       for (uint32_t i = 0; i < connections.Length(); i++) {
         nsRefPtr<Connection> &conn = connections[i];
-
-        // While it would be nice to close all connections, we only
-        // check async ones for now.
         if (conn->isClosing()) {
           anyOpen = true;
           break;
@@ -936,7 +940,7 @@ Service::Observe(nsISupports *, const char *aTopic, const char16_t *)
       nsTArray<nsRefPtr<Connection> > connections;
       getConnections(connections);
       for (uint32_t i = 0, n = connections.Length(); i < n; i++) {
-        if (connections[i]->ConnectionReady()) {
+        if (!connections[i]->isClosed()) {
           MOZ_CRASH();
         }
       }

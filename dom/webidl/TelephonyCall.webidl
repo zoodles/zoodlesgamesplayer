@@ -9,11 +9,11 @@ interface TelephonyCall : EventTarget {
   // Indicate which service the call comes from.
   readonly attribute unsigned long serviceId;
 
-  readonly attribute DOMString number;
+  readonly attribute TelephonyCallId id;
 
   // In CDMA networks, the 2nd waiting call shares the connection with the 1st
-  // call. We need an additional attribute for the 2nd number.
-  readonly attribute DOMString? secondNumber;
+  // call. We need an additional attribute for the CDMA waiting call.
+  readonly attribute TelephonyCallId? secondId;
 
   readonly attribute DOMString state;
 
@@ -33,14 +33,14 @@ interface TelephonyCall : EventTarget {
 
   readonly attribute TelephonyCallGroup? group;
 
-  [Throws]
-  void answer();
-  [Throws]
-  void hangUp();
-  [Throws]
-  void hold();
-  [Throws]
-  void resume();
+  [NewObject]
+  Promise<void> answer();
+  [NewObject]
+  Promise<void> hangUp();
+  [NewObject]
+  Promise<void> hold();
+  [NewObject]
+  Promise<void> resume();
 
   attribute EventHandler onstatechange;
   attribute EventHandler ondialing;

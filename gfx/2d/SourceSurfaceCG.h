@@ -3,7 +3,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#pragma once
+#ifndef _MOZILLA_GFX_SOURCESURFACECG_H
+#define _MOZILLA_GFX_SOURCESURFACECG_H
 
 #include <ApplicationServices/ApplicationServices.h>
 
@@ -13,6 +14,14 @@ class MacIOSurface;
 
 namespace mozilla {
 namespace gfx {
+
+CGImageRef
+CreateCGImage(CGDataProviderReleaseDataCallback aCallback,
+              void *aInfo,
+              const void *aData,
+              const IntSize &aSize,
+              int32_t aStride,
+              SurfaceFormat aFormat);
 
 CGImageRef
 CreateCGImage(void *aInfo,
@@ -28,7 +37,7 @@ class SourceSurfaceCG : public SourceSurface
 public:
   MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(SourceSurfaceCG)
   SourceSurfaceCG() {}
-  SourceSurfaceCG(CGImageRef aImage) : mImage(aImage) {}
+  explicit SourceSurfaceCG(CGImageRef aImage) : mImage(aImage) {}
   ~SourceSurfaceCG();
 
   virtual SurfaceType GetType() const { return SurfaceType::COREGRAPHICS_IMAGE; }
@@ -57,7 +66,7 @@ class DataSourceSurfaceCG : public DataSourceSurface
 public:
   MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(DataSourceSurfaceCG)
   DataSourceSurfaceCG() {}
-  DataSourceSurfaceCG(CGImageRef aImage);
+  explicit DataSourceSurfaceCG(CGImageRef aImage);
   ~DataSourceSurfaceCG();
 
   virtual SurfaceType GetType() const { return SurfaceType::DATA; }
@@ -92,6 +101,7 @@ class SourceSurfaceCGContext : public DataSourceSurface
 public:
   MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(DataSourceSurfaceCGContext)
   virtual void DrawTargetWillChange() = 0;
+  virtual void DrawTargetWillGoAway() = 0;
   virtual CGImageRef GetImage() = 0;
 };
 
@@ -99,7 +109,7 @@ class SourceSurfaceCGBitmapContext : public SourceSurfaceCGContext
 {
 public:
   MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(DataSourceSurfaceCGBitmapContext)
-  SourceSurfaceCGBitmapContext(DrawTargetCG *);
+  explicit SourceSurfaceCGBitmapContext(DrawTargetCG *);
   ~SourceSurfaceCGBitmapContext();
 
   virtual SurfaceType GetType() const { return SurfaceType::COREGRAPHICS_CGCONTEXT; }
@@ -130,6 +140,7 @@ private:
   //XXX: do the other backends friend their DrawTarget?
   friend class DrawTargetCG;
   virtual void DrawTargetWillChange();
+  virtual void DrawTargetWillGoAway();
   void EnsureImage() const;
 
   // We hold a weak reference to these two objects.
@@ -155,7 +166,7 @@ class SourceSurfaceCGIOSurfaceContext : public SourceSurfaceCGContext
 {
 public:
   MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(DataSourceSurfaceCGIOSurfaceContext)
-  SourceSurfaceCGIOSurfaceContext(DrawTargetCG *);
+  explicit SourceSurfaceCGIOSurfaceContext(DrawTargetCG *);
   ~SourceSurfaceCGIOSurfaceContext();
 
   virtual SurfaceType GetType() const { return SurfaceType::COREGRAPHICS_CGCONTEXT; }
@@ -172,6 +183,7 @@ private:
   //XXX: do the other backends friend their DrawTarget?
   friend class DrawTargetCG;
   virtual void DrawTargetWillChange();
+  virtual void DrawTargetWillGoAway() { DrawTargetWillChange(); }
   void EnsureImage() const;
 
   SurfaceFormat mFormat;
@@ -187,3 +199,5 @@ private:
 
 }
 }
+
+#endif // _MOZILLA_GFX_SOURCESURFACECG_H

@@ -33,7 +33,7 @@ public:
     // for use with data fonts
     MacOSFontEntry(const nsAString& aPostscriptName, CGFontRef aFontRef,
                    uint16_t aWeight, uint16_t aStretch, uint32_t aItalicStyle,
-                   bool aIsUserFont, bool aIsLocal);
+                   bool aIsDataUserFont, bool aIsLocal);
 
     virtual ~MacOSFontEntry() {
         ::CGFontRelease(mFontRef);
@@ -46,18 +46,18 @@ public:
     virtual hb_blob_t *GetFontTable(uint32_t aTag) MOZ_OVERRIDE;
 
     virtual void AddSizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf,
-                                        FontListSizes* aSizes) const;
+                                        FontListSizes* aSizes) const MOZ_OVERRIDE;
 
-    nsresult ReadCMAP(FontInfoData *aFontInfoData = nullptr);
+    nsresult ReadCMAP(FontInfoData *aFontInfoData = nullptr) MOZ_OVERRIDE;
 
     bool RequiresAATLayout() const { return mRequiresAAT; }
 
     bool IsCFF();
 
 protected:
-    virtual gfxFont* CreateFontInstance(const gfxFontStyle *aFontStyle, bool aNeedsBold);
+    virtual gfxFont* CreateFontInstance(const gfxFontStyle *aFontStyle, bool aNeedsBold) MOZ_OVERRIDE;
 
-    virtual bool HasFontTable(uint32_t aTableTag);
+    virtual bool HasFontTable(uint32_t aTableTag) MOZ_OVERRIDE;
 
     static void DestroyBlobFunc(void* aUserData);
 
@@ -81,13 +81,17 @@ public:
 
     virtual bool GetStandardFamilyName(const nsAString& aFontName, nsAString& aFamilyName);
 
-    virtual gfxFontEntry* LookupLocalFont(const gfxProxyFontEntry *aProxyEntry,
-                                          const nsAString& aFontName);
+    virtual gfxFontEntry* LookupLocalFont(const nsAString& aFontName,
+                                          uint16_t aWeight,
+                                          int16_t aStretch,
+                                          bool aItalic);
     
-    virtual gfxFontEntry* MakePlatformFont(const gfxProxyFontEntry *aProxyEntry,
-                                           const uint8_t *aFontData, uint32_t aLength);
-
-    void ClearPrefFonts() { mPrefFonts.Clear(); }
+    virtual gfxFontEntry* MakePlatformFont(const nsAString& aFontName,
+                                           uint16_t aWeight,
+                                           int16_t aStretch,
+                                           bool aItalic,
+                                           const uint8_t* aFontData,
+                                           uint32_t aLength);
 
 private:
     friend class gfxPlatformMac;
@@ -117,6 +121,10 @@ private:
     virtual bool UsesSystemFallback() { return true; }
 
     virtual already_AddRefed<FontInfoData> CreateFontInfoData();
+
+#ifdef MOZ_BUNDLED_FONTS
+    void ActivateBundledFonts();
+#endif
 
     enum {
         kATSGenerationInitial = -1

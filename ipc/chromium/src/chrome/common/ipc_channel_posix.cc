@@ -22,15 +22,18 @@
 #include "base/lock.h"
 #include "base/logging.h"
 #include "base/process_util.h"
-#include "base/scoped_ptr.h"
 #include "base/string_util.h"
 #include "base/singleton.h"
-#include "base/stats_counters.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/file_descriptor_set_posix.h"
-#include "chrome/common/ipc_logging.h"
 #include "chrome/common/ipc_message_utils.h"
 #include "mozilla/ipc/ProtocolUtils.h"
+#include "mozilla/UniquePtr.h"
+
+#ifdef MOZ_TASK_TRACER
+#include "GeckoTaskTracerImpl.h"
+using namespace mozilla::tasktracer;
+#endif
 
 namespace IPC {
 
@@ -278,6 +281,8 @@ Channel::ChannelImpl::ChannelImpl(int fd, Mode mode, Listener* listener)
 }
 
 void Channel::ChannelImpl::Init(Mode mode, Listener* listener) {
+  DCHECK(kControlBufferSlopBytes >= CMSG_SPACE(0));
+
   mode_ = mode;
   is_blocked_on_write_ = false;
   message_send_bytes_written_ = 0;
@@ -365,9 +370,9 @@ void Channel::ChannelImpl::ResetFileDescriptor(int fd) {
 }
 
 bool Channel::ChannelImpl::EnqueueHelloMessage() {
-  scoped_ptr<Message> msg(new Message(MSG_ROUTING_NONE,
-                                      HELLO_MESSAGE_TYPE,
-                                      IPC::Message::PRIORITY_NORMAL));
+  mozilla::UniquePtr<Message> msg(new Message(MSG_ROUTING_NONE,
+                                              HELLO_MESSAGE_TYPE,
+                                              IPC::Message::PRIORITY_NORMAL));
   if (!msg->WriteInt(base::GetCurrentProcId())) {
     Close();
     return false;
@@ -377,14 +382,20 @@ bool Channel::ChannelImpl::EnqueueHelloMessage() {
   return true;
 }
 
-static void
-ClearAndShrink(std::string& s, size_t capacity)
+void Channel::ChannelImpl::ClearAndShrinkInputOverflowBuf()
 {
-  // This swap trick is the closest thing C++ has to a guaranteed way to
-  // shrink the capacity of a string.
-  std::string tmp;
-  tmp.reserve(capacity);
-  s.swap(tmp);
+  // If input_overflow_buf_ has grown, shrink it back to its normal size.
+  static size_t previousCapacityAfterClearing = 0;
+  if (input_overflow_buf_.capacity() > previousCapacityAfterClearing) {
+    // This swap trick is the closest thing C++ has to a guaranteed way
+    // to shrink the capacity of a string.
+    std::string tmp;
+    tmp.reserve(Channel::kReadBufferSize);
+    input_overflow_buf_.swap(tmp);
+    previousCapacityAfterClearing = input_overflow_buf_.capacity();
+  } else {
+    input_overflow_buf_.clear();
+  }
 }
 
 bool Channel::ChannelImpl::Connect() {
@@ -513,7 +524,7 @@ bool Channel::ChannelImpl::ProcessIncomingMessages() {
     } else {
       if (input_overflow_buf_.size() >
          static_cast<size_t>(kMaximumMessageSize - bytes_read)) {
-        ClearAndShrink(input_overflow_buf_, Channel::kReadBufferSize);
+        ClearAndShrinkInputOverflowBuf();
         CHROMIUM_LOG(ERROR) << "IPC message is too big";
         return false;
       }
@@ -594,6 +605,14 @@ bool Channel::ChannelImpl::ProcessIncomingMessages() {
         DLOG(INFO) << "received message on channel @" << this <<
                       " with type " << m.type();
 #endif
+
+#ifdef MOZ_TASK_TRACER
+        AutoSaveCurTraceInfo saveCurTraceInfo;
+        SetCurTraceInfo(m.header()->source_event_id,
+                        m.header()->parent_task_id,
+                        m.header()->source_event_type);
+#endif
+
         if (m.routing_id() == MSG_ROUTING_NONE &&
             m.type() == HELLO_MESSAGE_TYPE) {
           // The Hello message contains only the process id.
@@ -614,7 +633,7 @@ bool Channel::ChannelImpl::ProcessIncomingMessages() {
       }
     }
     if (end == p) {
-      ClearAndShrink(input_overflow_buf_, Channel::kReadBufferSize);
+      ClearAndShrinkInputOverflowBuf();
     } else if (!overflowp) {
       // p is from input_buf_
       input_overflow_buf_.assign(p, end - p);
@@ -753,9 +772,6 @@ bool Channel::ChannelImpl::Send(Message* message) {
              << " (" << output_queue_.size() << " in queue)";
 #endif
 
-#ifdef IPC_MESSAGE_LOG_ENABLED
-  Logging::current()->OnSendMessage(message, L"");
-#endif
 
   // If the channel has been closed, ProcessOutgoingMessages() is never going
   // to pop anything off output_queue; output_queue will only get emptied when
@@ -861,6 +877,12 @@ void Channel::ChannelImpl::CloseDescriptors(uint32_t pending_fd_id)
 
 void Channel::ChannelImpl::OutputQueuePush(Message* msg)
 {
+#ifdef MOZ_TASK_TRACER
+  // Save the current TaskTracer info into the message header.
+  GetCurTraceInfo(&msg->header()->source_event_id,
+                  &msg->header()->parent_task_id,
+                  &msg->header()->source_event_type);
+#endif
   output_queue_.push(msg);
   output_queue_length_++;
 }

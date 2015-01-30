@@ -162,9 +162,9 @@ protected:
     nsresult                       mInputCondition;
 };
 
-NS_IMPL_ISUPPORTS2(MyCopier,
-                   nsIInputStreamCallback,
-                   nsIOutputStreamCallback)
+NS_IMPL_ISUPPORTS(MyCopier,
+                  nsIInputStreamCallback,
+                  nsIOutputStreamCallback)
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -297,7 +297,7 @@ main(int argc, char* argv[])
         if (NS_FAILED(rv)) return rv;
 
         nsAutoCString newName(leafName);
-        newName.Append(NS_LITERAL_CSTRING(".1"));
+        newName.AppendLiteral(".1");
         rv = destFile->SetNativeLeafName(newName);
         if (NS_FAILED(rv)) return rv;
 
@@ -305,7 +305,7 @@ main(int argc, char* argv[])
         NS_ASSERTION(NS_SUCCEEDED(rv), "RunTest failed");
 
         newName = leafName;
-        newName.Append(NS_LITERAL_CSTRING(".2"));
+        newName.AppendLiteral(".2");
         rv = destFile->SetNativeLeafName(newName);
         if (NS_FAILED(rv)) return rv;
 

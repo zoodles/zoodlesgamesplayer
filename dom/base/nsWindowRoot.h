@@ -10,6 +10,7 @@
 class nsPIDOMWindow;
 class nsIDOMEventListener;
 class nsIDOMEvent;
+class nsIGlobalObject;
 
 namespace mozilla {
 class EventChainPostVisitor;
@@ -22,12 +23,13 @@ class EventChainPreVisitor;
 #include "nsPIWindowRoot.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsAutoPtr.h"
+#include "nsTHashtable.h"
+#include "nsHashKeys.h"
 
 class nsWindowRoot : public nsPIWindowRoot
 {
 public:
-  nsWindowRoot(nsPIDOMWindow* aWindow);
-  virtual ~nsWindowRoot();
+  explicit nsWindowRoot(nsPIDOMWindow* aWindow);
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_NSIDOMEVENTTARGET
@@ -52,6 +54,9 @@ public:
   virtual nsresult GetControllerForCommand(const char * aCommand,
                                            nsIController** _retval) MOZ_OVERRIDE;
 
+  virtual void GetEnabledDisabledCommands(nsTArray<nsCString>& aEnabledCommands,
+                                          nsTArray<nsCString>& aDisabledCommands) MOZ_OVERRIDE;
+
   virtual nsIDOMNode* GetPopupNode() MOZ_OVERRIDE;
   virtual void SetPopupNode(nsIDOMNode* aNode) MOZ_OVERRIDE;
 
@@ -62,10 +67,21 @@ public:
   virtual mozilla::dom::EventTarget* GetParentTarget() MOZ_OVERRIDE { return mParent; }
   virtual nsIDOMWindow* GetOwnerGlobal() MOZ_OVERRIDE;
 
+  nsIGlobalObject* GetParentObject();
+
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
+
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_AMBIGUOUS(nsWindowRoot,
                                                          nsIDOMEventTarget)
 
 protected:
+  virtual ~nsWindowRoot();
+
+  void GetEnabledDisabledCommandsForControllers(nsIControllers* aControllers,
+                                                nsTHashtable<nsCharPtrHashKey>& aCommandsHandled,
+                                                nsTArray<nsCString>& aEnabledCommands,
+                                                nsTArray<nsCString>& aDisabledCommands);
+
   // Members
   nsCOMPtr<nsPIDOMWindow> mWindow;
   // We own the manager, which owns event listeners attached to us.

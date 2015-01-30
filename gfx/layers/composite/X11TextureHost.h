@@ -8,14 +8,14 @@
 
 #include "mozilla/layers/TextureHost.h"
 #include "mozilla/layers/LayersSurfaces.h"
-#include "mozilla/gfx/2D.h"
+#include "mozilla/gfx/Types.h"
 
-class gfxXlibSurface;
+#include "gfxXlibSurface.h"
 
 namespace mozilla {
 namespace layers {
 
-// TextureSource for Xlib-backed TextureSources.
+// TextureHost for Xlib-backed TextureSources.
 class X11TextureHost : public TextureHost
 {
 public:
@@ -23,11 +23,14 @@ public:
                  const SurfaceDescriptorX11& aDescriptor);
 
   virtual void SetCompositor(Compositor* aCompositor) MOZ_OVERRIDE;
+
   virtual bool Lock() MOZ_OVERRIDE;
+
   virtual gfx::SurfaceFormat GetFormat() const MOZ_OVERRIDE;
+
   virtual gfx::IntSize GetSize() const MOZ_OVERRIDE;
 
-  virtual NewTextureSource* GetTextureSources() MOZ_OVERRIDE
+  virtual TextureSource* GetTextureSources() MOZ_OVERRIDE
   {
     return mTextureSource;
   }
@@ -38,12 +41,12 @@ public:
   }
 
 #ifdef MOZ_LAYERS_HAVE_LOG
-  virtual const char* Name() { return "X11TextureHost"; }
+  virtual const char* Name() MOZ_OVERRIDE { return "X11TextureHost"; }
 #endif
 
 protected:
-  Compositor* mCompositor;
-  RefPtr<NewTextureSource> mTextureSource;
+  RefPtr<Compositor> mCompositor;
+  RefPtr<TextureSource> mTextureSource;
   RefPtr<gfxXlibSurface> mSurface;
 };
 

@@ -20,7 +20,7 @@ class nsSliderFrame;
 
 nsIFrame* NS_NewSliderFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
 
-class nsSliderMediator : public nsIDOMEventListener
+class nsSliderMediator MOZ_FINAL : public nsIDOMEventListener
 {
 public:
 
@@ -28,22 +28,26 @@ public:
 
   nsSliderFrame* mSlider;
 
-  nsSliderMediator(nsSliderFrame* aSlider) {  mSlider = aSlider; }
-  virtual ~nsSliderMediator() {}
+  explicit nsSliderMediator(nsSliderFrame* aSlider) {  mSlider = aSlider; }
 
   virtual void SetSlider(nsSliderFrame* aSlider) { mSlider = aSlider; }
 
   NS_IMETHOD HandleEvent(nsIDOMEvent* aEvent) MOZ_OVERRIDE;
+
+protected:
+  virtual ~nsSliderMediator() {}
 };
 
 class nsSliderFrame : public nsBoxFrame
 {
 public:
   NS_DECL_FRAMEARENA_HELPERS
+  NS_DECL_QUERYFRAME_TARGET(nsSliderFrame)
+  NS_DECL_QUERYFRAME
 
   friend class nsSliderMediator;
 
-  nsSliderFrame(nsIPresShell* aShell, nsStyleContext* aContext);
+  explicit nsSliderFrame(nsStyleContext* aContext);
   virtual ~nsSliderFrame();
 
 #ifdef DEBUG_FRAME_DUMP
@@ -58,16 +62,6 @@ public:
   NS_IMETHOD DoLayout(nsBoxLayoutState& aBoxLayoutState) MOZ_OVERRIDE;
 
   // nsIFrame overrides
-  virtual nsresult  AppendFrames(ChildListID     aListID,
-                                 nsFrameList&    aFrameList) MOZ_OVERRIDE;
-
-  virtual nsresult  InsertFrames(ChildListID     aListID,
-                                 nsIFrame*       aPrevFrame,
-                                 nsFrameList&    aFrameList) MOZ_OVERRIDE;
-
-  virtual nsresult  RemoveFrame(ChildListID     aListID,
-                                nsIFrame*       aOldFrame) MOZ_OVERRIDE;
-
   virtual void DestroyFrom(nsIFrame* aDestructRoot) MOZ_OVERRIDE;
 
   virtual void BuildDisplayListForChildren(nsDisplayListBuilder*   aBuilder,
@@ -82,21 +76,30 @@ public:
                                     nsIAtom* aAttribute,
                                     int32_t aModType) MOZ_OVERRIDE;
 
-  virtual void Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        asPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         asPrevInFlow) MOZ_OVERRIDE;
 
 
   virtual nsresult HandleEvent(nsPresContext* aPresContext,
                                mozilla::WidgetGUIEvent* aEvent,
                                nsEventStatus* aEventStatus) MOZ_OVERRIDE;
 
-  virtual nsresult SetInitialChildList(ChildListID     aListID,
-                                       nsFrameList&    aChildList) MOZ_OVERRIDE;
-
   virtual nsIAtom* GetType() const MOZ_OVERRIDE;
 
+  // nsContainerFrame overrides
+  virtual void SetInitialChildList(ChildListID     aListID,
+                                   nsFrameList&    aChildList) MOZ_OVERRIDE;
+  virtual void AppendFrames(ChildListID     aListID,
+                            nsFrameList&    aFrameList) MOZ_OVERRIDE;
+  virtual void InsertFrames(ChildListID     aListID,
+                            nsIFrame*       aPrevFrame,
+                            nsFrameList&    aFrameList) MOZ_OVERRIDE;
+  virtual void RemoveFrame(ChildListID     aListID,
+                           nsIFrame*       aOldFrame) MOZ_OVERRIDE;
+
   nsresult StartDrag(nsIDOMEvent* aEvent);
+  nsresult StopDrag();
 
   static int32_t GetCurrentPosition(nsIContent* content);
   static int32_t GetMinPosition(nsIContent* content);
@@ -160,6 +163,7 @@ private:
   static void Notify(void* aData) {
     (static_cast<nsSliderFrame*>(aData))->Notify();
   }
+  void PageScroll(nscoord aChange);
  
   nsPoint mDestinationPoint;
   nsRefPtr<nsSliderMediator> mMediator;
@@ -172,6 +176,8 @@ private:
   int32_t mCurPos;
 
   nscoord mChange;
+
+  bool mDragFinished;
 
   // true if an attribute change has been caused by the user manipulating the
   // slider. This allows notifications to tell how a slider's current position

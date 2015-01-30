@@ -30,10 +30,9 @@ public:
   // Forward to base class
   NS_FORWARD_TO_UIEVENT
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE
+  virtual JSObject* WrapObjectInternal(JSContext* aCx) MOZ_OVERRIDE
   {
-    return MouseEventBinding::Wrap(aCx, aScope, this);
+    return MouseEventBinding::Wrap(aCx, this);
   }
 
   // Web IDL binding methods
@@ -53,6 +52,7 @@ public:
   int16_t Button();
   uint16_t Buttons();
   already_AddRefed<EventTarget> GetRelatedTarget();
+  void GetRegion(nsAString& aRegion);
   void InitMouseEvent(const nsAString& aType, bool aCanBubble, bool aCancelable,
                       nsIDOMWindow* aView, int32_t aDetail, int32_t aScreenX,
                       int32_t aScreenY, int32_t aClientX, int32_t aClientY,
@@ -83,6 +83,7 @@ public:
     return GetMovementPoint().y;
   }
   float MozPressure() const;
+  bool HitCluster() const;
   uint16_t MozInputSource() const;
   void InitNSMouseEvent(const nsAString& aType,
                         bool aCanBubble, bool aCancelable,
@@ -102,6 +103,8 @@ public:
   }
 
 protected:
+  ~MouseEvent() {}
+
   nsresult InitMouseEvent(const nsAString& aType,
                           bool aCanBubble,
                           bool aCancelable,

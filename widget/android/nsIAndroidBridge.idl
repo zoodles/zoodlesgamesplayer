@@ -24,8 +24,9 @@ interface nsIUITelemetryObserver : nsISupports {
                 in wstring extras);
 };
 
-[scriptable, uuid(c31331d2-afad-460f-9c66-728b8c838cec)]
+[scriptable, uuid(78ec5811-78ee-4239-a554-3303f823dbbc)]
 interface nsIAndroidBrowserApp : nsISupports {
+  readonly attribute nsIBrowserTab selectedTab;
   nsIBrowserTab getBrowserTab(in int32_t tabId);
   void getPreferences(in int32_t requestId,
                       [array, size_is(count)] in wstring prefNames,
@@ -63,10 +64,10 @@ interface nsIAndroidDisplayport : nsISupports {
   attribute float resolution;
 };
 
-[scriptable, uuid(2af84552-4f74-480d-b637-ce2bcd7148fc)]
+[scriptable, uuid(1beb70d3-70f3-4742-98cc-a3d301b26c0c)]
 interface nsIAndroidBridge : nsISupports
 {
-  void handleGeckoMessage(in AString message);
+  [implicit_jscontext] void handleGeckoMessage(in jsval message);
   attribute nsIAndroidBrowserApp browserApp;
   nsIAndroidDisplayport getDisplayPort(in boolean aPageSizeUpdate, in boolean isBrowserContentDisplayed, in int32_t tabId, in nsIAndroidViewport metrics);
   void contentDocumentChanged();

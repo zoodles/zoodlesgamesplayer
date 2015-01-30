@@ -16,9 +16,9 @@
 namespace mozilla {
 namespace dom {
 
-NS_IMPL_ISUPPORTS2(ExternalHelperAppChild,
-                   nsIStreamListener,
-                   nsIRequestObserver)
+NS_IMPL_ISUPPORTS(ExternalHelperAppChild,
+                  nsIStreamListener,
+                  nsIRequestObserver)
 
 ExternalHelperAppChild::ExternalHelperAppChild()
   : mStatus(NS_OK)
@@ -93,15 +93,20 @@ ExternalHelperAppChild::OnStopRequest(nsIRequest *request,
 }
 
 nsresult
-ExternalHelperAppChild::DivertToParent(nsIDivertableChannel *divertable, nsIRequest *request)
+ExternalHelperAppChild::DivertToParent(nsIDivertableChannel *divertable,
+                                       nsIRequest *request)
 {
+  // nsIDivertable must know about content conversions before being diverted.
+  MOZ_ASSERT(mHandler);
+  mHandler->MaybeApplyDecodingForExtension(request);
+
   mozilla::net::ChannelDiverterChild *diverter = nullptr;
   nsresult rv = divertable->DivertToParent(&diverter);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
-
   MOZ_ASSERT(diverter);
+
   if (SendDivertToParentUsing(diverter)) {
     mHandler->DidDivertRequest(request);
     mHandler = nullptr;

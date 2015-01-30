@@ -18,6 +18,8 @@
 #include "nsThreadUtils.h"
 #include "mozilla/dom/bluetooth/BluetoothTypes.h"
 #include "mozilla/dom/BluetoothManagerBinding.h"
+#include "mozilla/dom/ScriptSettings.h"
+#include "mozilla/Services.h"
 
 using namespace mozilla;
 
@@ -25,10 +27,10 @@ USING_BLUETOOTH_NAMESPACE
 
 // QueryInterface implementation for BluetoothManager
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(BluetoothManager)
-NS_INTERFACE_MAP_END_INHERITING(nsDOMEventTargetHelper)
+NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 
-NS_IMPL_ADDREF_INHERITED(BluetoothManager, nsDOMEventTargetHelper)
-NS_IMPL_RELEASE_INHERITED(BluetoothManager, nsDOMEventTargetHelper)
+NS_IMPL_ADDREF_INHERITED(BluetoothManager, DOMEventTargetHelper)
+NS_IMPL_RELEASE_INHERITED(BluetoothManager, DOMEventTargetHelper)
 
 class GetAdapterTask : public BluetoothReplyRunnable
 {
@@ -52,24 +54,28 @@ public:
       return false;
     }
 
+    if (!mManagerPtr->GetOwner()) {
+      BT_WARNING("Bluetooth manager was disconnected from owner window.");
+
+      // Stop to create adapter since owner window of Bluetooth manager was
+      // gone. These is no need to create a DOMEvent target which has no owner
+      // to reply to.
+      return false;
+    }
+
     const InfallibleTArray<BluetoothNamedValue>& values =
       v.get_ArrayOfBluetoothNamedValue();
     nsRefPtr<BluetoothAdapter> adapter =
       BluetoothAdapter::Create(mManagerPtr->GetOwner(), values);
 
-    nsresult rv;
-    nsIScriptContext* sc = mManagerPtr->GetContextForEventHandlers(&rv);
-    if (!sc) {
-      BT_WARNING("Cannot create script context!");
-      SetError(NS_LITERAL_STRING("BluetoothScriptContextError"));
+    dom::AutoJSAPI jsapi;
+    if (!jsapi.Init(mManagerPtr->GetOwner())) {
+      BT_WARNING("Failed to initialise AutoJSAPI!");
+      SetError(NS_LITERAL_STRING("BluetoothAutoJSAPIInitError"));
       return false;
     }
-
-    AutoPushJSContext cx(sc->GetNativeContext());
-
-    JS::Rooted<JSObject*> global(cx, sc->GetWindowProxy());
-    rv = nsContentUtils::WrapNative(cx, global, adapter, aValue);
-    if (NS_FAILED(rv)) {
+    JSContext* cx = jsapi.cx();
+    if (NS_FAILED(nsContentUtils::WrapNative(cx, adapter, aValue))) {
       BT_WARNING("Cannot create native object!");
       SetError(NS_LITERAL_STRING("BluetoothNativeObjectError"));
       return false;
@@ -90,14 +96,12 @@ private:
 };
 
 BluetoothManager::BluetoothManager(nsPIDOMWindow *aWindow)
-  : nsDOMEventTargetHelper(aWindow)
+  : DOMEventTargetHelper(aWindow)
   , BluetoothPropertyContainer(BluetoothObjectType::TYPE_MANAGER)
 {
   MOZ_ASSERT(aWindow);
-  MOZ_ASSERT(IsDOMBinding());
 
-  BindToOwner(aWindow);
-  mPath.AssignLiteral("/");
+  mPath.Assign('/');
 
   BluetoothService* bs = BluetoothService::Get();
   NS_ENSURE_TRUE_VOID(bs);
@@ -106,6 +110,16 @@ BluetoothManager::BluetoothManager(nsPIDOMWindow *aWindow)
 
 BluetoothManager::~BluetoothManager()
 {
+  BluetoothService* bs = BluetoothService::Get();
+  NS_ENSURE_TRUE_VOID(bs);
+  bs->UnregisterBluetoothSignalHandler(NS_LITERAL_STRING(KEY_MANAGER), this);
+}
+
+void
+BluetoothManager::DisconnectFromOwner()
+{
+  DOMEventTargetHelper::DisconnectFromOwner();
+
   BluetoothService* bs = BluetoothService::Get();
   NS_ENSURE_TRUE_VOID(bs);
   bs->UnregisterBluetoothSignalHandler(NS_LITERAL_STRING(KEY_MANAGER), this);
@@ -174,25 +188,6 @@ BluetoothManager::Create(nsPIDOMWindow* aWindow)
   return manager.forget();
 }
 
-// static
-bool
-BluetoothManager::CheckPermission(nsPIDOMWindow* aWindow)
-{
-  NS_ASSERTION(aWindow, "Null pointer!");
-
-  nsCOMPtr<nsIPermissionManager> permMgr =
-    do_GetService(NS_PERMISSIONMANAGER_CONTRACTID);
-  NS_ENSURE_TRUE(permMgr, false);
-
-  uint32_t permission;
-  nsresult rv =
-    permMgr->TestPermissionFromWindow(aWindow, "bluetooth",
-                                      &permission);
-  NS_ENSURE_SUCCESS(rv, false);
-
-  return permission == nsIPermissionManager::ALLOW_ACTION;
-}
-
 void
 BluetoothManager::Notify(const BluetoothSignal& aData)
 {
@@ -214,20 +209,8 @@ BluetoothManager::Notify(const BluetoothSignal& aData)
   }
 }
 
-bool
-BluetoothManager::IsConnected(uint16_t aProfileId, ErrorResult& aRv)
-{
-  BluetoothService* bs = BluetoothService::Get();
-  if (!bs) {
-    aRv.Throw(NS_ERROR_FAILURE);
-    return false;
-  }
-
-  return bs->IsConnected(aProfileId);
-}
-
 JSObject*
-BluetoothManager::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+BluetoothManager::WrapObject(JSContext* aCx)
 {
-  return BluetoothManagerBinding::Wrap(aCx, aScope, this);
+  return BluetoothManagerBinding::Wrap(aCx, this);
 }

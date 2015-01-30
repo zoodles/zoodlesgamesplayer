@@ -79,7 +79,7 @@ nsScreenManagerGtk :: ~nsScreenManagerGtk()
 
 
 // addref, release, QI
-NS_IMPL_ISUPPORTS1(nsScreenManagerGtk, nsIScreenManager)
+NS_IMPL_ISUPPORTS(nsScreenManagerGtk, nsIScreenManager)
 
 
 // this function will make sure that everything has been initialized.
@@ -186,6 +186,30 @@ nsScreenManagerGtk :: Init()
 #endif
 
   return NS_OK;
+}
+
+NS_IMETHODIMP
+nsScreenManagerGtk :: ScreenForId ( uint32_t aId, nsIScreen **outScreen )
+{
+  *outScreen = nullptr;
+
+  nsresult rv;
+  rv = EnsureInit();
+  if (NS_FAILED(rv)) {
+    NS_ERROR("nsScreenManagerGtk::EnsureInit() failed from ScreenForId");
+    return rv;
+  }
+
+  for (int32_t i = 0, i_end = mCachedScreenArray.Count(); i < i_end; ++i) {
+    uint32_t id;
+    rv = mCachedScreenArray[i]->GetId(&id);
+    if (NS_SUCCEEDED(rv) && id == aId) {
+      NS_IF_ADDREF(*outScreen = mCachedScreenArray[i]);
+      return NS_OK;
+    }
+  }
+
+  return NS_ERROR_FAILURE;
 }
 
 

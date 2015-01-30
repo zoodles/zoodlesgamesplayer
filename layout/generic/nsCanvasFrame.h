@@ -13,6 +13,7 @@
 #include "nsContainerFrame.h"
 #include "nsIScrollPositionListener.h"
 #include "nsDisplayList.h"
+#include "nsIAnonymousContentCreator.h"
 
 class nsPresContext;
 class nsRenderingContext;
@@ -24,11 +25,12 @@ class nsRenderingContext;
  * It only supports having a single child frame which must be an area
  * frame
  */
-class nsCanvasFrame : public nsContainerFrame,
-                      public nsIScrollPositionListener
+class nsCanvasFrame MOZ_FINAL : public nsContainerFrame,
+                                public nsIScrollPositionListener,
+                                public nsIAnonymousContentCreator
 {
 public:
-  nsCanvasFrame(nsStyleContext* aContext)
+  explicit nsCanvasFrame(nsStyleContext* aContext)
   : nsContainerFrame(aContext),
     mDoPaintFocus(false),
     mAddedScrollPositionListener(false) {}
@@ -40,27 +42,79 @@ public:
 
   virtual void DestroyFrom(nsIFrame* aDestructRoot) MOZ_OVERRIDE;
 
-  virtual nsresult SetInitialChildList(ChildListID     aListID,
-                                       nsFrameList&    aChildList) MOZ_OVERRIDE;
-  virtual nsresult AppendFrames(ChildListID     aListID,
-                                nsFrameList&    aFrameList) MOZ_OVERRIDE;
-  virtual nsresult InsertFrames(ChildListID     aListID,
-                                nsIFrame*       aPrevFrame,
-                                nsFrameList&    aFrameList) MOZ_OVERRIDE;
-  virtual nsresult RemoveFrame(ChildListID     aListID,
-                               nsIFrame*       aOldFrame) MOZ_OVERRIDE;
+  virtual mozilla::WritingMode GetWritingMode() const MOZ_OVERRIDE
+  {
+    nsIContent* rootElem = GetContent();
+    if (rootElem) {
+      nsIFrame* rootElemFrame = rootElem->GetPrimaryFrame();
+      if (rootElemFrame) {
+        return rootElemFrame->GetWritingMode();
+      }
+    }
+    return nsIFrame::GetWritingMode();
+  }
 
-  virtual nscoord GetMinWidth(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
-  virtual nscoord GetPrefWidth(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
-  virtual nsresult Reflow(nsPresContext*           aPresContext,
-                          nsHTMLReflowMetrics&     aDesiredSize,
-                          const nsHTMLReflowState& aReflowState,
-                          nsReflowStatus&          aStatus) MOZ_OVERRIDE;
+#ifdef DEBUG
+  virtual void SetInitialChildList(ChildListID     aListID,
+                                   nsFrameList&    aChildList) MOZ_OVERRIDE;
+  virtual void AppendFrames(ChildListID     aListID,
+                            nsFrameList&    aFrameList) MOZ_OVERRIDE;
+  virtual void InsertFrames(ChildListID     aListID,
+                            nsIFrame*       aPrevFrame,
+                            nsFrameList&    aFrameList) MOZ_OVERRIDE;
+  virtual void RemoveFrame(ChildListID     aListID,
+                           nsIFrame*       aOldFrame) MOZ_OVERRIDE;
+#endif
+
+  virtual nscoord GetMinISize(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
+  virtual nscoord GetPrefISize(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
+  virtual void Reflow(nsPresContext*           aPresContext,
+                      nsHTMLReflowMetrics&     aDesiredSize,
+                      const nsHTMLReflowState& aReflowState,
+                      nsReflowStatus&          aStatus) MOZ_OVERRIDE;
   virtual bool IsFrameOfType(uint32_t aFlags) const MOZ_OVERRIDE
   {
     return nsContainerFrame::IsFrameOfType(aFlags &
              ~(nsIFrame::eCanContainOverflowContainers));
   }
+
+  // nsIAnonymousContentCreator
+  virtual nsresult CreateAnonymousContent(nsTArray<ContentInfo>& aElements) MOZ_OVERRIDE;
+  virtual void AppendAnonymousContentTo(nsTArray<nsIContent*>& aElements, uint32_t aFilter) MOZ_OVERRIDE;
+
+  // Touch caret handle function
+  mozilla::dom::Element* GetTouchCaretElement() const
+  {
+     return mTouchCaretElement;
+  }
+
+  // Selection Caret Handle function
+  mozilla::dom::Element* GetSelectionCaretsStartElement() const
+  {
+    return mSelectionCaretsStartElement;
+  }
+
+  mozilla::dom::Element* GetSelectionCaretsEndElement() const
+  {
+    return mSelectionCaretsEndElement;
+  }
+
+  mozilla::dom::Element* GetCustomContentContainer() const
+  {
+    return mCustomContentContainer;
+  }
+
+  /**
+   * Unhide the CustomContentContainer. This call only has an effect if
+   * mCustomContentContainer is non-null.
+   */
+  void ShowCustomContentContainer();
+
+  /**
+   * Hide the CustomContentContainer. This call only has an effect if
+   * mCustomContentContainer is non-null.
+   */
+  void HideCustomContentContainer();
 
   /** SetHasFocus tells the CanvasFrame to draw with focus ring
    *  @param aHasFocus true to show focus ring, false to hide it
@@ -109,6 +163,11 @@ protected:
   // Data members
   bool                      mDoPaintFocus;
   bool                      mAddedScrollPositionListener;
+
+  nsCOMPtr<mozilla::dom::Element> mTouchCaretElement;
+  nsCOMPtr<mozilla::dom::Element> mSelectionCaretsStartElement;
+  nsCOMPtr<mozilla::dom::Element> mSelectionCaretsEndElement;
+  nsCOMPtr<mozilla::dom::Element> mCustomContentContainer;
 };
 
 /**
@@ -126,8 +185,7 @@ public:
   }
 
   virtual bool ComputeVisibility(nsDisplayListBuilder* aBuilder,
-                                 nsRegion* aVisibleRegion,
-                                 const nsRect& aAllowVisibleRegionExpansion) MOZ_OVERRIDE
+                                 nsRegion* aVisibleRegion) MOZ_OVERRIDE
   {
     return NS_GET_A(mColor) > 0;
   }
@@ -170,12 +228,6 @@ public:
     ComputeInvalidationRegionDifference(aBuilder, geometry, aInvalidRegion);
   }
 
-  virtual void NotifyRenderingChanged() MOZ_OVERRIDE
-  {
-    mFrame->Properties().Delete(nsIFrame::CachedBackgroundImage());
-    mFrame->Properties().Delete(nsIFrame::CachedBackgroundImageDT());
-  }
-
   virtual void Paint(nsDisplayListBuilder* aBuilder,
                      nsRenderingContext* aCtx) MOZ_OVERRIDE;
 
@@ -185,6 +237,9 @@ public:
   }
 
   NS_DISPLAY_DECL_NAME("CanvasBackgroundColor", TYPE_CANVAS_BACKGROUND_COLOR)
+#ifdef MOZ_DUMP_PAINTING
+  virtual void WriteDebugInfo(std::stringstream& aStream) MOZ_OVERRIDE;
+#endif
 
 private:
   nscolor mColor;
@@ -199,7 +254,13 @@ public:
 
   virtual void Paint(nsDisplayListBuilder* aBuilder, nsRenderingContext* aCtx) MOZ_OVERRIDE;
 
-  virtual bool ShouldFixToViewport(nsDisplayListBuilder* aBuilder) MOZ_OVERRIDE
+  virtual void NotifyRenderingChanged() MOZ_OVERRIDE
+  {
+    mFrame->Properties().Delete(nsIFrame::CachedBackgroundImage());
+    mFrame->Properties().Delete(nsIFrame::CachedBackgroundImageDT());
+  }
+
+  virtual bool ShouldFixToViewport(LayerManager* aManager) MOZ_OVERRIDE
   {
     // Put background-attachment:fixed canvas background images in their own
     // compositing layer. Since we know their background painting area can't

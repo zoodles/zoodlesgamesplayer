@@ -9,16 +9,18 @@
 #include "nsNetUtil.h"
 #include "nsIScriptSecurityManager.h"
 #include "mozilla/ArrayUtils.h"
+#include "nsDOMString.h"
 
 namespace mozilla {
 namespace browser {
 
-NS_IMPL_ISUPPORTS1(AboutRedirector, nsIAboutModule)
+NS_IMPL_ISUPPORTS(AboutRedirector, nsIAboutModule)
 
 struct RedirEntry {
   const char* id;
   const char* url;
   uint32_t flags;
+  const char* idbOriginPostfix;
 };
 
 /*
@@ -43,6 +45,9 @@ static RedirEntry kRedirMap[] = {
     nsIAboutModule::ALLOW_SCRIPT |
     nsIAboutModule::HIDE_FROM_ABOUTABOUT },
   { "socialerror", "chrome://browser/content/aboutSocialError.xhtml",
+    nsIAboutModule::ALLOW_SCRIPT |
+    nsIAboutModule::HIDE_FROM_ABOUTABOUT },
+  { "providerdirectory", "chrome://browser/content/aboutProviderDirectory.xhtml",
     nsIAboutModule::ALLOW_SCRIPT |
     nsIAboutModule::HIDE_FROM_ABOUTABOUT },
   { "tabcrashed", "chrome://browser/content/aboutTabCrashed.xhtml",
@@ -78,7 +83,8 @@ static RedirEntry kRedirMap[] = {
 #endif
   { "home", "chrome://browser/content/abouthome/aboutHome.xhtml",
     nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
-    nsIAboutModule::ALLOW_SCRIPT },
+    nsIAboutModule::ALLOW_SCRIPT |
+    nsIAboutModule::ENABLE_INDEXED_DB },
   { "newtab", "chrome://browser/content/newtab/newTab.xul",
     nsIAboutModule::ALLOW_SCRIPT },
   { "permissions", "chrome://browser/content/preferences/aboutPermissions.xul",
@@ -97,6 +103,22 @@ static RedirEntry kRedirMap[] = {
     nsIAboutModule::ALLOW_SCRIPT },
   { "customizing", "chrome://browser/content/customizableui/aboutCustomizing.xul",
     nsIAboutModule::ALLOW_SCRIPT },
+  { "loopconversation", "chrome://browser/content/loop/conversation.html",
+    nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
+    nsIAboutModule::ALLOW_SCRIPT |
+    nsIAboutModule::HIDE_FROM_ABOUTABOUT |
+    nsIAboutModule::ENABLE_INDEXED_DB },
+  { "looppanel", "chrome://browser/content/loop/panel.html",
+    nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
+    nsIAboutModule::ALLOW_SCRIPT |
+    nsIAboutModule::HIDE_FROM_ABOUTABOUT |
+    nsIAboutModule::ENABLE_INDEXED_DB,
+    // Shares an IndexedDB origin with about:loopconversation.
+    "loopconversation" },
+  { "reader", "chrome://global/content/reader/aboutReader.html",
+    nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
+    nsIAboutModule::ALLOW_SCRIPT |
+    nsIAboutModule::HIDE_FROM_ABOUTABOUT },
 };
 static const int kRedirTotal = ArrayLength(kRedirMap);
 
@@ -119,7 +141,9 @@ GetAboutModuleName(nsIURI *aURI)
 }
 
 NS_IMETHODIMP
-AboutRedirector::NewChannel(nsIURI *aURI, nsIChannel **result) 
+AboutRedirector::NewChannel(nsIURI* aURI,
+                            nsILoadInfo* aLoadInfo,
+                            nsIChannel** result)
 {
   NS_ENSURE_ARG_POINTER(aURI);
   NS_ASSERTION(result, "must not be null");
@@ -133,8 +157,22 @@ AboutRedirector::NewChannel(nsIURI *aURI, nsIChannel **result)
   for (int i = 0; i < kRedirTotal; i++) {
     if (!strcmp(path.get(), kRedirMap[i].id)) {
       nsCOMPtr<nsIChannel> tempChannel;
-      rv = ioService->NewChannel(nsDependentCString(kRedirMap[i].url),
-                                 nullptr, nullptr, getter_AddRefs(tempChannel));
+      nsCOMPtr<nsIURI> tempURI;
+      rv = NS_NewURI(getter_AddRefs(tempURI),
+                     nsDependentCString(kRedirMap[i].url));
+      NS_ENSURE_SUCCESS(rv, rv);
+      // Bug 1087720 (and Bug 1099296):
+      // Once all callsites have been updated to call NewChannel2()
+      // instead of NewChannel() we should have a non-null loadInfo
+      // consistently. Until then we have to branch on the loadInfo.
+      if (aLoadInfo) {
+        rv = NS_NewChannelInternal(getter_AddRefs(tempChannel),
+                                   tempURI,
+                                   aLoadInfo);
+      }
+      else {
+        rv = ioService->NewChannelFromURI(tempURI, getter_AddRefs(tempChannel));
+      }
       NS_ENSURE_SUCCESS(rv, rv);
 
       tempChannel->SetOriginalURI(aURI);
@@ -161,6 +199,29 @@ AboutRedirector::GetURIFlags(nsIURI *aURI, uint32_t *result)
     }
   }
 
+  return NS_ERROR_ILLEGAL_VALUE;
+}
+
+NS_IMETHODIMP
+AboutRedirector::GetIndexedDBOriginPostfix(nsIURI *aURI, nsAString &result)
+{
+  NS_ENSURE_ARG_POINTER(aURI);
+
+  nsAutoCString name = GetAboutModuleName(aURI);
+
+  for (int i = 0; i < kRedirTotal; i++) {
+    if (name.Equals(kRedirMap[i].id)) {
+      const char* postfix = kRedirMap[i].idbOriginPostfix;
+      if (!postfix) {
+        break;
+      }
+
+      result.AssignASCII(postfix);
+      return NS_OK;
+    }
+  }
+
+  SetDOMStringToNull(result);
   return NS_ERROR_ILLEGAL_VALUE;
 }
 

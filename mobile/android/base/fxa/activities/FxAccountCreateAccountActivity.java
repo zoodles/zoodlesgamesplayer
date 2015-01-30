@@ -19,9 +19,10 @@ import org.mozilla.gecko.background.fxa.FxAccountClient10.RequestDelegate;
 import org.mozilla.gecko.background.fxa.FxAccountClient20;
 import org.mozilla.gecko.background.fxa.FxAccountClient20.LoginResponse;
 import org.mozilla.gecko.background.fxa.FxAccountClientException.FxAccountClientRemoteException;
+import org.mozilla.gecko.background.fxa.FxAccountUtils;
 import org.mozilla.gecko.background.fxa.PasswordStretcher;
-import org.mozilla.gecko.fxa.FxAccountConstants;
-import org.mozilla.gecko.fxa.activities.FxAccountSetupTask.FxAccountCreateAccountTask;
+import org.mozilla.gecko.fxa.tasks.FxAccountCreateAccountTask;
+import org.mozilla.gecko.sync.Utils;
 
 import android.app.AlertDialog;
 import android.app.Dialog;
@@ -30,11 +31,11 @@ import android.content.Intent;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.text.Spannable;
-import android.text.Spanned;
 import android.text.method.LinkMovementMethod;
 import android.text.style.ClickableSpan;
 import android.view.View;
 import android.view.View.OnClickListener;
+import android.widget.AutoCompleteTextView;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
@@ -66,7 +67,7 @@ public class FxAccountCreateAccountActivity extends FxAccountAbstractSetupActivi
     super.onCreate(icicle);
     setContentView(R.layout.fxaccount_create_account);
 
-    emailEdit = (EditText) ensureFindViewById(null, R.id.email, "email edit");
+    emailEdit = (AutoCompleteTextView) ensureFindViewById(null, R.id.email, "email edit");
     passwordEdit = (EditText) ensureFindViewById(null, R.id.password, "password edit");
     showPasswordButton = (Button) ensureFindViewById(null, R.id.show_password, "show password button");
     yearEdit = (EditText) ensureFindViewById(null, R.id.year_edit, "year edit");
@@ -88,32 +89,29 @@ public class FxAccountCreateAccountActivity extends FxAccountAbstractSetupActivi
     signInInsteadLink.setOnClickListener(new OnClickListener() {
       @Override
       public void onClick(View v) {
-        final String email = emailEdit.getText().toString();
-        final String password = passwordEdit.getText().toString();
-        doSigninInstead(email, password);
+        final Bundle extras = makeExtrasBundle(null, null);
+        startActivityInstead(FxAccountSignInActivity.class, CHILD_REQUEST_CODE, extras);
       }
     });
 
-    // Only set email/password in onCreate; we don't want to overwrite edited values onResume.
-    if (getIntent() != null && getIntent().getExtras() != null) {
-      Bundle bundle = getIntent().getExtras();
-      emailEdit.setText(bundle.getString("email"));
-      passwordEdit.setText(bundle.getString("password"));
-    }
+    updateFromIntentExtras();
   }
 
-  protected void doSigninInstead(final String email, final String password) {
-    Intent intent = new Intent(this, FxAccountSignInActivity.class);
-    if (email != null) {
-      intent.putExtra("email", email);
+  @Override
+  protected Bundle makeExtrasBundle(String email, String password) {
+    final Bundle extras = super.makeExtrasBundle(email, password);
+    final String year = yearEdit.getText().toString();
+    extras.putString(EXTRA_YEAR, year);
+    return extras;
+  }
+
+  @Override
+  protected void updateFromIntentExtras() {
+    super.updateFromIntentExtras();
+
+    if (getIntent() != null) {
+      yearEdit.setText(getIntent().getStringExtra(EXTRA_YEAR));
     }
-    if (password != null) {
-      intent.putExtra("password", password);
-    }
-    // Per http://stackoverflow.com/a/8992365, this triggers a known bug with
-    // the soft keyboard not being shown for the started activity. Why, Android, why?
-    intent.setFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
-    startActivityForResult(intent, CHILD_REQUEST_CODE);
   }
 
   @Override
@@ -126,13 +124,10 @@ public class FxAccountCreateAccountActivity extends FxAccountAbstractSetupActivi
     // This horrible bit of special-casing is because we want this error message to
     // contain a clickable, extra chunk of text, but we don't want to pollute
     // the exception class with Android specifics.
-    final String clickablePart = getString(R.string.fxaccount_sign_in_button_label);
-    final String message = getString(e.getErrorMessageStringResource(), clickablePart);
-    final int clickableStart = message.lastIndexOf(clickablePart);
-    final int clickableEnd = clickableStart + clickablePart.length();
+    final int messageId = e.getErrorMessageStringResource();
+    final int clickableId = R.string.fxaccount_sign_in_button_label;
 
-    final Spannable span = Spannable.Factory.getInstance().newSpannable(message);
-    span.setSpan(new ClickableSpan() {
+    final Spannable span = Utils.interpolateClickableSpan(this, messageId, clickableId, new ClickableSpan() {
       @Override
       public void onClick(View widget) {
         // Pass through the email address that already existed.
@@ -141,9 +136,11 @@ public class FxAccountCreateAccountActivity extends FxAccountAbstractSetupActivi
             email = emailEdit.getText().toString();
         }
         final String password = passwordEdit.getText().toString();
-        doSigninInstead(email, password);
+
+        final Bundle extras = makeExtrasBundle(email, password);
+        startActivityInstead(FxAccountSignInActivity.class, CHILD_REQUEST_CODE, extras);
       }
-    }, clickableStart, clickableEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+    });
     remoteErrorTextView.setMovementMethod(LinkMovementMethod.getInstance());
     remoteErrorTextView.setText(span);
   }
@@ -176,7 +173,7 @@ public class FxAccountCreateAccountActivity extends FxAccountAbstractSetupActivi
     for (int i = 1991; i <= year - 5; i++) {
       years.add(Integer.toString(i));
     }
-    return years.toArray(new String[0]);
+    return years.toArray(new String[years.size()]);
   }
 
   protected void createYearEdit() {
@@ -204,7 +201,7 @@ public class FxAccountCreateAccountActivity extends FxAccountAbstractSetupActivi
   }
 
   public void createAccount(String email, String password, Map<String, Boolean> engines) {
-    String serverURI = FxAccountConstants.DEFAULT_AUTH_SERVER_ENDPOINT;
+    String serverURI = getAuthServerEndpoint();
     PasswordStretcher passwordStretcher = makePasswordStretcher(password);
     // This delegate creates a new Android account on success, opens the
     // appropriate "success!" activity, and finishes this activity.
@@ -224,7 +221,7 @@ public class FxAccountCreateAccountActivity extends FxAccountAbstractSetupActivi
     FxAccountClient client = new FxAccountClient20(serverURI, executor);
     try {
       hideRemoteError();
-      new FxAccountCreateAccountTask(this, this, email, passwordStretcher, client, delegate).execute();
+      new FxAccountCreateAccountTask(this, this, email, passwordStretcher, client, getQueryParameters(), delegate).execute();
     } catch (Exception e) {
       showRemoteError(e, R.string.fxaccount_create_account_unknown_error);
     }
@@ -250,10 +247,10 @@ public class FxAccountCreateAccountActivity extends FxAccountAbstractSetupActivi
             ? selectedEngines
             : null;
         if (FxAccountAgeLockoutHelper.passesAgeCheck(yearEdit.getText().toString(), yearItems)) {
-          FxAccountConstants.pii(LOG_TAG, "Passed age check.");
+          FxAccountUtils.pii(LOG_TAG, "Passed age check.");
           createAccount(email, password, engines);
         } else {
-          FxAccountConstants.pii(LOG_TAG, "Failed age check!");
+          FxAccountUtils.pii(LOG_TAG, "Failed age check!");
           FxAccountAgeLockoutHelper.lockOut(SystemClock.elapsedRealtime());
           setResult(RESULT_CANCELED);
           redirectToActivity(FxAccountCreateAccountNotAllowedActivity.class);
@@ -304,7 +301,7 @@ public class FxAccountCreateAccountActivity extends FxAccountAbstractSetupActivi
         selectedEngines.put("history", checkedItems[INDEX_HISTORY]);
         selectedEngines.put("tabs", checkedItems[INDEX_TABS]);
         selectedEngines.put("passwords", checkedItems[INDEX_PASSWORDS]);
-        FxAccountConstants.pii(LOG_TAG, "Updating selectedEngines: " + selectedEngines.toString());
+        FxAccountUtils.pii(LOG_TAG, "Updating selectedEngines: " + selectedEngines.toString());
       }
     };
 

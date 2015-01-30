@@ -326,6 +326,8 @@ typedef struct sslOptionsStr {
     unsigned int enableOCSPStapling     : 1;  /* 25 */
     unsigned int enableNPN              : 1;  /* 26 */
     unsigned int enableALPN             : 1;  /* 27 */
+    unsigned int reuseServerECDHEKey    : 1;  /* 28 */
+    unsigned int enableFallbackSCSV     : 1;  /* 29 */
 } sslOptions;
 
 typedef enum { sslHandshakingUndetermined = 0,
@@ -1380,8 +1382,6 @@ extern SECStatus   ssl_GatherRecord1stHandshake(sslSocket *ss);
 
 extern SECStatus   ssl2_HandleClientHelloMessage(sslSocket *ss);
 extern SECStatus   ssl2_HandleServerHelloMessage(sslSocket *ss);
-extern int         ssl2_StartGatherBytes(sslSocket *ss, sslGather *gs, 
-                                         unsigned int count);
 
 extern SECStatus   ssl_CreateSecurityInfo(sslSocket *ss);
 extern SECStatus   ssl_CopySecurityInfo(sslSocket *ss, sslSocket *os);
@@ -1536,7 +1536,11 @@ extern PRInt32   ssl3_SendRecord(sslSocket *ss, DTLSEpoch epoch,
  * runtime to determine which versions are supported by the version of libssl
  * in use.
  */
+#ifdef NSS_ENABLE_TLS_1_3
+#define SSL_LIBRARY_VERSION_MAX_SUPPORTED SSL_LIBRARY_VERSION_TLS_1_3
+#else
 #define SSL_LIBRARY_VERSION_MAX_SUPPORTED SSL_LIBRARY_VERSION_TLS_1_2
+#endif
 
 /* Rename this macro SSL_ALL_VERSIONS_DISABLED when SSL 2.0 is removed. */
 #define SSL3_ALL_VERSIONS_DISABLED(vrange) \

@@ -1,65 +1,51 @@
 /* Any copyright is dedicated to the Public Domain.
-   http://creativecommons.org/publicdomain/zero/1.0/ */
+ * http://creativecommons.org/publicdomain/zero/1.0/ */
 
 MARIONETTE_TIMEOUT = 30000;
-MARIONETTE_HEAD_JS = "icc_header.js";
+MARIONETTE_HEAD_JS = "head.js";
 
-function setRadioEnabled(enabled) {
-  let connection = navigator.mozMobileConnections[0];
-  ok(connection);
+// Start tests
+startTestCommon(function() {
+  let origNumIccs = iccManager.iccIds.length;
+  let icc = getMozIcc();
+  let iccId = icc.iccInfo.iccid;
+  let mobileConnection = getMozMobileConnectionByServiceId();
 
-  let request  = connection.setRadioEnabled(enabled);
+  return Promise.resolve()
+    // Test iccundetected event.
+    .then(() => {
+      let promises = [];
 
-  request.onsuccess = function onsuccess() {
-    log('setRadioEnabled: ' + enabled);
-  };
+      promises.push(setRadioEnabled(false));
+      promises.push(waitForTargetEvent(iccManager, "iccundetected").then((aEvt) => {
+        is(aEvt.iccId, iccId, "icc " + aEvt.iccId + " becomes undetected");
+        is(iccManager.iccIds.length, origNumIccs - 1,
+           "iccIds.length becomes to " + iccManager.iccIds.length);
+        is(iccManager.getIccById(aEvt.iccId), null,
+           "should not get a valid icc object here");
 
-  request.onerror = function onerror() {
-    ok(false, "setRadioEnabled should be ok");
-  };
-}
+        // The mozMobileConnection.iccId should be in sync.
+        is(mobileConnection.iccId, null, "check mozMobileConnection.iccId");
+      }));
 
-/* Test iccundetected event */
-taskHelper.push(function testIccUndetectedEvent() {
-  setRadioEnabled(false);
-  iccManager.addEventListener("iccundetected", function oniccundetected(evt) {
-    log("got icc undetected event");
-    iccManager.removeEventListener("iccundetected", oniccundetected);
+      return Promise.all(promises);
+    })
+    // Test iccdetected event.
+    .then(() => {
+      let promises = [];
 
-    // TODO: Bug 932650 - B2G RIL: WebIccManager API - add marionette tests for
-    //                    multi-sim
-    // In single sim scenario, there is only one sim card, we can use below way
-    // to check iccIds.
-    is(evt.iccId, iccId, "icc " + evt.iccId + " becomes undetected");
-    is(iccManager.iccIds.length, 0,
-       "iccIds.length becomes to " + iccManager.iccIds.length);
-    is(iccManager.getIccById(evt.iccId), null,
-       "should not get a valid icc object here");
+      promises.push(setRadioEnabled(true));
+      promises.push(waitForTargetEvent(iccManager, "iccdetected").then((aEvt) => {
+        is(aEvt.iccId, iccId, "icc " + aEvt.iccId + " is detected");
+        is(iccManager.iccIds.length, origNumIccs,
+           "iccIds.length becomes to " + iccManager.iccIds.length);
+        ok(iccManager.getIccById(aEvt.iccId) instanceof MozIcc,
+           "should get a valid icc object here");
 
-    taskHelper.runNext();
-  });
+        // The mozMobileConnection.iccId should be in sync.
+        is(mobileConnection.iccId, iccId, "check mozMobileConnection.iccId");
+      }));
+
+      return Promise.all(promises);
+    });
 });
-
-/* Test iccdetected event */
-taskHelper.push(function testIccDetectedEvent() {
-  setRadioEnabled(true);
-  iccManager.addEventListener("iccdetected", function oniccdetected(evt) {
-    log("got icc detected event");
-    iccManager.removeEventListener("iccdetected", oniccdetected);
-
-    // TODO: Bug 932650 - B2G RIL: WebIccManager API - add marionette tests for
-    //                    multi-sim
-    // In single sim scenario, there is only one sim card, we can use below way
-    // to check iccIds.
-    is(evt.iccId, iccId, "icc " + evt.iccId + " is detected");
-    is(iccManager.iccIds.length, 1,
-       "iccIds.length becomes to " + iccManager.iccIds.length);
-    ok(iccManager.getIccById(evt.iccId) instanceof MozIcc,
-       "should get a valid icc object here");
-
-    taskHelper.runNext();
-  });
-});
-
-// Start test
-taskHelper.runNext();

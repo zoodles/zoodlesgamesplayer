@@ -6,6 +6,7 @@
 
 #include "imgTools.h"
 
+#include "gfxUtils.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/RefPtr.h"
 #include "nsCOMPtr.h"
@@ -32,7 +33,7 @@ using namespace mozilla::gfx;
 
 
 
-NS_IMPL_ISUPPORTS1(imgTools, imgITools)
+NS_IMPL_ISUPPORTS(imgTools, imgITools)
 
 imgTools::imgTools()
 {
@@ -59,13 +60,13 @@ NS_IMETHODIMP imgTools::DecodeImage(nsIInputStream* aInStr,
                                     imgIContainer **aContainer)
 {
   nsresult rv;
-  nsRefPtr<Image> image;
 
   NS_ENSURE_ARG_POINTER(aInStr);
 
   // Create a new image container to hold the decoded data.
   nsAutoCString mimeType(aMimeType);
-  image = ImageFactory::CreateAnonymousImage(mimeType);
+  nsRefPtr<image::Image> image = ImageFactory::CreateAnonymousImage(mimeType);
+  nsRefPtr<ProgressTracker> tracker = image->GetProgressTracker();
 
   if (image->HasError())
     return NS_ERROR_FAILURE;
@@ -88,27 +89,15 @@ NS_IMETHODIMP imgTools::DecodeImage(nsIInputStream* aInStr,
   // Send the source data to the Image.
   rv = image->OnImageDataAvailable(nullptr, nullptr, inStream, 0, uint32_t(length));
   NS_ENSURE_SUCCESS(rv, rv);
+
   // Let the Image know we've sent all the data.
   rv = image->OnImageDataComplete(nullptr, nullptr, NS_OK, true);
+  tracker->SyncNotifyProgress(FLAG_LOAD_COMPLETE);
   NS_ENSURE_SUCCESS(rv, rv);
 
   // All done.
   NS_ADDREF(*aContainer = image.get());
   return NS_OK;
-}
-
-static TemporaryRef<SourceSurface>
-GetFirstImageFrame(imgIContainer *aContainer)
-{
-  nsRefPtr<gfxASurface> frame =
-    aContainer->GetFrame(imgIContainer::FRAME_FIRST,
-                         imgIContainer::FLAG_SYNC_DECODE);
-  NS_ENSURE_TRUE(frame, nullptr);
-
-  nsRefPtr<gfxImageSurface> imageSurface = frame->CopyToARGB32ImageSurface();
-  NS_ENSURE_TRUE(imageSurface, nullptr);
-
-  return imageSurface->CopyToB8G8R8A8DataSourceSurface();
 }
 
 /**
@@ -161,10 +150,22 @@ NS_IMETHODIMP imgTools::EncodeImage(imgIContainer *aContainer,
                                     nsIInputStream **aStream)
 {
   // Use frame 0 from the image container.
-  RefPtr<SourceSurface> frame = GetFirstImageFrame(aContainer);
+  RefPtr<SourceSurface> frame =
+    aContainer->GetFrame(imgIContainer::FRAME_FIRST,
+                         imgIContainer::FLAG_SYNC_DECODE);
   NS_ENSURE_TRUE(frame, NS_ERROR_FAILURE);
 
-  RefPtr<DataSourceSurface> dataSurface = frame->GetDataSurface();
+  RefPtr<DataSourceSurface> dataSurface;
+
+  if (frame->GetFormat() == SurfaceFormat::B8G8R8A8) {
+    dataSurface = frame->GetDataSurface();
+  } else {
+    // Convert format to SurfaceFormat::B8G8R8A8
+    dataSurface = gfxUtils::
+      CopySurfaceToDataSourceSurfaceWithFormat(frame,
+                                               SurfaceFormat::B8G8R8A8);
+  }
+
   NS_ENSURE_TRUE(dataSurface, NS_ERROR_FAILURE);
 
   return EncodeImageData(dataSurface, aMimeType, aOutputOptions, aStream);
@@ -186,7 +187,9 @@ NS_IMETHODIMP imgTools::EncodeScaledImage(imgIContainer *aContainer,
   }
 
   // Use frame 0 from the image container.
-  RefPtr<SourceSurface> frame = GetFirstImageFrame(aContainer);
+  RefPtr<SourceSurface> frame =
+    aContainer->GetFrame(imgIContainer::FRAME_FIRST,
+                         imgIContainer::FLAG_SYNC_DECODE);
   NS_ENSURE_TRUE(frame, NS_ERROR_FAILURE);
 
   int32_t frameWidth = frame->GetSize().width;
@@ -203,6 +206,10 @@ NS_IMETHODIMP imgTools::EncodeScaledImage(imgIContainer *aContainer,
   RefPtr<DataSourceSurface> dataSurface =
     Factory::CreateDataSourceSurface(IntSize(aScaledWidth, aScaledHeight),
                                      SurfaceFormat::B8G8R8A8);
+  if (NS_WARN_IF(!dataSurface)) {
+    return NS_ERROR_FAILURE;
+  }
+
   DataSourceSurface::MappedSurface map;
   if (!dataSurface->Map(DataSourceSurface::MapType::WRITE, &map)) {
     return NS_ERROR_FAILURE;
@@ -247,7 +254,9 @@ NS_IMETHODIMP imgTools::EncodeCroppedImage(imgIContainer *aContainer,
   }
 
   // Use frame 0 from the image container.
-  RefPtr<SourceSurface> frame = GetFirstImageFrame(aContainer);
+  RefPtr<SourceSurface> frame =
+    aContainer->GetFrame(imgIContainer::FRAME_FIRST,
+                         imgIContainer::FLAG_SYNC_DECODE);
   NS_ENSURE_TRUE(frame, NS_ERROR_FAILURE);
 
   int32_t frameWidth = frame->GetSize().width;
@@ -267,7 +276,12 @@ NS_IMETHODIMP imgTools::EncodeCroppedImage(imgIContainer *aContainer,
 
   RefPtr<DataSourceSurface> dataSurface =
     Factory::CreateDataSourceSurface(IntSize(aWidth, aHeight),
-                                     SurfaceFormat::B8G8R8A8);
+                                     SurfaceFormat::B8G8R8A8,
+                                     /* aZero = */ true);
+  if (NS_WARN_IF(!dataSurface)) {
+    return NS_ERROR_FAILURE;
+  }
+
   DataSourceSurface::MappedSurface map;
   if (!dataSurface->Map(DataSourceSurface::MapType::WRITE, &map)) {
     return NS_ERROR_FAILURE;

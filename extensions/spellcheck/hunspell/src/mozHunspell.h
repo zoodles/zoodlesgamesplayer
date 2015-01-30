@@ -73,6 +73,7 @@
 #include "nsInterfaceHashtable.h"
 #include "nsWeakReference.h"
 #include "nsCycleCollectionParticipant.h"
+#include "mozHunspellAllocator.h"
 
 #define MOZ_HUNSPELL_CONTRACTID "@mozilla.org/spellchecker/engine;1"
 #define MOZ_HUNSPELL_CID         \
@@ -80,10 +81,10 @@
 { 0x56c778e4, 0x1bee, 0x45f3, \
   { 0xa6, 0x89, 0x88, 0x66, 0x92, 0xa9, 0x7f, 0xe7 } }
 
-class mozHunspell : public mozISpellCheckingEngine,
-                    public nsIObserver,
-                    public nsSupportsWeakReference,
-                    public nsIMemoryReporter
+class mozHunspell MOZ_FINAL : public mozISpellCheckingEngine,
+                              public nsIObserver,
+                              public nsSupportsWeakReference,
+                              public nsIMemoryReporter
 {
 public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
@@ -92,30 +93,24 @@ public:
   NS_DECL_CYCLE_COLLECTION_CLASS_AMBIGUOUS(mozHunspell, mozISpellCheckingEngine)
 
   mozHunspell();
-  virtual ~mozHunspell();
 
   nsresult Init();
 
-  void LoadDictionaryList();
+  void LoadDictionaryList(bool aNotifyChildProcesses);
 
   // helper method for converting a word to the charset of the dictionary
   nsresult ConvertCharset(const char16_t* aStr, char ** aDst);
 
-  MOZ_DEFINE_MALLOC_SIZE_OF_ON_ALLOC(MallocSizeOfOnAlloc)
-  MOZ_DEFINE_MALLOC_SIZE_OF_ON_FREE(MallocSizeOfOnFree)
-
-  static void OnAlloc(void* ptr) { sAmount += MallocSizeOfOnAlloc(ptr); }
-  static void OnFree (void* ptr) { sAmount -= MallocSizeOfOnFree (ptr); }
-
   NS_IMETHOD CollectReports(nsIHandleReportCallback* aHandleReport,
-                            nsISupports* aData)
+                            nsISupports* aData, bool aAnonymize) MOZ_OVERRIDE
   {
     return MOZ_COLLECT_REPORT(
-      "explicit/spell-check", KIND_HEAP, UNITS_BYTES, sAmount,
+      "explicit/spell-check", KIND_HEAP, UNITS_BYTES, HunspellAllocator::MemoryAllocated(),
       "Memory used by the spell-checking engine.");
   }
 
 protected:
+  virtual ~mozHunspell();
 
   nsCOMPtr<mozIPersonalDictionary> mPersonalDictionary;
   nsCOMPtr<nsIUnicodeEncoder>      mEncoder;
@@ -131,8 +126,6 @@ protected:
   nsCOMArray<nsIFile> mDynamicDirectories;
 
   Hunspell  *mHunspell;
-
-  static int64_t sAmount;
 };
 
 #endif

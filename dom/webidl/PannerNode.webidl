@@ -11,17 +11,11 @@
  */
 
 enum PanningModelType {
-  // Hack: Use numbers to support alternate enum values
-  "0", "1",
-
   "equalpower",
   "HRTF"
 };
 
 enum DistanceModelType {
-  // Hack: Use numbers to support alternate enum values
-  "0", "1", "2",
-
   "linear",
   "inverse",
   "exponential"
@@ -50,21 +44,6 @@ interface PannerNode : AudioNode {
 
 };
 
-/*
- * The origin of this IDL file is
- * https://dvcs.w3.org/hg/audio/raw-file/tip/webaudio/specification.html#AlternateNames
- */
-partial interface PannerNode {
-    [Pref="media.webaudio.legacy.PannerNode"]
-    const unsigned short EQUALPOWER = 0;
-    [Pref="media.webaudio.legacy.PannerNode"]
-    const unsigned short HRTF = 1;
-
-    [Pref="media.webaudio.legacy.PannerNode"]
-    const unsigned short LINEAR_DISTANCE = 0;
-    [Pref="media.webaudio.legacy.PannerNode"]
-    const unsigned short INVERSE_DISTANCE = 1;
-    [Pref="media.webaudio.legacy.PannerNode"]
-    const unsigned short EXPONENTIAL_DISTANCE = 2;
-};
+// Mozilla extension
+PannerNode implements AudioNodePassThrough;
 

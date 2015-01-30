@@ -26,16 +26,17 @@ from mozbuild.mozinfo import write_mozinfo
 log_manager = LoggingManager()
 
 
-ANDROID_ECLIPSE_ADVERTISEMENT = '''
+ANDROID_IDE_ADVERTISEMENT = '''
 =============
 ADVERTISEMENT
 
-You are building Firefox for Android. You might want to run
-`mach build-backend --backend=AndroidEclipse`
-to generate Eclipse project files.
+You are building Firefox for Android. After your build completes, you
+should run `mach gradle-install` to prepare Gradle and IntelliJ/Android Studio
+integration. Then import the Gradle project at $OBJDIR/mobile/android/gradle
+into the IDE of your choice.
 
-PLEASE BE AWARE THAT ECLIPSE SUPPORT IS EXPERIMENTAL. You should
-verify any changes using |mach build|.
+PLEASE BE AWARE THAT GRADLE AND INTELLIJ/ANDROID STUDIO SUPPORT IS EXPERIMENTAL.
+You should verify any changes using |mach build|.
 =============
 '''.strip()
 
@@ -152,7 +153,7 @@ def config_status(topobjdir='.', topsrcdir='.',
 
     if options.diff:
         for path, diff in sorted(summary.file_diffs.items()):
-            print(diff)
+            print('\n'.join(diff))
 
     # Advertise Visual Studio if appropriate.
     if os.name == 'nt' and options.backend == 'RecursiveMake':
@@ -161,4 +162,4 @@ def config_status(topobjdir='.', topsrcdir='.',
     # Advertise Eclipse if it is appropriate.
     if MachCommandConditions.is_android(env):
         if options.backend == 'RecursiveMake':
-            print(ANDROID_ECLIPSE_ADVERTISEMENT)
+            print(ANDROID_IDE_ADVERTISEMENT)

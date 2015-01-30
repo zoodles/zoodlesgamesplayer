@@ -14,7 +14,6 @@ USING_WORKERS_NAMESPACE
 XMLHttpRequestUpload::XMLHttpRequestUpload(XMLHttpRequest* aXHR)
 : mXHR(aXHR)
 {
-  SetIsDOMBinding();
 }
 
 XMLHttpRequestUpload::~XMLHttpRequestUpload()
@@ -27,13 +26,13 @@ NS_IMPL_RELEASE_INHERITED(XMLHttpRequestUpload, nsXHREventTarget)
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(XMLHttpRequestUpload)
 NS_INTERFACE_MAP_END_INHERITING(nsXHREventTarget)
 
-NS_IMPL_CYCLE_COLLECTION_INHERITED_1(XMLHttpRequestUpload, nsXHREventTarget,
-                                     mXHR)
+NS_IMPL_CYCLE_COLLECTION_INHERITED(XMLHttpRequestUpload, nsXHREventTarget,
+                                   mXHR)
 
 JSObject*
-XMLHttpRequestUpload::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+XMLHttpRequestUpload::WrapObject(JSContext* aCx)
 {
-  return XMLHttpRequestUploadBinding_workers::Wrap(aCx, aScope, this);
+  return XMLHttpRequestUploadBinding_workers::Wrap(aCx, this);
 }
 
 // static

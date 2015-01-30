@@ -11,6 +11,7 @@
 #include "nsICSSDeclaration.h"
 
 #include "mozilla/Attributes.h"
+#include "nsIURI.h"
 #include "nsCOMPtr.h"
 
 class nsIPrincipal;
@@ -36,8 +37,8 @@ public:
   // Declare addref and release so they can be called on us, but don't
   // implement them.  Our subclasses must handle their own
   // refcounting.
-  NS_IMETHOD_(nsrefcnt) AddRef() MOZ_OVERRIDE = 0;
-  NS_IMETHOD_(nsrefcnt) Release() MOZ_OVERRIDE = 0;
+  NS_IMETHOD_(MozExternalRefCountType) AddRef() MOZ_OVERRIDE = 0;
+  NS_IMETHOD_(MozExternalRefCountType) Release() MOZ_OVERRIDE = 0;
 
   NS_DECL_NSICSSDECLARATION
   using nsICSSDeclaration::GetLength;
@@ -78,6 +79,7 @@ public:
   }
 
 #define CSS_PROP_LIST_EXCLUDE_INTERNAL
+#define CSS_PROP_LIST_INCLUDE_LOGICAL
 #define CSS_PROP_SHORTHAND(name_, id_, method_, flags_, pref_)  \
   CSS_PROP(name_, id_, method_, flags_, pref_, X, X, X, X, X)
 #include "nsCSSPropList.h"
@@ -88,14 +90,14 @@ public:
 #undef CSS_PROP_ALIAS
 
 #undef CSS_PROP_SHORTHAND
+#undef CSS_PROP_LIST_INCLUDE_LOGICAL
 #undef CSS_PROP_LIST_EXCLUDE_INTERNAL
 #undef CSS_PROP
 #undef CSS_PROP_PUBLIC_OR_PRIVATE
 
   virtual void IndexedGetter(uint32_t aIndex, bool& aFound, nsAString& aPropName) MOZ_OVERRIDE;
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
 protected:
   // This method can return null regardless of the value of aAllocate;
@@ -148,10 +150,6 @@ protected:
 
 protected:
   virtual ~nsDOMCSSDeclaration();
-  nsDOMCSSDeclaration()
-  {
-    SetIsDOMBinding();
-  }
 };
 
 bool IsCSSPropertyExposedToJS(nsCSSProperty aProperty, JSContext* cx, JSObject* obj);

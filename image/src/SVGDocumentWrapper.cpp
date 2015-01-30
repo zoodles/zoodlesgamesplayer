@@ -27,6 +27,7 @@
 #include "nsSVGEffects.h"
 #include "mozilla/dom/SVGAnimatedLength.h"
 #include "nsMimeTypes.h"
+#include "DOMSVGLength.h"
 
 // undef the GetCurrentTime macro defined in WinBase.h from the MS Platform SDK
 #undef GetCurrentTime
@@ -36,11 +37,11 @@ using namespace mozilla::dom;
 namespace mozilla {
 namespace image {
 
-NS_IMPL_ISUPPORTS4(SVGDocumentWrapper,
-                   nsIStreamListener,
-                   nsIRequestObserver,
-                   nsIObserver,
-                   nsISupportsWeakReference)
+NS_IMPL_ISUPPORTS(SVGDocumentWrapper,
+                  nsIStreamListener,
+                  nsIRequestObserver,
+                  nsIObserver,
+                  nsISupportsWeakReference)
 
 SVGDocumentWrapper::SVGDocumentWrapper()
   : mIgnoreInvalidation(false),
@@ -65,45 +66,6 @@ SVGDocumentWrapper::DestroyViewer()
     mViewer->Destroy();
     mViewer = nullptr;
   }
-}
-
-bool
-SVGDocumentWrapper::GetWidthOrHeight(Dimension aDimension,
-                                     int32_t& aResult)
-{
-  SVGSVGElement* rootElem = GetRootSVGElem();
-  NS_ABORT_IF_FALSE(rootElem, "root elem missing or of wrong type");
-
-  // Get the width or height SVG object
-  nsRefPtr<SVGAnimatedLength> domAnimLength;
-  if (aDimension == eWidth) {
-    domAnimLength = rootElem->Width();
-  } else {
-    NS_ABORT_IF_FALSE(aDimension == eHeight, "invalid dimension");
-    domAnimLength = rootElem->Height();
-  }
-  NS_ENSURE_TRUE(domAnimLength, false);
-
-  // Get the animated value from the object
-  nsRefPtr<nsIDOMSVGLength> domLength = domAnimLength->AnimVal();
-  NS_ENSURE_TRUE(domLength, false);
-
-  // Check if it's a percent value (and fail if so)
-  uint16_t unitType;
-  nsresult rv = domLength->GetUnitType(&unitType);
-  NS_ENSURE_SUCCESS(rv, false);
-  if (unitType == nsIDOMSVGLength::SVG_LENGTHTYPE_PERCENTAGE) {
-    return false;
-  }
-
-  // Non-percent value - woot! Grab it & return it.
-  float floatLength;
-  rv = domLength->GetValue(&floatLength);
-  NS_ENSURE_SUCCESS(rv, false);
-
-  aResult = nsSVGUtils::ClampToInt(floatLength);
-
-  return true;
 }
 
 nsIFrame*
@@ -214,6 +176,19 @@ SVGDocumentWrapper::SetCurrentTime(float aTime)
   SVGSVGElement* svgElem = GetRootSVGElem();
   if (svgElem && svgElem->GetCurrentTime() != aTime) {
     svgElem->SetCurrentTime(aTime);
+  }
+}
+
+void
+SVGDocumentWrapper::TickRefreshDriver()
+{
+  nsCOMPtr<nsIPresShell> presShell;
+  mViewer->GetPresShell(getter_AddRefs(presShell));
+  if (presShell) {
+    nsPresContext* presContext = presShell->GetPresContext();
+    if (presContext) {
+      presContext->RefreshDriver()->DoTick();
+    }
   }
 }
 

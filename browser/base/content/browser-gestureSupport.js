@@ -2,8 +2,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-Cu.import("resource://gre/modules/TelemetryStopwatch.jsm", this);
-
 // Simple gestures support
 //
 // As per bug #412486, web content must not be allowed to receive any
@@ -189,12 +187,12 @@ let gGestureSupport = {
 
     let isVerticalSwipe = false;
     if (aEvent.direction == aEvent.DIRECTION_UP) {
-      if (content.pageYOffset > 0) {
+      if (gMultiProcessBrowser || content.pageYOffset > 0) {
         return false;
       }
       isVerticalSwipe = true;
     } else if (aEvent.direction == aEvent.DIRECTION_DOWN) {
-      if (content.pageYOffset < content.scrollMaxY) {
+      if (gMultiProcessBrowser || content.pageYOffset < content.scrollMaxY) {
         return false;
       }
       isVerticalSwipe = true;
@@ -571,8 +569,7 @@ let gHistorySwipeAnimation = {
       return;
 
     this.active = false;
-    this.isLTR = document.documentElement.mozMatchesSelector(
-                                            ":-moz-locale-dir(ltr)");
+    this.isLTR = document.documentElement.matches(":-moz-locale-dir(ltr)");
     this._trackedSnapshots = [];
     this._startingIndex = -1;
     this._historyIndex = -1;

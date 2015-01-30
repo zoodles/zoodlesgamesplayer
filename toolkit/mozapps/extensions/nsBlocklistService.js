@@ -1,4 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -11,13 +11,24 @@ const Ci = Components.interfaces;
 const Cr = Components.results;
 
 Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
-Components.utils.import("resource://gre/modules/AddonManager.jsm");
 Components.utils.import("resource://gre/modules/Services.jsm");
+
+try {
+  // AddonManager.jsm doesn't allow itself to be imported in the child
+  // process. We're used in the child process (for now), so guard against
+  // this.
+  Components.utils.import("resource://gre/modules/AddonManager.jsm");
+} catch (e) {
+}
 
 XPCOMUtils.defineLazyModuleGetter(this, "FileUtils",
                                   "resource://gre/modules/FileUtils.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "UpdateChannel",
                                   "resource://gre/modules/UpdateChannel.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "OS",
+                                  "resource://gre/modules/osfile.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "Task",
+                                  "resource://gre/modules/Task.jsm");
 
 const TOOLKIT_ID                      = "toolkit@mozilla.org"
 const KEY_PROFILEDIR                  = "ProfD";
@@ -62,6 +73,10 @@ XPCOMUtils.defineLazyServiceGetter(this, "gConsole",
 XPCOMUtils.defineLazyServiceGetter(this, "gVersionChecker",
                                    "@mozilla.org/xpcom/version-comparator;1",
                                    "nsIVersionComparator");
+
+XPCOMUtils.defineLazyServiceGetter(this, "gCertBlocklistService",
+                                   "@mozilla.org/security/certblocklist;1",
+                                   "nsICertBlocklist");
 
 XPCOMUtils.defineLazyGetter(this, "gPref", function bls_gPref() {
   return Cc["@mozilla.org/preferences-service;1"].getService(Ci.nsIPrefService).
@@ -122,10 +137,6 @@ XPCOMUtils.defineLazyGetter(this, "gCertUtils", function bls_gCertUtils() {
   Components.utils.import("resource://gre/modules/CertUtils.jsm", temp);
   return temp;
 });
-
-function getObserverService() {
-  return Cc["@mozilla.org/observer-service;1"].getService(Ci.nsIObserverService);
-}
 
 /**
  * Logs a string to the error console.
@@ -259,6 +270,26 @@ function parseRegExp(aStr) {
 }
 
 /**
+ * Helper function to test if the blockEntry matches with the plugin.
+ *
+ * @param   blockEntry
+ *          The plugin blocklist entries to compare against.
+ * @param   plugin
+ *          The nsIPluginTag to get the blocklist state for.
+ * @returns True if the blockEntry matches the plugin, false otherwise.
+ */
+function hasMatchingPluginName(blockEntry, plugin) {
+  for (let name in blockEntry.matches) {
+    if ((name in plugin) &&
+        typeof(plugin[name]) == "string" &&
+        blockEntry.matches[name].test(plugin[name])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Manages the Blocklist. The Blocklist is a representation of the contents of
  * blocklist.xml and allows us to remotely disable / re-enable blocklisted
  * items managed by the Extension Manager with an item's appDisabled property.
@@ -266,14 +297,15 @@ function parseRegExp(aStr) {
  */
 
 function Blocklist() {
-  let os = getObserverService();
-  os.addObserver(this, "xpcom-shutdown", false);
+  Services.obs.addObserver(this, "xpcom-shutdown", false);
+  Services.obs.addObserver(this, "sessionstore-windows-restored", false);
   gLoggingEnabled = getPref("getBoolPref", PREF_EM_LOGGING_ENABLED, false);
   gBlocklistEnabled = getPref("getBoolPref", PREF_BLOCKLIST_ENABLED, true);
   gBlocklistLevel = Math.min(getPref("getIntPref", PREF_BLOCKLIST_LEVEL, DEFAULT_LEVEL),
                                      MAX_BLOCK_LEVEL);
   gPref.addObserver("extensions.blocklist.", this, false);
   gPref.addObserver(PREF_EM_LOGGING_ENABLED, this, false);
+  this.wrappedJSObject = this;
 }
 
 Blocklist.prototype = {
@@ -298,8 +330,7 @@ Blocklist.prototype = {
   observe: function Blocklist_observe(aSubject, aTopic, aData) {
     switch (aTopic) {
     case "xpcom-shutdown":
-      let os = getObserverService();
-      os.removeObserver(this, "xpcom-shutdown");
+      Services.obs.removeObserver(this, "xpcom-shutdown");
       gPref.removeObserver("extensions.blocklist.", this);
       gPref.removeObserver(PREF_EM_LOGGING_ENABLED, this);
       break;
@@ -320,6 +351,10 @@ Blocklist.prototype = {
           break;
       }
       break;
+    case "sessionstore-windows-restored":
+      Services.obs.removeObserver(this, "sessionstore-windows-restored");
+      this._preloadBlocklist();
+      break;
     }
   },
 
@@ -331,7 +366,7 @@ Blocklist.prototype = {
 
   /* See nsIBlocklistService */
   getAddonBlocklistState: function Blocklist_getAddonBlocklistState(addon, appVersion, toolkitVersion) {
-    if (!this._addonEntries)
+    if (!this._isBlocklistLoaded())
       this._loadBlocklist();
     return this._getAddonBlocklistState(addon, this._addonEntries,
                                         appVersion, toolkitVersion);
@@ -434,7 +469,7 @@ Blocklist.prototype = {
     if (!gBlocklistEnabled)
       return "";
 
-    if (!this._addonEntries)
+    if (!this._isBlocklistLoaded())
       this._loadBlocklist();
 
     let blItem = this._findMatchingAddonEntry(this._addonEntries, addon);
@@ -563,12 +598,12 @@ Blocklist.prototype = {
 
     // When the blocklist loads we need to compare it to the current copy so
     // make sure we have loaded it.
-    if (!this._addonEntries)
+    if (!this._isBlocklistLoaded())
       this._loadBlocklist();
   },
 
-  onXMLLoad: function Blocklist_onXMLLoad(aEvent) {
-    var request = aEvent.target;
+  onXMLLoad: Task.async(function* (aEvent) {
+    let request = aEvent.target;
     try {
       gCertUtils.checkCert(request.channel);
     }
@@ -576,28 +611,28 @@ Blocklist.prototype = {
       LOG("Blocklist::onXMLLoad: " + e);
       return;
     }
-    var responseXML = request.responseXML;
+    let responseXML = request.responseXML;
     if (!responseXML || responseXML.documentElement.namespaceURI == XMLURI_PARSE_ERROR ||
         (request.status != 200 && request.status != 0)) {
       LOG("Blocklist::onXMLLoad: there was an error during load");
       return;
     }
-    var blocklistFile = FileUtils.getFile(KEY_PROFILEDIR, [FILE_BLOCKLIST]);
-    if (blocklistFile.exists())
-      blocklistFile.remove(false);
-    var fos = FileUtils.openSafeFileOutputStream(blocklistFile);
-    fos.write(request.responseText, request.responseText.length);
-    FileUtils.closeSafeFileOutputStream(fos);
 
     var oldAddonEntries = this._addonEntries;
     var oldPluginEntries = this._pluginEntries;
     this._addonEntries = [];
     this._pluginEntries = [];
-    this._loadBlocklistFromFile(FileUtils.getFile(KEY_PROFILEDIR,
-                                                  [FILE_BLOCKLIST]));
 
+    this._loadBlocklistFromString(request.responseText);
     this._blocklistUpdated(oldAddonEntries, oldPluginEntries);
-  },
+
+    try {
+      let path = OS.Path.join(OS.Constants.Path.profileDir, FILE_BLOCKLIST);
+      yield OS.File.writeAtomic(path, request.responseText, {tmpPath: path + ".tmp"});
+    } catch (e) {
+      LOG("Blocklist::onXMLLoad: " + e);
+    }
+  }),
 
   onXMLError: function Blocklist_onXMLError(aEvent) {
     try {
@@ -694,6 +729,13 @@ Blocklist.prototype = {
 #          <match name="description" exp="1[.]2[.]3"/>
 #        </pluginItem>
 #      </pluginItems>
+#      <certItems>
+#        <!-- issuerName is the DER issuer name data base64 encoded... -->
+#        <certItem issuerName="MA0xCzAJBgNVBAMMAmNh">
+#          <!-- ... as is the serial number DER data -->
+#          <serialNumber>AkHVNA==</serialNumber>
+#        </certItem>
+#      </certItems>
 #    </blocklist>
    */
 
@@ -703,18 +745,114 @@ Blocklist.prototype = {
       return;
     }
 
-    if (!file.exists()) {
-      LOG("Blocklist::_loadBlocklistFromFile: XML File does not exist");
+    let telemetry = Services.telemetry;
+
+    if (this._isBlocklistPreloaded()) {
+      telemetry.getHistogramById("BLOCKLIST_SYNC_FILE_LOAD").add(false);
+      this._loadBlocklistFromString(this._preloadedBlocklistContent);
+      delete this._preloadedBlocklistContent;
       return;
     }
 
-    var fileStream = Components.classes["@mozilla.org/network/file-input-stream;1"]
-                               .createInstance(Components.interfaces.nsIFileInputStream);
-    fileStream.init(file, FileUtils.MODE_RDONLY, FileUtils.PERMS_FILE, 0);
+    if (!file.exists()) {
+      LOG("Blocklist::_loadBlocklistFromFile: XML File does not exist " + file.path);
+      return;
+    }
+
+    telemetry.getHistogramById("BLOCKLIST_SYNC_FILE_LOAD").add(true);
+
+    let text = "";
+    let fstream = null;
+    let cstream = null;
+
+    try {
+      fstream = Components.classes["@mozilla.org/network/file-input-stream;1"]
+                          .createInstance(Components.interfaces.nsIFileInputStream);
+      cstream = Components.classes["@mozilla.org/intl/converter-input-stream;1"]
+                          .createInstance(Components.interfaces.nsIConverterInputStream);
+
+      fstream.init(file, FileUtils.MODE_RDONLY, FileUtils.PERMS_FILE, 0);
+      cstream.init(fstream, "UTF-8", 0, 0);
+
+      let str = {};
+      let read = 0;
+
+      do {
+        read = cstream.readString(0xffffffff, str); // read as much as we can and put it in str.value
+        text += str.value;
+      } while (read != 0);
+    } catch (e) {
+      LOG("Blocklist::_loadBlocklistFromFile: Failed to load XML file " + e);
+    } finally {
+      if (cstream)
+        cstream.close();
+      if (fstream)
+        fstream.close();
+    }
+
+    if (text)
+        this._loadBlocklistFromString(text);
+  },
+
+  _isBlocklistLoaded: function() {
+    return this._addonEntries != null && this._pluginEntries != null;
+  },
+
+  _isBlocklistPreloaded: function() {
+    return this._preloadedBlocklistContent != null;
+  },
+
+  /* Used for testing */
+  _clear: function() {
+    this._addonEntries = null;
+    this._pluginEntries = null;
+    this._preloadedBlocklistContent = null;
+  },
+
+  _preloadBlocklist: Task.async(function*() {
+    let profPath = OS.Path.join(OS.Constants.Path.profileDir, FILE_BLOCKLIST);
+    try {
+      yield this._preloadBlocklistFile(profPath);
+      return;
+    } catch (e) {
+      LOG("Blocklist::_preloadBlocklist: Failed to load XML file " + e)
+    }
+
+    var appFile = FileUtils.getFile(KEY_APPDIR, [FILE_BLOCKLIST]);
+    try{
+      yield this._preloadBlocklistFile(appFile.path);
+      return;
+    } catch (e) {
+      LOG("Blocklist::_preloadBlocklist: Failed to load XML file " + e)
+    }
+
+    LOG("Blocklist::_preloadBlocklist: no XML File found");
+  }),
+
+  _preloadBlocklistFile: Task.async(function* (path){
+    if (this._addonEntries) {
+      // The file has been already loaded.
+      return;
+    }
+
+    if (!gBlocklistEnabled) {
+      LOG("Blocklist::_preloadBlocklistFile: blocklist is disabled");
+      return;
+    }
+
+    let text = yield OS.File.read(path, { encoding: "utf-8" });
+
+    if (!this._addonEntries) {
+      // Store the content only if a sync load has not been performed in the meantime.
+      this._preloadedBlocklistContent = text;
+    }
+  }),
+
+  _loadBlocklistFromString : function Blocklist_loadBlocklistFromString(text) {
     try {
       var parser = Cc["@mozilla.org/xmlextras/domparser;1"].
                    createInstance(Ci.nsIDOMParser);
-      var doc = parser.parseFromStream(fileStream, "UTF-8", file.fileSize, "text/xml");
+      var doc = parser.parseFromString(text, "text/xml");
       if (doc.documentElement.namespaceURI != XMLURI_BLOCKLIST) {
         LOG("Blocklist::_loadBlocklistFromFile: aborting due to incorrect " +
             "XML Namespace.\r\nExpected: " + XMLURI_BLOCKLIST + "\r\n" +
@@ -735,18 +873,22 @@ Blocklist.prototype = {
           this._pluginEntries = this._processItemNodes(element.childNodes, "plugin",
                                                        this._handlePluginItemNode);
           break;
+        case "certItems":
+          this._processItemNodes(element.childNodes, "cert",
+                                 this._handleCertItemNode.bind(this));
+          break;
         default:
           Services.obs.notifyObservers(element,
                                        "blocklist-data-" + element.localName,
                                        null);
         }
       }
+      gCertBlocklistService.saveEntries();
     }
     catch (e) {
       LOG("Blocklist::_loadBlocklistFromFile: Error constructing blocklist " + e);
       return;
     }
-    fileStream.close();
   },
 
   _processItemNodes: function Blocklist_processItemNodes(itemNodes, prefix, handler) {
@@ -761,6 +903,20 @@ Blocklist.prototype = {
       handler(blocklistElement, result);
     }
     return result;
+  },
+
+  _handleCertItemNode: function Blocklist_handleCertItemNode(blocklistElement,
+                                                             result) {
+    let issuer = blocklistElement.getAttribute("issuerName");
+    for (let snElement of blocklistElement.children) {
+      try {
+        gCertBlocklistService.addRevokedCert(issuer, snElement.textContent);
+      } catch (e) {
+        // we want to keep trying other elements since missing all items
+        // is worse than missing one
+        LOG("Blocklist::_handleCertItemNode: Error adding revoked cert " + e);
+      }
+    }
   },
 
   _handleEmItemNode: function Blocklist_handleEmItemNode(blocklistElement, result) {
@@ -825,6 +981,7 @@ Blocklist.prototype = {
       matches: {},
       versions: [],
       blockID: null,
+      infoURL: null,
     };
     var hasMatch = false;
     for (var x = 0; x < matchNodes.length; ++x) {
@@ -841,8 +998,12 @@ Blocklist.prototype = {
           // Ignore invalid regular expressions
         }
       }
-      if (matchElement.localName == "versionRange")
+      if (matchElement.localName == "versionRange") {
         blockEntry.versions.push(new BlocklistItemData(matchElement));
+      }
+      else if (matchElement.localName == "infoURL") {
+        blockEntry.infoURL = matchElement.textContent;
+      }
     }
     // Plugin entries require *something* to match to an actual plugin
     if (!hasMatch)
@@ -859,7 +1020,7 @@ Blocklist.prototype = {
   /* See nsIBlocklistService */
   getPluginBlocklistState: function Blocklist_getPluginBlocklistState(plugin,
                            appVersion, toolkitVersion) {
-    if (!this._pluginEntries)
+    if (!this._isBlocklistLoaded())
       this._loadBlocklist();
     return this._getPluginBlocklistState(plugin, this._pluginEntries,
                                          appVersion, toolkitVersion);
@@ -927,32 +1088,47 @@ Blocklist.prototype = {
     return Ci.nsIBlocklistService.STATE_NOT_BLOCKED;
   },
 
-  /* See nsIBlocklistService */
-  getPluginBlocklistURL: function Blocklist_getPluginBlocklistURL(plugin) {
+  /**
+   * Get the matching blocklist entry for the passed plugin, if
+   * available.
+   * @param plugin The plugin to find the block entry for.
+   * @returns The block entry which matches the passed plugin, null
+   *          otherwise.
+   */
+  _getPluginBlockEntry: function (plugin) {
     if (!gBlocklistEnabled)
-      return "";
+      return null;
 
-    if (!this._pluginEntries)
+    if (!this._isBlocklistLoaded())
       this._loadBlocklist();
 
     for each (let blockEntry in this._pluginEntries) {
-      let matchFailed = false;
-      for (let name in blockEntry.matches) {
-        if (!(name in plugin) ||
-            typeof(plugin[name]) != "string" ||
-            !blockEntry.matches[name].test(plugin[name])) {
-          matchFailed = true;
-          break;
-        }
-      }
-
-      if (!matchFailed) {
-        if(!blockEntry.blockID)
-          return null;
-        else
-          return this._createBlocklistURL(blockEntry.blockID);
+      if (hasMatchingPluginName(blockEntry, plugin)) {
+        return blockEntry;
       }
     }
+
+	  return null;
+  },
+
+  /* See nsIBlocklistService */
+  getPluginBlocklistURL: function Blocklist_getPluginBlocklistURL(plugin) {
+    let blockEntry = this._getPluginBlockEntry(plugin);
+    if (!blockEntry || !blockEntry.blockID) {
+      return null;
+    }
+
+    return this._createBlocklistURL(blockEntry.blockID);
+  },
+
+  /* See nsIBlocklistService */
+  getPluginInfoURL: function (plugin) {
+    let blockEntry = this._getPluginBlockEntry(plugin);
+    if (!blockEntry || !blockEntry.blockID) {
+      return null;
+    }
+
+    return blockEntry.infoURL;
   },
 
   _blocklistUpdated: function Blocklist_blocklistUpdated(oldAddonEntries, oldPluginEntries) {

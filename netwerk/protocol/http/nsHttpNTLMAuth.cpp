@@ -214,6 +214,7 @@ CanUseDefaultCredentials(nsIHttpAuthenticableChannel *channel,
 // Instead we use its existence as a flag.  See ChallengeReceived.
 class nsNTLMSessionState MOZ_FINAL : public nsISupports
 {
+    ~nsNTLMSessionState() {}
 public:
     NS_DECL_ISUPPORTS
 };
@@ -221,7 +222,7 @@ NS_IMPL_ISUPPORTS0(nsNTLMSessionState)
 
 //-----------------------------------------------------------------------------
 
-NS_IMPL_ISUPPORTS1(nsHttpNTLMAuth, nsIHttpAuthenticator)
+NS_IMPL_ISUPPORTS(nsHttpNTLMAuth, nsIHttpAuthenticator)
 
 NS_IMETHODIMP
 nsHttpNTLMAuth::ChallengeReceived(nsIHttpAuthenticableChannel *channel,

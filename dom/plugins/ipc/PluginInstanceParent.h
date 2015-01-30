@@ -22,6 +22,7 @@
 #include "nsDataHashtable.h"
 #include "nsHashKeys.h"
 #include "nsRect.h"
+#include "PluginDataResolver.h"
 
 #ifdef MOZ_X11
 class gfxXlibSurface;
@@ -30,6 +31,7 @@ class gfxXlibSurface;
 
 class gfxASurface;
 class gfxContext;
+class nsPluginInstanceOwner;
 
 namespace mozilla {
 namespace layers {
@@ -42,6 +44,7 @@ class PBrowserStreamParent;
 class PluginModuleParent;
 
 class PluginInstanceParent : public PPluginInstanceParent
+                           , public PluginDataResolver
 {
     friend class PluginModuleParent;
     friend class BrowserStreamParent;
@@ -74,11 +77,7 @@ public:
                               const uint32_t& length,
                               const uint32_t& lastmodified,
                               PStreamNotifyParent* notifyData,
-                              const nsCString& headers,
-                              const nsCString& mimeType,
-                              const bool& seekable,
-                              NPError* rv,
-                              uint16_t *stype) MOZ_OVERRIDE;
+                              const nsCString& headers) MOZ_OVERRIDE;
     virtual bool
     DeallocPBrowserStreamParent(PBrowserStreamParent* stream) MOZ_OVERRIDE;
 
@@ -119,8 +118,6 @@ public:
                                                   NPError* result) MOZ_OVERRIDE;
     virtual bool
     AnswerNPN_SetValue_NPPVpluginDrawingModel(const int& drawingModel,
-                                              OptionalShmem *remoteImageData,
-                                              CrossProcessMutexHandle *mutex,
                                               NPError* result) MOZ_OVERRIDE;
     virtual bool
     AnswerNPN_SetValue_NPPVpluginEventModel(const int& eventModel,
@@ -207,18 +204,13 @@ public:
                            bool *result) MOZ_OVERRIDE;
 
     virtual bool
-    AnswerNPN_InitAsyncSurface(const gfxIntSize& size,
-                               const NPImageFormat& format,
-                               NPRemoteAsyncSurface* surfData,
-                               bool* result) MOZ_OVERRIDE;
-
-    virtual bool
     RecvRedrawPlugin() MOZ_OVERRIDE;
 
     virtual bool
     RecvNegotiatedCarbon() MOZ_OVERRIDE;
 
-    virtual bool RecvReleaseDXGISharedSurface(const DXGISharedSurfaceHandle &aHandle) MOZ_OVERRIDE;
+    virtual bool
+    RecvAsyncNPP_NewResult(const NPError& aResult) MOZ_OVERRIDE;
 
     NPError NPP_SetWindow(const NPWindow* aWindow);
 
@@ -264,6 +256,12 @@ public:
       return mNPP;
     }
 
+    bool
+    UseSurrogate() const
+    {
+        return mUseSurrogate;
+    }
+
     virtual bool
     AnswerPluginFocusChange(const bool& gotFocus) MOZ_OVERRIDE;
 
@@ -280,6 +278,13 @@ public:
     nsresult EndUpdateBackground(gfxContext* aCtx,
                                  const nsIntRect& aRect);
     void DidComposite() { unused << SendNPP_DidComposite(); }
+
+    virtual PluginAsyncSurrogate* GetAsyncSurrogate() MOZ_OVERRIDE;
+
+    virtual PluginInstanceParent* GetInstance() MOZ_OVERRIDE { return this; }
+
+    static PluginInstanceParent* Cast(NPP instance,
+                                      PluginAsyncSurrogate** aSurrogate = nullptr);
 
 private:
     // Create an appropriate platform surface for a background of size
@@ -301,15 +306,15 @@ private:
                                      PPluginScriptableObjectParent** aValue,
                                      NPError* aResult);
 
-    bool IsAsyncDrawing();
+    nsPluginInstanceOwner* GetOwner();
 
 private:
     PluginModuleParent* mParent;
+    nsRefPtr<PluginAsyncSurrogate> mSurrogate;
+    bool mUseSurrogate;
     NPP mNPP;
     const NPNetscapeFuncs* mNPNIface;
     NPWindowType mWindowType;
-    Shmem mRemoteImageDataShmem;
-    nsAutoPtr<CrossProcessMutex> mRemoteImageDataMutex;
     int16_t            mDrawingModel;
     nsAutoPtr<mozilla::layers::CompositionNotifySink> mNotifySink;
 

@@ -154,6 +154,7 @@ const ADDON_PREP_DIR = "appupdateprep";
 // from interefering with the tests.
 const PREF_DISABLEDADDONS = "app.update.test.disabledAddons";
 const PREF_EM_HOTFIX_ID = "extensions.hotfix.id";
+const PREF_EM_SILENT = "app.update.silent";
 const TEST_ADDONS = [ "appdisabled_1", "appdisabled_2",
                       "compatible_1", "compatible_2",
                       "noupdate_1", "noupdate_2",
@@ -483,7 +484,7 @@ function delayedDefaultCallback() {
 
   if (gTest.buttonClick) {
     debugDump("clicking " + gTest.buttonClick + " button");
-    if(gTest.extraDelayedFinishFunction) {
+    if (gTest.extraDelayedFinishFunction) {
       throw("Tests cannot have a buttonClick and an extraDelayedFinishFunction property");
     }
     gDocElem.getButton(gTest.buttonClick).click();
@@ -492,6 +493,45 @@ function delayedDefaultCallback() {
     debugDump("calling extraDelayedFinishFunction " +
               gTest.extraDelayedFinishFunction.name);
     gTest.extraDelayedFinishFunction();
+  }
+}
+
+/**
+ * Gets the continue file used to signal the mock http server to continue
+ * downloading for slow download mar file tests without creating it.
+ *
+ * @return nsILocalFile for the continue file.
+ */
+function getContinueFile() {
+  let continueFile = AUS_Cc["@mozilla.org/file/directory_service;1"].
+                     getService(AUS_Ci.nsIProperties).
+                     get("CurWorkD", AUS_Ci.nsILocalFile);
+  let continuePath = REL_PATH_DATA + "/continue";
+  let continuePathParts = continuePath.split("/");
+  for (let i = 0; i < continuePathParts.length; ++i) {
+    continueFile.append(continuePathParts[i]);
+  }
+  return continueFile;
+}
+
+/**
+ * Creates the continue file used to signal the mock http server to continue
+ * downloading for slow download mar file tests.
+ */
+function createContinueFile() {
+  debugDump("creating 'continue' file for slow mar downloads");
+  writeFile(getContinueFile(), "");
+}
+
+/**
+ * Removes the continue file used to signal the mock http server to continue
+ * downloading for slow download mar file tests.
+ */
+function removeContinueFile() {
+  let continueFile = getContinueFile();
+  if (continueFile.exists()) {
+    debugDump("removing 'continue' file for slow mar downloads");
+    continueFile.remove(false);
   }
 }
 
@@ -872,6 +912,7 @@ function setupPrefs() {
   Services.prefs.setIntPref(PREF_APP_UPDATE_PROMPTWAITTIME, 0);
   Services.prefs.setBoolPref(PREF_EXTENSIONS_STRICT_COMPAT, true);
   Services.prefs.setCharPref(PREF_EM_HOTFIX_ID, "hotfix" + ADDON_ID_SUFFIX);
+  Services.prefs.setBoolPref(PREF_EM_SILENT, false);
 }
 
 /**
@@ -889,7 +930,13 @@ function resetFiles() {
   // Not being able to remove the "updated" directory will not adversely affect
   // subsequent tests so wrap it in a try block and don't test whether its
   // removal was successful.
-  let updatedDir = getUpdatedDir();
+#ifdef XP_MACOSX
+  let updatedDir = getUpdatesDir();
+  updatedDir.append(DIR_PATCH);
+#else
+  let updatedDir = getAppBaseDir();
+#endif
+  updatedDir.append(DIR_UPDATED);
   if (updatedDir.exists()) {
     try {
       removeDirRecursive(updatedDir);
@@ -1025,6 +1072,10 @@ function resetPrefs() {
 
   if (Services.prefs.prefHasUserValue(PREF_EM_HOTFIX_ID)) {
     Services.prefs.clearUserPref(PREF_EM_HOTFIX_ID);
+  }
+
+  if (Services.prefs.prefHasUserValue(PREF_EM_SILENT)) {
+    Services.prefs.clearUserPref(PREF_EM_SILENT);
   }
 }
 

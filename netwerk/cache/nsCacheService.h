@@ -62,9 +62,11 @@ private:
  *  nsCacheService
  ******************************************************************************/
 
-class nsCacheService : public nsICacheServiceInternal,
-                       public nsIMemoryReporter
+class nsCacheService MOZ_FINAL : public nsICacheServiceInternal,
+                                 public nsIMemoryReporter
 {
+    virtual ~nsCacheService();
+
 public:
     NS_DECL_THREADSAFE_ISUPPORTS
     NS_DECL_NSICACHESERVICE
@@ -72,7 +74,6 @@ public:
     NS_DECL_NSIMEMORYREPORTER
 
     nsCacheService();
-    virtual ~nsCacheService();
 
     // Define a Create method to be used with a factory:
     static nsresult
@@ -127,7 +128,9 @@ public:
 
     static bool      GetClearingEntries();
 
+    static void      GetCacheBaseDirectoty(nsIFile ** result);
     static void      GetDiskCacheDirectory(nsIFile ** result);
+    static void      GetAppCacheDirectory(nsIFile ** result);
 
     /**
      * Methods called by any cache classes
@@ -179,7 +182,7 @@ public:
     /**
      * Methods called by nsCacheProfilePrefObserver
      */
-    static void      OnProfileShutdown(bool cleanse);
+    static void      OnProfileShutdown();
     static void      OnProfileChanged();
 
     static void      SetDiskCacheEnabled(bool    enabled);
@@ -225,6 +228,14 @@ public:
     bool             IsDoomListEmpty();
 
     typedef bool (*DoomCheckFn)(nsCacheEntry* entry);
+
+    // Accessors to the disabled functionality
+    nsresult CreateSessionInternal(const char *          clientID,
+                                   nsCacheStoragePolicy  storagePolicy,
+                                   bool                  streamBased,
+                                   nsICacheSession     **result);
+    nsresult VisitEntriesInternal(nsICacheVisitor *visitor);
+    nsresult EvictEntriesInternal(nsCacheStoragePolicy storagePolicy);
 
 private:
     friend class nsCacheServiceAutoLock;
@@ -382,7 +393,7 @@ private:
 // execution scope.
 class nsCacheServiceAutoLock {
 public:
-    nsCacheServiceAutoLock(mozilla::Telemetry::ID mainThreadLockerID) {
+    explicit nsCacheServiceAutoLock(mozilla::Telemetry::ID mainThreadLockerID) {
         nsCacheService::Lock(mainThreadLockerID);
     }
     ~nsCacheServiceAutoLock() {

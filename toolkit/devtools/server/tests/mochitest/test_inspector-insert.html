@@ -12,8 +12,8 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=
   <script type="application/javascript;version=1.8" src="inspector-helpers.js"></script>
   <script type="application/javascript;version=1.8">
 Components.utils.import("resource://gre/modules/devtools/Loader.jsm");
+const {Promise: promise} = Components.utils.import("resource://gre/modules/Promise.jsm", {});
 
-const promise = devtools.require("sdk/core/promise");
 const inspector = devtools.require("devtools/server/actors/inspector");
 
 window.onload = function() {
@@ -65,7 +65,7 @@ addTest(function testRearrange() {
     nextNode = response.nodes[13];
     return gWalker.insertBefore(nodeA, longlist, nextNode);
   }).then(response => {
-    let sibling = inspector._documentWalker(gInspectee.querySelector("#a"), window).nextSibling();
+    let sibling = new inspector._documentWalker(gInspectee.querySelector("#a"), window).nextSibling();
     is(sibling, nextNode.rawNode(), "Node should match the expected next node.");
     return gWalker.children(longlist);
   }).then(response => {

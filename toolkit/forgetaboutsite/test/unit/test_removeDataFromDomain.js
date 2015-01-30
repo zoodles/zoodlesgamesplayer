@@ -1,4 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
  * vim: sw=2 ts=2 sts=2
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -18,7 +18,9 @@ Cu.import("resource://gre/modules/PlacesUtils.jsm");
 Cu.import("resource://gre/modules/ForgetAboutSite.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "Promise",
-                                  "resource://gre/modules/commonjs/sdk/core/promise.js");
+                                  "resource://gre/modules/Promise.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "PlacesTestUtils",
+                                  "resource://testing-common/PlacesTestUtils.jsm");
 
 const COOKIE_EXPIRY = Math.round(Date.now() / 1000) + 60;
 const COOKIE_NAME = "testcookie";
@@ -414,7 +416,7 @@ function test_history_not_cleared_with_uri_contains_domain()
   do_check_true(yield promiseIsURIVisited(TEST_URI));
 
   // Clear history since we left something there from this test.
-  PlacesUtils.bhistory.removeAllPages();
+  yield PlacesTestUtils.clearHistory();
 }
 
 // Cookie Service
@@ -673,7 +675,7 @@ function test_storage_cleared()
                     getNoAppCodebasePrincipal(aURI);
     let dsm = Cc["@mozilla.org/dom/localStorage-manager;1"].
               getService(Ci.nsIDOMStorageManager);
-    return dsm.createStorage(principal, "");
+    return dsm.createStorage(null, principal, "");
   }
 
   let s = [

@@ -3,7 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/Hal.h"
+#include "Hal.h"
 #include "mozilla/HalWakeLock.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPtr.h"
@@ -12,7 +12,7 @@
 #include "nsDataHashtable.h"
 #include "nsHashKeys.h"
 #include "nsIPropertyBag2.h"
-#include "nsObserverService.h"
+#include "nsIObserverService.h"
 
 using namespace mozilla;
 using namespace mozilla::hal;
@@ -97,12 +97,13 @@ RemoveChildFromList(const nsAString& aKey, nsAutoPtr<ProcessLockTable>& aTable,
 }
 
 class ClearHashtableOnShutdown MOZ_FINAL : public nsIObserver {
+  ~ClearHashtableOnShutdown() {}
 public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIOBSERVER
 };
 
-NS_IMPL_ISUPPORTS1(ClearHashtableOnShutdown, nsIObserver)
+NS_IMPL_ISUPPORTS(ClearHashtableOnShutdown, nsIObserver)
 
 NS_IMETHODIMP
 ClearHashtableOnShutdown::Observe(nsISupports* aSubject, const char* aTopic, const char16_t* data)
@@ -116,12 +117,13 @@ ClearHashtableOnShutdown::Observe(nsISupports* aSubject, const char* aTopic, con
 }
 
 class CleanupOnContentShutdown MOZ_FINAL : public nsIObserver {
+  ~CleanupOnContentShutdown() {}
 public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIOBSERVER
 };
 
-NS_IMPL_ISUPPORTS1(CleanupOnContentShutdown, nsIObserver)
+NS_IMPL_ISUPPORTS(CleanupOnContentShutdown, nsIObserver)
 
 NS_IMETHODIMP
 CleanupOnContentShutdown::Observe(nsISupports* aSubject, const char* aTopic, const char16_t* data)

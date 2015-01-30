@@ -18,42 +18,21 @@
 #endif
 
 
-char *
-get_content_type_from_mime_type(const char *mimeType)
-{
-  GList* contentTypes = g_content_types_get_registered();
-  GList* ct_ptr = contentTypes;
-  char* foundContentType = nullptr;
-
-  while (ct_ptr) {
-    char *mimeTypeFromContentType =  g_content_type_get_mime_type((char*)ct_ptr->data);
-    if (strcmp(mimeTypeFromContentType, mimeType) == 0) {
-      foundContentType = g_strdup((char*)ct_ptr->data);
-      g_free(mimeTypeFromContentType);
-      break;
-    }
-    g_free(mimeTypeFromContentType);
-    ct_ptr = ct_ptr->next;
-  }
-  g_list_foreach(contentTypes, (GFunc) g_free, nullptr);
-  g_list_free(contentTypes);
-  return foundContentType;
-}
-
 class nsGIOMimeApp MOZ_FINAL : public nsIGIOMimeApp
 {
 public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIGIOMIMEAPP
 
-  nsGIOMimeApp(GAppInfo* aApp) : mApp(aApp) {}
-  ~nsGIOMimeApp() { g_object_unref(mApp); }
+  explicit nsGIOMimeApp(GAppInfo* aApp) : mApp(aApp) {}
 
 private:
+  ~nsGIOMimeApp() { g_object_unref(mApp); }
+
   GAppInfo *mApp;
 };
 
-NS_IMPL_ISUPPORTS1(nsGIOMimeApp, nsIGIOMimeApp)
+NS_IMPL_ISUPPORTS(nsGIOMimeApp, nsIGIOMimeApp)
 
 NS_IMETHODIMP
 nsGIOMimeApp::GetId(nsACString& aId)
@@ -107,9 +86,10 @@ nsGIOMimeApp::Launch(const nsACString& aUri)
 
 class GIOUTF8StringEnumerator MOZ_FINAL : public nsIUTF8StringEnumerator
 {
+  ~GIOUTF8StringEnumerator() { }
+
 public:
   GIOUTF8StringEnumerator() : mIndex(0) { }
-  ~GIOUTF8StringEnumerator() { }
 
   NS_DECL_ISUPPORTS
   NS_DECL_NSIUTF8STRINGENUMERATOR
@@ -118,7 +98,7 @@ public:
   uint32_t            mIndex;
 };
 
-NS_IMPL_ISUPPORTS1(GIOUTF8StringEnumerator, nsIUTF8StringEnumerator)
+NS_IMPL_ISUPPORTS(GIOUTF8StringEnumerator, nsIUTF8StringEnumerator)
 
 NS_IMETHODIMP
 GIOUTF8StringEnumerator::HasMore(bool* aResult)
@@ -170,7 +150,7 @@ NS_IMETHODIMP
 nsGIOMimeApp::SetAsDefaultForMimeType(nsACString const& aMimeType)
 {
   char *content_type =
-    get_content_type_from_mime_type(PromiseFlatCString(aMimeType).get());
+    g_content_type_from_mime_type(PromiseFlatCString(aMimeType).get());
   if (!content_type)
     return NS_ERROR_FAILURE;
   GError *error = nullptr;
@@ -253,7 +233,7 @@ nsGIOMimeApp::SetAsDefaultForURIScheme(nsACString const& aURIScheme)
   return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS1(nsGIOService, nsIGIOService)
+NS_IMPL_ISUPPORTS(nsGIOService, nsIGIOService)
 
 NS_IMETHODIMP
 nsGIOService::GetMimeTypeFromExtension(const nsACString& aExtension,
@@ -308,7 +288,7 @@ nsGIOService::GetAppForMimeType(const nsACString& aMimeType,
 {
   *aApp = nullptr;
   char *content_type =
-    get_content_type_from_mime_type(PromiseFlatCString(aMimeType).get());
+    g_content_type_from_mime_type(PromiseFlatCString(aMimeType).get());
   if (!content_type)
     return NS_ERROR_FAILURE;
 
@@ -330,7 +310,7 @@ nsGIOService::GetDescriptionForMimeType(const nsACString& aMimeType,
                                               nsACString& aDescription)
 {
   char *content_type =
-    get_content_type_from_mime_type(PromiseFlatCString(aMimeType).get());
+    g_content_type_from_mime_type(PromiseFlatCString(aMimeType).get());
   if (!content_type)
     return NS_ERROR_FAILURE;
 

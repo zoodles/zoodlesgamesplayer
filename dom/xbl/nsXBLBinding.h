@@ -40,9 +40,8 @@ class nsAnonymousContentList;
 class nsXBLBinding MOZ_FINAL
 {
 public:
-  nsXBLBinding(nsXBLPrototypeBinding* aProtoBinding);
+  explicit nsXBLBinding(nsXBLPrototypeBinding* aProtoBinding);
   nsXBLBinding(mozilla::dom::ShadowRoot* aShadowRoot, nsXBLPrototypeBinding* aProtoBinding);
-  ~nsXBLBinding();
 
   /**
    * XBLBindings are refcounted.  They are held onto in 3 ways:
@@ -68,11 +67,6 @@ public:
   nsIContent* GetBoundElement() { return mBoundElement; }
   void SetBoundElement(nsIContent *aElement);
 
-  void SetJSClass(nsXBLJSClass *aClass) {
-    MOZ_ASSERT(!mJSClass && aClass);
-    mJSClass = aClass;
-  }
-
   /*
    * Does a lookup for a method or attribute provided by one of the bindings'
    * prototype implementation. If found, |desc| will be set up appropriately,
@@ -90,6 +84,8 @@ public:
   bool HasField(nsString& aName);
 
 protected:
+
+  ~nsXBLBinding();
 
   /*
    * Internal version. Requires that aCx is in appropriate xbl scope.
@@ -165,14 +161,12 @@ public:
 protected:
 
   bool mMarkedForDeath;
-  bool mUsingXBLScope;
+  bool mUsingContentXBLScope;
+  bool mIsShadowRootBinding;
 
   nsXBLPrototypeBinding* mPrototypeBinding; // Weak, but we're holding a ref to the docinfo
   nsCOMPtr<nsIContent> mContent; // Strong. Our anonymous content stays around with us.
   nsRefPtr<nsXBLBinding> mNextBinding; // Strong. The derived binding owns the base class bindings.
-  nsRefPtr<nsXBLJSClass> mJSClass; // Strong. The class object also holds a strong reference,
-                                   // which might be somewhat redundant, but be safe to avoid
-                                   // worrying about edge cases.
 
   nsIContent* mBoundElement; // [WEAK] We have a reference, but we don't own it.
 

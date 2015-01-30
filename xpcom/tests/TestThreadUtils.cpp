@@ -19,6 +19,7 @@ enum {
   TEST_STDCALL_NONVOID_ARG_NONVOID_RETURN,
   TEST_STDCALL_NONVOID_ARG_NONVOID_RETURN_EXPLICIT,
 #endif
+  TEST_CALL_NEWTHREAD_SUICIDAL,
   MAX_TESTS
 };
 
@@ -30,14 +31,35 @@ class nsFoo : public nsISupports {
     *aBool = true;
     return NS_OK;
   }
+
+private:
   virtual ~nsFoo() {}
 };
 
 NS_IMPL_ISUPPORTS0(nsFoo)
 
+class TestSuicide : public nsRunnable {
+  NS_IMETHOD Run() {
+    // Runs first time on thread "Suicide", then dies on MainThread
+    if (!NS_IsMainThread()) {
+      mThread = do_GetCurrentThread();
+      NS_DispatchToMainThread(this);
+      return NS_OK;
+    }
+    MOZ_ASSERT(mThread);
+    mThread->Shutdown();
+    gRunnableExecuted[TEST_CALL_NEWTHREAD_SUICIDAL] = true;
+    return NS_OK;
+  }
+
+private:
+  nsCOMPtr<nsIThread> mThread;
+};
+
 class nsBar : public nsISupports {
-  NS_DECL_ISUPPORTS
   virtual ~nsBar() {}
+public:
+  NS_DECL_ISUPPORTS
   void DoBar1(void) {
     gRunnableExecuted[TEST_CALL_VOID_ARG_VOID_RETURN] = true;
   }
@@ -101,7 +123,7 @@ int main(int argc, char** argv)
 
     // This pointer will be freed at the end of the block
     // Do not dereference this pointer in the runnable method!
-    nsFoo * rawFoo = new nsFoo();
+    nsRefPtr<nsFoo> rawFoo = new nsFoo();
 
     // Read only string. Dereferencing in runnable method to check this works.
     char* message = (char*)"Test message";
@@ -124,12 +146,19 @@ int main(int argc, char** argv)
     NS_DispatchToMainThread(NS_NewRunnableMethodWithArg<nsFoo*>(bar, &nsBar::DoBar5std, rawFoo));
     NS_DispatchToMainThread(NS_NewRunnableMethodWithArg<char*>(bar, &nsBar::DoBar6std, message));
 #endif
-
-    delete rawFoo;
   }
 
   // Spin the event loop
   NS_ProcessPendingEvents(nullptr);
+
+  // Now test a suicidal event in NS_New(Named)Thread
+  nsCOMPtr<nsIThread> thread;
+  NS_NewNamedThread("SuicideThread", getter_AddRefs(thread), new TestSuicide());
+  MOZ_ASSERT(thread);
+
+  while (!gRunnableExecuted[TEST_CALL_NEWTHREAD_SUICIDAL]) {
+    NS_ProcessPendingEvents(nullptr);
+  }
 
   int result = 0;
 

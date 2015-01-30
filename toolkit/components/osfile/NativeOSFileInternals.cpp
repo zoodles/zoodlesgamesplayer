@@ -46,7 +46,7 @@
 #endif // defined (XP_UNIX)
 
 #if defined(XP_WIN)
-#include <Windows.h>
+#include <windows.h>
 #endif // defined (XP_WIN)
 
 namespace mozilla {
@@ -92,10 +92,10 @@ struct ScopedArrayBufferContentsTraits {
 };
 
 struct ScopedArrayBufferContents: public Scoped<ScopedArrayBufferContentsTraits> {
-  ScopedArrayBufferContents(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM):
+  explicit ScopedArrayBufferContents(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM):
     Scoped<ScopedArrayBufferContentsTraits>(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM_TO_PARENT)
   { }
-  ScopedArrayBufferContents(const ArrayBufferContents& v
+  explicit ScopedArrayBufferContents(const ArrayBufferContents& v
                             MOZ_GUARD_OBJECT_NOTIFIER_PARAM):
     Scoped<ScopedArrayBufferContentsTraits>(v MOZ_GUARD_OBJECT_NOTIFIER_PARAM_TO_PARENT)
   { }
@@ -114,7 +114,7 @@ struct ScopedArrayBufferContents: public Scoped<ScopedArrayBufferContentsTraits>
   bool Allocate(uint32_t length) {
     dispose();
     ArrayBufferContents& value = rwget();
-    void *ptr = JS_AllocateArrayBufferContents(/*no context available*/nullptr, length);
+    void *ptr = js_calloc(1, length);
     if (ptr) {
       value.data = (uint8_t *) ptr;
       value.nbytes = length;
@@ -123,8 +123,8 @@ struct ScopedArrayBufferContents: public Scoped<ScopedArrayBufferContentsTraits>
     return false;
   }
 private:
-  explicit ScopedArrayBufferContents(ScopedArrayBufferContents& source) MOZ_DELETE;
-  ScopedArrayBufferContents& operator=(ScopedArrayBufferContents& source) MOZ_DELETE;
+  explicit ScopedArrayBufferContents(ScopedArrayBufferContents& source) = delete;
+  ScopedArrayBufferContents& operator=(ScopedArrayBufferContents& source) = delete;
 };
 
 ///////// Cross-platform issues
@@ -171,16 +171,11 @@ public:
    * @param aStartDate The instant at which the operation was
    * requested.  Used to collect Telemetry statistics.
    */
-  AbstractResult(TimeStamp aStartDate)
+  explicit AbstractResult(TimeStamp aStartDate)
     : mStartDate(aStartDate)
   {
     MOZ_ASSERT(NS_IsMainThread());
     mozilla::HoldJSObjects(this);
-  }
-  virtual ~AbstractResult() {
-    MOZ_ASSERT(NS_IsMainThread());
-    DropJSData();
-    mozilla::DropJSObjects(this);
   }
 
   /**
@@ -207,6 +202,12 @@ public:
   }
 
 protected:
+  virtual ~AbstractResult() {
+    MOZ_ASSERT(NS_IsMainThread());
+    DropJSData();
+    mozilla::DropJSObjects(this);
+  }
+
   virtual nsresult GetCacheableResult(JSContext *cx, JS::MutableHandleValue aResult) = 0;
 
 private:
@@ -276,7 +277,7 @@ AbstractResult::GetResult(JSContext *cx, JS::MutableHandleValue aResult)
 class StringResult MOZ_FINAL : public AbstractResult
 {
 public:
-  StringResult(TimeStamp aStartDate)
+  explicit StringResult(TimeStamp aStartDate)
     : AbstractResult(aStartDate)
   {
   }
@@ -327,7 +328,7 @@ StringResult::GetCacheableResult(JSContext* cx, JS::MutableHandleValue aResult)
 class TypedArrayResult MOZ_FINAL : public AbstractResult
 {
 public:
-  TypedArrayResult(TimeStamp aStartDate)
+  explicit TypedArrayResult(TimeStamp aStartDate)
     : AbstractResult(aStartDate)
   {
   }
@@ -523,7 +524,7 @@ public:
                                                 aDiscardedResult,
                                                 aOperation,
                                                 aOSError);
-    nsresult rv = NS_DispatchToMainThread(event, NS_DISPATCH_NORMAL);
+    nsresult rv = NS_DispatchToMainThread(event);
     if (NS_FAILED(rv)) {
       // Last ditch attempt to release on the main thread - some of
       // the members of event are not thread-safe, so letting the
@@ -541,7 +542,7 @@ public:
     nsRefPtr<SuccessEvent> event = new SuccessEvent(mOnSuccess.forget(),
                                                     mOnError.forget(),
                                                     aResult);
-    nsresult rv = NS_DispatchToMainThread(event, NS_DISPATCH_NORMAL);
+    nsresult rv = NS_DispatchToMainThread(event);
     if (NS_FAILED(rv)) {
       // Last ditch attempt to release on the main thread - some of
       // the members of event are not thread-safe, so letting the
@@ -859,7 +860,7 @@ protected:
 
 // The OS.File service
 
-NS_IMPL_ISUPPORTS1(NativeOSFileInternalsService, nsINativeOSFileInternalsService);
+NS_IMPL_ISUPPORTS(NativeOSFileInternalsService, nsINativeOSFileInternalsService);
 
 NS_IMETHODIMP
 NativeOSFileInternalsService::Read(const nsAString& aPath,

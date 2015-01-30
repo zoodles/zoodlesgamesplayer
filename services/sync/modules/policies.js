@@ -13,6 +13,8 @@ Cu.import("resource://gre/modules/Log.jsm");
 Cu.import("resource://services-sync/constants.js");
 Cu.import("resource://services-sync/engines.js");
 Cu.import("resource://services-sync/util.js");
+Cu.import("resource://gre/modules/FileUtils.jsm");
+Cu.import("resource://gre/modules/NetUtil.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "Status",
                                   "resource://services-sync/status.js");
@@ -92,9 +94,10 @@ SyncScheduler.prototype = {
     Svc.Obs.add("weave:engine:sync:applied", this);
     Svc.Obs.add("weave:service:setup-complete", this);
     Svc.Obs.add("weave:service:start-over", this);
-    Svc.Obs.add("tokenserver:backoff:interval", this);
+    Svc.Obs.add("FxA:hawk:backoff:interval", this);
 
     if (Status.checkSetup() == STATUS_OK) {
+      Svc.Obs.add("wake_notification", this);
       Svc.Idle.addIdleObserver(this, Svc.Prefs.get("scheduler.idleTime"));
     }
   },
@@ -182,7 +185,7 @@ SyncScheduler.prototype = {
         this.nextSync = 0;
         this.handleSyncError();
         break;
-      case "tokenserver:backoff:interval":
+      case "FxA:hawk:backoff:interval":
       case "weave:service:backoff:interval":
         let requested_interval = subject * 1000;
         this._log.debug("Got backoff notification: " + requested_interval + "ms");
@@ -211,6 +214,7 @@ SyncScheduler.prototype = {
       case "weave:service:setup-complete":
          Services.prefs.savePrefFile(null);
          Svc.Idle.addIdleObserver(this, Svc.Prefs.get("scheduler.idleTime"));
+         Svc.Obs.add("wake_notification", this);
          break;
       case "weave:service:start-over":
          this.setDefaults();
@@ -245,6 +249,16 @@ SyncScheduler.prototype = {
             this.scheduleNextSync(0);
           }
         }, IDLE_OBSERVER_BACK_DELAY, this, "idleDebouncerTimer");
+        break;
+      case "wake_notification":
+        this._log.debug("Woke from sleep.");
+        Utils.nextTick(() => {
+          // Trigger a sync if we have multiple clients.
+          if (this.numClients > 1) {
+            this._log.debug("More than 1 client. Syncing.");
+            this.scheduleNextSync(0);
+          }
+        });
         break;
     }
   },
@@ -483,6 +497,46 @@ SyncScheduler.prototype = {
     if (this.syncTimer)
       this.syncTimer.clear();
   },
+
+  /**
+   * Prevent new syncs from starting.  This is used by the FxA migration code
+   * where we can't afford to have a sync start partway through the migration.
+   * To handle the edge-case of a sync starting and not stopping, we store
+   * this state in a pref, so on the next startup we remain blocked (and thus
+   * sync will never start) so the migration can complete.
+   *
+   * As a safety measure, we only block for some period of time, and after
+   * that it will automatically unblock.  This ensures that if things go
+   * really pear-shaped and we never end up calling unblockSync() we haven't
+   * completely broken the world.
+   */
+  blockSync: function(until = null) {
+    if (!until) {
+      until = Date.now() + DEFAULT_BLOCK_PERIOD;
+    }
+    // until is specified in ms, but Prefs can't hold that much
+    Svc.Prefs.set("scheduler.blocked-until", Math.floor(until / 1000));
+  },
+
+  unblockSync: function() {
+    Svc.Prefs.reset("scheduler.blocked-until");
+    // the migration code should be ready to roll, so resume normal operations.
+    this.checkSyncStatus();
+  },
+
+  get isBlocked() {
+    let until = Svc.Prefs.get("scheduler.blocked-until");
+    if (until === undefined) {
+      return false;
+    }
+    if (until <= Math.floor(Date.now() / 1000)) {
+      // we were previously blocked but the time has expired.
+      Svc.Prefs.reset("scheduler.blocked-until");
+      return false;
+    }
+    // we remain blocked.
+    return true;
+  },
 };
 
 const LOG_PREFIX_SUCCESS = "success-";
@@ -499,6 +553,13 @@ ErrorHandler.prototype = {
    * Flag that turns on error reporting for all errors, incl. network errors.
    */
   dontIgnoreErrors: false,
+
+  /**
+   * Flag that indicates if we have already reported a prolonged failure.
+   * Once set, we don't report it again, meaning this error is only reported
+   * one per run.
+   */
+  didReportProlongedError: false,
 
   init: function init() {
     Svc.Obs.add("weave:engine:sync:applied", this);
@@ -530,6 +591,14 @@ ErrorHandler.prototype = {
     let fapp = this._logAppender = new Log.StorageStreamAppender(formatter);
     fapp.level = Log.Level[Svc.Prefs.get("log.appender.file.level")];
     root.addAppender(fapp);
+
+    // Arrange for the FxA, Hawk and TokenServer logs to also go to our appenders.
+    for (let extra of ["FirefoxAccounts", "Hawk", "Common.TokenServerClient"]) {
+      let log = Log.repository.getLogger(extra);
+      for (let appender of [fapp, dapp, capp]) {
+        log.addAppender(appender);
+      }
+    }
   },
 
   observe: function observe(subject, topic, data) {
@@ -770,7 +839,13 @@ ErrorHandler.prototype = {
     if (lastSync && ((Date.now() - Date.parse(lastSync)) >
         Svc.Prefs.get("errorhandler.networkFailureReportTimeout") * 1000)) {
       Status.sync = PROLONGED_SYNC_FAILURE;
-      this._log.trace("shouldReportError: true (prolonged sync failure).");
+      if (this.didReportProlongedError) {
+        this._log.trace("shouldReportError: false (prolonged sync failure, but" +
+                        " we've already reported it).");
+        return false;
+      }
+      this._log.trace("shouldReportError: true (first prolonged sync failure).");
+      this.didReportProlongedError = true;
       return true;
     }
 

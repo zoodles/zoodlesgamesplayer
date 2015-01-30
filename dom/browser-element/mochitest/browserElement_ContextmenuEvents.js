@@ -25,6 +25,10 @@ function checkInnerContextMenu() {
   sendContextMenuTo('#inner-link', function onContextMenu(detail) {
     is(detail.systemTargets.length, 1, 'Includes anchor data');
     is(detail.contextmenu.items.length, 2, 'Inner clicks trigger correct menu');
+    var target = detail.systemTargets[0];
+    is(target.nodeName, 'A', 'Reports correct nodeName');
+    is(target.data.uri, 'foo.html', 'Reports correct uri');
+    is(target.data.text, 'Menu 1', 'Reports correct link text');
 
     checkCustomContextMenu();
   });
@@ -215,7 +219,7 @@ function checkContextMenuCallbackForId(detail, id, callback) {
 var iframe = null;
 function createIframe(callback) {
   iframe = document.createElement('iframe');
-  SpecialPowers.wrap(iframe).mozbrowser = true;
+  iframe.setAttribute('mozbrowser', 'true');
 
   iframe.src = 'data:text/html,<html>' +
     '<body>' +

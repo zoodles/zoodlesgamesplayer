@@ -13,13 +13,16 @@ const Cu = Components.utils;
 Cu.import("resource://gre/modules/debug.js", this);
 Cu.import("resource://gre/modules/Services.jsm", this);
 Cu.import("resource://gre/modules/XPCOMUtils.jsm", this);
-#ifndef MOZ_WIDGET_GONK
-Cu.import("resource://gre/modules/LightweightThemeManager.jsm", this);
-#endif
-Cu.import("resource://gre/modules/ThirdPartyCookieProbe.jsm", this);
 Cu.import("resource://gre/modules/Promise.jsm", this);
-Cu.import("resource://gre/modules/Task.jsm", this);
-Cu.import("resource://gre/modules/AsyncShutdown.jsm", this);
+Cu.import("resource://gre/modules/DeferredTask.jsm", this);
+Cu.import("resource://gre/modules/Preferences.jsm");
+
+const IS_CONTENT_PROCESS = (function() {
+  // We cannot use Services.appinfo here because in telemetry xpcshell tests,
+  // appinfo is initially unavailable, and becomes available only later on.
+  let runtime = Cc["@mozilla.org/xre/app-info;1"].getService(Ci.nsIXULRuntime);
+  return runtime.processType == Ci.nsIXULRuntime.PROCESS_TYPE_CONTENT;
+})();
 
 // When modifying the payload in incompatible ways, please bump this version number
 const PAYLOAD_VERSION = 1;
@@ -30,12 +33,12 @@ const PAYLOAD_VERSION = 1;
 
 const PREF_BRANCH = "toolkit.telemetry.";
 const PREF_SERVER = PREF_BRANCH + "server";
-#ifdef MOZ_TELEMETRY_ON_BY_DEFAULT
-const PREF_ENABLED = PREF_BRANCH + "enabledPreRelease";
-#else
 const PREF_ENABLED = PREF_BRANCH + "enabled";
-#endif
 const PREF_PREVIOUS_BUILDID = PREF_BRANCH + "previousBuildID";
+const PREF_CACHED_CLIENTID = PREF_BRANCH + "cachedClientID"
+const PREF_FHR_UPLOAD_ENABLED = "datareporting.healthreport.uploadEnabled";
+
+const MESSAGE_TELEMETRY_PAYLOAD = "Telemetry:Payload";
 
 // Do not gather data more than once a minute
 const TELEMETRY_INTERVAL = 60000;
@@ -65,16 +68,31 @@ XPCOMUtils.defineLazyServiceGetter(this, "Telemetry",
 XPCOMUtils.defineLazyServiceGetter(this, "idleService",
                                    "@mozilla.org/widget/idleservice;1",
                                    "nsIIdleService");
-XPCOMUtils.defineLazyModuleGetter(this, "UpdateChannel",
-                                  "resource://gre/modules/UpdateChannel.jsm");
+XPCOMUtils.defineLazyServiceGetter(this, "cpmm",
+                                   "@mozilla.org/childprocessmessagemanager;1",
+                                   "nsIMessageSender");
+XPCOMUtils.defineLazyServiceGetter(this, "ppmm",
+                                   "@mozilla.org/parentprocessmessagemanager;1",
+                                   "nsIMessageListenerManager");
+
 XPCOMUtils.defineLazyModuleGetter(this, "AddonManagerPrivate",
                                   "resource://gre/modules/AddonManager.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "AsyncShutdown",
+                                  "resource://gre/modules/AsyncShutdown.jsm");
+#ifndef MOZ_WIDGET_GONK
+XPCOMUtils.defineLazyModuleGetter(this, "LightweightThemeManager",
+                                  "resource://gre/modules/LightweightThemeManager.jsm");
+#endif
 XPCOMUtils.defineLazyModuleGetter(this, "TelemetryFile",
                                   "resource://gre/modules/TelemetryFile.jsm");
-XPCOMUtils.defineLazyModuleGetter(this, "UITelemetry",
-                                  "resource://gre/modules/UITelemetry.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "TelemetryLog",
                                   "resource://gre/modules/TelemetryLog.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "ThirdPartyCookieProbe",
+                                  "resource://gre/modules/ThirdPartyCookieProbe.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "UITelemetry",
+                                  "resource://gre/modules/UITelemetry.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "UpdateChannel",
+                                  "resource://gre/modules/UpdateChannel.jsm");
 
 function generateUUID() {
   let str = Cc["@mozilla.org/uuid-generator;1"].getService(Ci.nsIUUIDGenerator).generateUUID().toString();
@@ -196,14 +214,16 @@ this.TelemetryPing = Object.freeze({
    */
   reset: function() {
     this.uninstall();
+    Impl._clientID = null;
     return this.setup();
   },
   /**
    * Used only for testing purposes.
    */
   setup: function() {
-    return Impl.setup(true);
+    return Impl.setupChromeProcess(true);
   },
+
   /**
    * Used only for testing purposes.
    */
@@ -213,6 +233,13 @@ this.TelemetryPing = Object.freeze({
     } catch (ex) {
       // Ignore errors
     }
+  },
+
+  /**
+   * Used only for testing purposes.
+   */
+  shutdown: function() {
+    return Impl.shutdown(true);
   },
   /**
    * Descriptive metadata
@@ -230,7 +257,16 @@ this.TelemetryPing = Object.freeze({
    */
   observe: function (aSubject, aTopic, aData) {
     return Impl.observe(aSubject, aTopic, aData);
-  }
+  },
+
+  /**
+   * The client id send with the telemetry ping.
+   *
+   * @return The client id as string, or null.
+   */
+   get clientID() {
+    return Impl.clientID;
+   },
 });
 
 let Impl = {
@@ -251,6 +287,12 @@ let Impl = {
   // The previous build ID, if this is the first run with a new build.
   // Undefined if this is not the first run, or the previous build ID is unknown.
   _previousBuildID: undefined,
+  _clientID: null,
+  // Telemetry payloads sent by child processes.
+  // Each element is in the format {source: <weak-ref>, payload: <object>},
+  // where source is a weak reference to the child process,
+  // and payload is the telemetry payload from that child process.
+  _childTelemetry: [],
 
   /**
    * Gets a series of simple measurements (counters). At the moment, this
@@ -261,6 +303,7 @@ let Impl = {
   getSimpleMeasurements: function getSimpleMeasurements(forSavedSession) {
     let si = Services.startup.getStartupInfo();
 
+    // Measurements common to chrome and content processes.
     var ret = {
       // uptime in minutes
       uptime: Math.round((new Date() - si.process) / 60000)
@@ -274,10 +317,14 @@ let Impl = {
       appTimestamps = o.TelemetryTimestamps.get();
     } catch (ex) {}
     try {
-      ret.addonManager = AddonManagerPrivate.getSimpleMeasures();
+      if (!IS_CONTENT_PROCESS) {
+        ret.addonManager = AddonManagerPrivate.getSimpleMeasures();
+      }
     } catch (ex) {}
     try {
-      ret.UITelemetry = UITelemetry.getSimpleMeasures();
+      if (!IS_CONTENT_PROCESS) {
+        ret.UITelemetry = UITelemetry.getSimpleMeasures();
+      }
     } catch (ex) {}
 
     if (si.process) {
@@ -295,13 +342,24 @@ let Impl = {
 
     ret.startupInterrupted = Number(Services.startup.interrupted);
 
+    ret.js = Cu.getJSEngineTelemetryValue();
+
+    let maximalNumberOfConcurrentThreads = Telemetry.maximalNumberOfConcurrentThreads;
+    if (maximalNumberOfConcurrentThreads) {
+      ret.maximalNumberOfConcurrentThreads = maximalNumberOfConcurrentThreads;
+    }
+
+    if (IS_CONTENT_PROCESS) {
+      return ret;
+    }
+
+    // Measurements specific to chrome process
+
     // Update debuggerAttached flag
     let debugService = Cc["@mozilla.org/xpcom/debug;1"].getService(Ci.nsIDebug2);
     let isDebuggerAttached = debugService.isDebuggerAttached;
     gWasDebuggerAttached = gWasDebuggerAttached || isDebuggerAttached;
     ret.debuggerAttached = Number(gWasDebuggerAttached);
-
-    ret.js = Cu.getJSEngineTelemetryValue();
 
     let shutdownDuration = Telemetry.lastShutdownDuration;
     if (shutdownDuration)
@@ -310,10 +368,6 @@ let Impl = {
     let failedProfileLockCount = Telemetry.failedProfileLockCount;
     if (failedProfileLockCount)
       ret.failedProfileLockCount = failedProfileLockCount;
-
-    let maximalNumberOfConcurrentThreads = Telemetry.maximalNumberOfConcurrentThreads;
-    if (maximalNumberOfConcurrentThreads)
-      ret.maximalNumberOfConcurrentThreads = maximalNumberOfConcurrentThreads;
 
     for (let ioCounter in this._startupIO)
       ret[ioCounter] = this._startupIO[ioCounter];
@@ -325,6 +379,18 @@ let Impl = {
     }
     if (!forSavedSession || hasPingBeenSent) {
       ret.savedPings = TelemetryFile.pingsLoaded;
+    }
+
+    ret.activeTicks = -1;
+    if ("@mozilla.org/datareporting/service;1" in Cc) {
+      let drs = Cc["@mozilla.org/datareporting/service;1"]
+                  .getService(Ci.nsISupports)
+                  .wrappedJSObject;
+
+      let sr = drs.getSessionRecorder();
+      if (sr) {
+        ret.activeTicks = sr.activeTicks;
+      }
     }
 
     ret.pingsOverdue = TelemetryFile.pingsOverdue;
@@ -428,6 +494,22 @@ let Impl = {
     return ret;
   },
 
+  getKeyedHistograms: function() {
+    let registered = Telemetry.registeredKeyedHistograms([]);
+    let ret = {};
+
+    for (let id of registered) {
+      ret[id] = {};
+      let keyed = Telemetry.getKeyedHistogramById(id);
+      let snapshot = keyed.snapshot();
+      for (let key of Object.keys(snapshot)) {
+        ret[id][key] = this.packHistogram(snapshot[key]);
+      }
+    }
+
+    return ret;
+  },
+
   getThreadHangStats: function getThreadHangStats(stats) {
     stats.forEach((thread) => {
       thread.activity = this.packHistogram(thread.activity);
@@ -475,7 +557,7 @@ let Impl = {
     // sysinfo fields are not always available, get what we can.
     let sysInfo = Cc["@mozilla.org/system-info;1"].getService(Ci.nsIPropertyBag2);
     let fields = ["cpucount", "memsize", "arch", "version", "kernel_version",
-                  "device", "manufacturer", "hardware",
+                  "device", "manufacturer", "hardware", "tablet",
                   "hasMMX", "hasSSE", "hasSSE2", "hasSSE3",
                   "hasSSSE3", "hasSSE4A", "hasSSE4_1", "hasSSE4_2",
                   "hasEDSP", "hasARMv6", "hasARMv7", "hasNEON", "isWow64",
@@ -499,9 +581,10 @@ let Impl = {
     // gfxInfo fields are not always available, get what we can.
     let gfxInfo = Cc["@mozilla.org/gfx/info;1"].getService(Ci.nsIGfxInfo);
     let gfxfields = ["adapterDescription", "adapterVendorID", "adapterDeviceID",
-                     "adapterRAM", "adapterDriver", "adapterDriverVersion",
-                     "adapterDriverDate", "adapterDescription2",
-                     "adapterVendorID2", "adapterDeviceID2", "adapterRAM2",
+                     "adapterSubsysID", "adapterRAM", "adapterDriver",
+                     "adapterDriverVersion", "adapterDriverDate",
+                     "adapterDescription2", "adapterVendorID2",
+                     "adapterDeviceID2", "adapterSubsysID2", "adapterRAM2",
                      "adapterDriver2", "adapterDriverVersion2",
                      "adapterDriverDate2", "isGPU2Active", "D2DEnabled",
                      "DWriteEnabled", "DWriteVersion"
@@ -525,8 +608,9 @@ let Impl = {
 
 #ifndef MOZ_WIDGET_GONK
     let theme = LightweightThemeManager.currentTheme;
-    if (theme)
+    if (theme) {
       ret.persona = theme.id;
+    }
 #endif
 
     if (this._addons)
@@ -535,6 +619,19 @@ let Impl = {
     let flashVersion = this.getFlashVersion();
     if (flashVersion)
       ret.flashVersion = flashVersion;
+
+    try {
+      let scope = {};
+      Cu.import("resource:///modules/experiments/Experiments.jsm", scope);
+      let experiments = scope.Experiments.instance()
+      let activeExperiment = experiments.getActiveExperimentID();
+      if (activeExperiment) {
+        ret.activeExperiment = activeExperiment;
+	ret.activeExperimentBranch = experiments.getActiveExperimentBranch();
+      }
+    } catch(e) {
+      // If this is not Firefox, the import will fail.
+    }
 
     return ret;
   },
@@ -657,6 +754,10 @@ let Impl = {
     return this._startupHistogramRegex.test(name);
   },
 
+  getChildPayloads: function getChildPayloads() {
+    return [for (child of this._childTelemetry) child.payload];
+  },
+
   /**
    * Make a copy of interesting histograms at startup.
    */
@@ -678,21 +779,29 @@ let Impl = {
    * respectively.
    */
   assemblePayloadWithMeasurements: function assemblePayloadWithMeasurements(simpleMeasurements, info) {
+    // Payload common to chrome and content processes.
     let payloadObj = {
       ver: PAYLOAD_VERSION,
       simpleMeasurements: simpleMeasurements,
       histograms: this.getHistograms(Telemetry.histogramSnapshots),
-      slowSQL: Telemetry.slowSQL,
-      fileIOReports: Telemetry.fileIOReports,
+      keyedHistograms: this.getKeyedHistograms(),
       chromeHangs: Telemetry.chromeHangs,
       threadHangStats: this.getThreadHangStats(Telemetry.threadHangStats),
-      lateWrites: Telemetry.lateWrites,
-      addonHistograms: this.getAddonHistograms(),
-      addonDetails: AddonManagerPrivate.getTelemetryDetails(),
-      UIMeasurements: UITelemetry.getUIMeasurements(),
       log: TelemetryLog.entries(),
-      info: info
     };
+
+    if (IS_CONTENT_PROCESS) {
+      return payloadObj;
+    }
+
+    // Additional payload for chrome process.
+    payloadObj.info = info;
+    payloadObj.slowSQL = Telemetry.slowSQL;
+    payloadObj.fileIOReports = Telemetry.fileIOReports;
+    payloadObj.lateWrites = Telemetry.lateWrites;
+    payloadObj.addonHistograms = this.getAddonHistograms();
+    payloadObj.addonDetails = AddonManagerPrivate.getTelemetryDetails();
+    payloadObj.UIMeasurements = UITelemetry.getUIMeasurements();
 
     if (Object.keys(this._slowSQLStartup).length != 0 &&
         (Object.keys(this._slowSQLStartup.mainThread).length ||
@@ -700,12 +809,19 @@ let Impl = {
       payloadObj.slowSQLStartup = this._slowSQLStartup;
     }
 
+    if (this._clientID && Preferences.get(PREF_FHR_UPLOAD_ENABLED, false)) {
+      payloadObj.clientID = this._clientID;
+    }
+
+    if (this._childTelemetry.length) {
+      payloadObj.childPayloads = this.getChildPayloads();
+    }
     return payloadObj;
   },
 
   getSessionPayload: function getSessionPayload(reason) {
     let measurements = this.getSimpleMeasurements(reason == "saved-session");
-    let info = this.getMetadata(reason);
+    let info = !IS_CONTENT_PROCESS ? this.getMetadata(reason) : null;
     return this.assemblePayloadWithMeasurements(measurements, info);
   },
 
@@ -860,63 +976,68 @@ let Impl = {
   },
 
   /**
+   * Perform telemetry initialization for either chrome or content process.
+   */
+  enableTelemetryRecording: function enableTelemetryRecording(testing) {
+
+#ifdef MOZILLA_OFFICIAL
+    if (!Telemetry.canSend && !testing) {
+      // We can't send data; no point in initializing observers etc.
+      // Only do this for official builds so that e.g. developer builds
+      // still enable Telemetry based on prefs.
+      Telemetry.canRecord = false;
+      return false;
+    }
+#endif
+
+    let enabled = Preferences.get(PREF_ENABLED, false);
+    this._server = Preferences.get(PREF_SERVER, undefined);
+    if (!enabled) {
+      // Turn off local telemetry if telemetry is disabled.
+      // This may change once about:telemetry is added.
+      Telemetry.canRecord = false;
+      return false;
+    }
+
+    return true;
+  },
+
+  /**
    * Initializes telemetry within a timer. If there is no PREF_SERVER set, don't turn on telemetry.
    */
-  setup: function setup(aTesting) {
+  setupChromeProcess: function setupChromeProcess(testing) {
     // Initialize some probes that are kept in their own modules
     this._thirdPartyCookies = new ThirdPartyCookieProbe();
     this._thirdPartyCookies.init();
 
     // Record old value and update build ID preference if this is the first
     // run with a new build ID.
-    let previousBuildID = undefined;
-    try {
-      previousBuildID = Services.prefs.getCharPref(PREF_PREVIOUS_BUILDID);
-    } catch (e) {
-      // Preference was not set.
-    }
+    let previousBuildID = Preferences.get(PREF_PREVIOUS_BUILDID, undefined);
     let thisBuildID = Services.appinfo.appBuildID;
     // If there is no previousBuildID preference, this._previousBuildID remains
     // undefined so no value is sent in the telemetry metadata.
     if (previousBuildID != thisBuildID) {
       this._previousBuildID = previousBuildID;
-      Services.prefs.setCharPref(PREF_PREVIOUS_BUILDID, thisBuildID);
+      Preferences.set(PREF_PREVIOUS_BUILDID, thisBuildID);
     }
 
-#ifdef MOZILLA_OFFICIAL
-    if (!Telemetry.canSend) {
-      // We can't send data; no point in initializing observers etc.
-      // Only do this for official builds so that e.g. developer builds
-      // still enable Telemetry based on prefs.
-      Telemetry.canRecord = false;
+    if (!this.enableTelemetryRecording(testing)) {
       return;
     }
-#endif
-    let enabled = false;
-    try {
-      enabled = Services.prefs.getBoolPref(PREF_ENABLED);
-      this._server = Services.prefs.getCharPref(PREF_SERVER);
-    } catch (e) {
-      // Prerequesite prefs aren't set
-    }
-    if (!enabled) {
-      // Turn off local telemetry if telemetry is disabled.
-      // This may change once about:telemetry is added.
-      Telemetry.canRecord = false;
-      return;
-    }
+
+    // For very short session durations, we may never load the client
+    // id from disk.
+    // We try to cache it in prefs to avoid this, even though this may
+    // lead to some stale client ids.
+    this._clientID = Preferences.get(PREF_CACHED_CLIENTID, null);
 
     AsyncShutdown.sendTelemetry.addBlocker(
       "Telemetry: shutting down",
       function condition(){
-        this.uninstall();
-        if (Telemetry.canSend) {
-          return this.savePendingPings();
-        }
+        this.shutdown();
       }.bind(this));
 
     Services.obs.addObserver(this, "sessionstore-windows-restored", false);
-    Services.obs.addObserver(this, "quit-application-granted", false);
 #ifdef MOZ_WIDGET_ANDROID
     Services.obs.addObserver(this, "application-background", false);
 #endif
@@ -924,39 +1045,69 @@ let Impl = {
     this._hasWindowRestoredObserver = true;
     this._hasXulWindowVisibleObserver = true;
 
+    ppmm.addMessageListener(MESSAGE_TELEMETRY_PAYLOAD, this);
+
     // Delay full telemetry initialization to give the browser time to
     // run various late initializers. Otherwise our gathered memory
     // footprint and other numbers would be too optimistic.
-    this._timer = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);
     let deferred = Promise.defer();
+    let delayedTask = new DeferredTask(function* () {
+      this._initialized = true;
 
-    function timerCallback() {
-      Task.spawn(function*(){
-        this._initialized = true;
+      yield TelemetryFile.loadSavedPings();
+      // If we have any TelemetryPings lying around, we'll be aggressive
+      // and try to send them all off ASAP.
+      if (TelemetryFile.pingsOverdue > 0) {
+        // It doesn't really matter what we pass to this.send as a reason,
+        // since it's never sent to the server. All that this.send does with
+        // the reason is check to make sure it's not a test-ping.
+        yield this.send("overdue-flush", this._server);
+      }
 
-        yield TelemetryFile.loadSavedPings();
-        // If we have any TelemetryPings lying around, we'll be aggressive
-        // and try to send them all off ASAP.
-        if (TelemetryFile.pingsOverdue > 0) {
-          // It doesn't really matter what we pass to this.send as a reason,
-          // since it's never sent to the server. All that this.send does with
-          // the reason is check to make sure it's not a test-ping.
-          yield this.send("overdue-flush", this._server);
-        }
+      if ("@mozilla.org/datareporting/service;1" in Cc) {
+        let drs = Cc["@mozilla.org/datareporting/service;1"]
+                    .getService(Ci.nsISupports)
+                    .wrappedJSObject;
+        this._clientID = yield drs.getClientID();
+        // Update cached client id.
+        Preferences.set(PREF_CACHED_CLIENTID, this._clientID);
+      } else {
+        // Nuke potentially cached client id.
+        Preferences.reset(PREF_CACHED_CLIENTID);
+      }
 
-        this.attachObservers();
-        this.gatherMemory();
+      this.attachObservers();
+      this.gatherMemory();
 
-        Telemetry.asyncFetchTelemetryData(function () {});
-        delete this._timer;
-        deferred.resolve();
-      }.bind(this));
+      Telemetry.asyncFetchTelemetryData(function () {});
+      deferred.resolve();
+
+    }.bind(this), testing ? TELEMETRY_TEST_DELAY : TELEMETRY_DELAY);
+
+    delayedTask.arm();
+    return deferred.promise;
+  },
+
+  /**
+   * Initializes telemetry for a content process.
+   */
+  setupContentProcess: function setupContentProcess() {
+    if (!this.enableTelemetryRecording()) {
+      return;
     }
 
-    this._timer.initWithCallback(timerCallback.bind(this),
-                                 aTesting ? TELEMETRY_TEST_DELAY : TELEMETRY_DELAY,
-                                 Ci.nsITimer.TYPE_ONE_SHOT);
-    return deferred.promise;
+    Services.obs.addObserver(this, "content-child-shutdown", false);
+
+    this.gatherStartupHistograms();
+
+    let delayedTask = new DeferredTask(function* () {
+      this._initialized = true;
+
+      this.attachObservers();
+      this.gatherMemory();
+    }.bind(this), TELEMETRY_DELAY);
+
+    delayedTask.arm();
   },
 
   testLoadHistograms: function testLoadHistograms(file) {
@@ -973,6 +1124,35 @@ let Impl = {
     }
 
     return null;
+  },
+
+  receiveMessage: function receiveMessage(message) {
+    switch (message.name) {
+    case MESSAGE_TELEMETRY_PAYLOAD:
+    {
+      let target = message.target;
+      for (let child of this._childTelemetry) {
+        if (child.source.get() === target) {
+          // Update existing telemetry data.
+          child.payload = message.data;
+          return;
+        }
+      }
+      // Did not find existing child in this._childTelemetry.
+      this._childTelemetry.push({
+        source: Cu.getWeakReference(target),
+        payload: message.data,
+      });
+      break;
+    }
+    default:
+      throw new Error("Telemetry.receiveMessage: bad message name");
+    }
+  },
+
+  sendContentProcessPing: function sendContentProcessPing(reason) {
+    let payload = this.getSessionPayload(reason);
+    cpmm.sendAsyncMessage(MESSAGE_TELEMETRY_PAYLOAD, payload);
   },
 
   savePendingPings: function savePendingPings() {
@@ -998,7 +1178,6 @@ let Impl = {
       Services.obs.removeObserver(this, "xul-window-visible");
       this._hasXulWindowVisibleObserver = false;
     }
-    Services.obs.removeObserver(this, "quit-application-granted");
 #ifdef MOZ_WIDGET_ANDROID
     Services.obs.removeObserver(this, "application-background", false);
 #endif
@@ -1051,7 +1230,20 @@ let Impl = {
   observe: function (aSubject, aTopic, aData) {
     switch (aTopic) {
     case "profile-after-change":
-      return this.setup();
+      // profile-after-change is only registered for chrome processes.
+      return this.setupChromeProcess();
+    case "app-startup":
+      // app-startup is only registered for content processes.
+      return this.setupContentProcess();
+    case "content-child-shutdown":
+      // content-child-shutdown is only registered for content processes.
+      Services.obs.removeObserver(this, "content-child-shutdown");
+      this.uninstall();
+
+      if (Telemetry.canSend) {
+        this.sendContentProcessPing("saved-session");
+      }
+      break;
     case "cycle-collector-begin":
       let now = new Date();
       if (!gLastMemoryPoll
@@ -1115,6 +1307,22 @@ let Impl = {
       }
       break;
 #endif
+    }
+  },
+
+  get clientID() {
+    return this._clientID;
+  },
+
+  /**
+   * This tells TelemetryPing to uninitialize and save any pending pings.
+   * @param testing Optional. If true, always saves the ping whether Telemetry
+   *                can send pings or not, which is used for testing.
+   */
+  shutdown: function(testing = false) {
+    this.uninstall();
+    if (Telemetry.canSend || testing) {
+      return this.savePendingPings();
     }
   },
 };

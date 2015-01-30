@@ -1,4 +1,4 @@
-/* -*- Mode: Java; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
@@ -149,7 +149,7 @@ MozWifiP2pManager.prototype = {
 
      case "WifiP2pManager:getPeerList:Return:OK":
         request = this.takeRequest(msg.rid);
-        Services.DOMRequest.fireSuccess(request, msg.data);
+        Services.DOMRequest.fireSuccess(request, Cu.cloneInto(msg.data, this._window));
         break;
 
       case "WifiP2pManager:getPeerList:Return:NO":

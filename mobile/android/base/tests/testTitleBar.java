@@ -1,19 +1,19 @@
 package org.mozilla.gecko.tests;
-import android.view.View;
-import org.mozilla.gecko.*;
-import java.util.ArrayList;
+
+import org.mozilla.gecko.Actions;
+import org.mozilla.gecko.util.HardwareUtils;
 
 /**
  * This patch tests the option that shows the full URL and title in the URL Bar
  */
 
 public class testTitleBar extends PixelTest {
-
-    @Override
-    protected int getTestType() {
-        return TEST_MOCHITEST;
-    }
     public void testTitleBar() {
+        // Because there is no title bar option on new tablet, we don't need to run this test.
+        if (HardwareUtils.isTablet()) {
+            return;
+        }
+
         blockForGeckoReady();
         checkOption();
     }
@@ -25,17 +25,17 @@ public class testTitleBar extends PixelTest {
 
         // Loading a page
         inputAndLoadUrl(blank1);
-        verifyPageTitle(title);
+        verifyUrlBarTitle(blank1);
 
-        // Verifing the full URL is displayed in the URL Bar
-        selectOption(StringHelper.SHOW_PAGE_ADDRESS_LABEL);
-        inputAndLoadUrl(blank1);
-        verifyUrl(blank1);
-
-        // Verifing the title is displayed in the URL Bar
+        // Ensure the title is displayed in the URL Bar
         selectOption(StringHelper.SHOW_PAGE_TITLE_LABEL);
         inputAndLoadUrl(blank1);
-        verifyPageTitle(title);
+        verifyUrlBarTitle(title);
+
+        // Ensure the full URL is displayed in the URL Bar
+        selectOption(StringHelper.SHOW_PAGE_ADDRESS_LABEL);
+        inputAndLoadUrl(blank1);
+        verifyUrlBarTitle(blank1);
     }
 
     // Entering settings, changing the options: show title/page address option and verifing the device type because for phone there is an extra back action to exit the settings menu

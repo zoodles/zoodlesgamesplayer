@@ -3,7 +3,7 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 from marionette_test import MarionetteTestCase
-from marionette import JavascriptException, MarionetteException, ScriptTimeoutException
+from errors import JavascriptException, MarionetteException, ScriptTimeoutException
 import time
 
 
@@ -95,6 +95,21 @@ marionetteScriptFinished(4);
         self.assertEqual(self.marionette.execute_async_script(
             "marionetteScriptFinished(global.barfoo);", new_sandbox=False), [42, 23])
 
+    def test_sandbox_refresh_arguments(self):
+        self.marionette.execute_async_script("this.foobar = [arguments[0], arguments[1]];"
+                                             "marionetteScriptFinished();",
+                                             script_args=[23, 42])
+        self.assertEqual(self.marionette.execute_async_script(
+            "marionetteScriptFinished(this.foobar);", new_sandbox=False),
+                         [23, 42])
+
+        self.marionette.execute_async_script("global.barfoo = [arguments[0], arguments[1]];"
+                                             "marionetteScriptFinished()",
+                                             script_args=[42, 23], new_sandbox=False)
+        self.assertEqual(self.marionette.execute_async_script(
+            "marionetteScriptFinished(global.barfoo);", new_sandbox=False),
+                         [42, 23])
+
 
 class TestExecuteAsyncChrome(TestExecuteAsyncContent):
     def setUp(self):
@@ -104,14 +119,8 @@ class TestExecuteAsyncChrome(TestExecuteAsyncContent):
     def test_execute_async_unload(self):
         pass
 
-    def test_same_context(self):
-        pass
-
     def test_execute_permission(self):
         self.assertEqual(5, self.marionette.execute_async_script("""
 var c = Components.classes;
 marionetteScriptFinished(5);
 """))
-
-    def test_sandbox_reuse(self):
-        pass

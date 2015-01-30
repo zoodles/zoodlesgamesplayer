@@ -24,12 +24,13 @@ extern PRLogModuleInfo* gFTPLog;
 
 //-----------------------------------------------------------------------------
 
-NS_IMPL_ISUPPORTS_INHERITED4(nsFtpChannel,
-                             nsBaseChannel,
-                             nsIUploadChannel,
-                             nsIResumableChannel,
-                             nsIFTPChannel,
-                             nsIProxiedChannel)
+NS_IMPL_ISUPPORTS_INHERITED(nsFtpChannel,
+                            nsBaseChannel,
+                            nsIUploadChannel,
+                            nsIResumableChannel,
+                            nsIFTPChannel,
+                            nsIProxiedChannel,
+                            nsIForcePendingChannel)
 
 //-----------------------------------------------------------------------------
 
@@ -132,8 +133,10 @@ namespace {
 
 class FTPEventSinkProxy MOZ_FINAL : public nsIFTPEventSink
 {
+    ~FTPEventSinkProxy() {}
+
 public:
-    FTPEventSinkProxy(nsIFTPEventSink* aTarget)
+    explicit FTPEventSinkProxy(nsIFTPEventSink* aTarget)
         : mTarget(aTarget)
         , mTargetThread(do_GetCurrentThread())
     { }
@@ -165,7 +168,7 @@ private:
     nsCOMPtr<nsIThread> mTargetThread;
 };
 
-NS_IMPL_ISUPPORTS1(FTPEventSinkProxy, nsIFTPEventSink)
+NS_IMPL_ISUPPORTS(FTPEventSinkProxy, nsIFTPEventSink)
 
 NS_IMETHODIMP
 FTPEventSinkProxy::OnFTPControlLog(bool aServer, const char* aMsg)
@@ -197,7 +200,7 @@ nsFtpChannel::GetFTPEventSink(nsCOMPtr<nsIFTPEventSink> &aResult)
     aResult = mFTPEventSink;
 }
 
-void
+NS_IMETHODIMP
 nsFtpChannel::ForcePending(bool aForcePending)
 {
     // Set true here so IsPending will return true.
@@ -205,6 +208,8 @@ nsFtpChannel::ForcePending(bool aForcePending)
     // OnStopRequest can be called in the parent before callbacks are diverted
     // back from the child to the listener in the parent.
     mForcePending = aForcePending;
+
+    return NS_OK;
 }
 
 NS_IMETHODIMP

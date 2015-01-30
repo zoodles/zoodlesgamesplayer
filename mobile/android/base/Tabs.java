@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.json.JSONException;
 import org.json.JSONObject;
 import org.mozilla.gecko.db.BrowserDB;
 import org.mozilla.gecko.favicons.Favicons;
@@ -27,7 +28,6 @@ import android.accounts.OnAccountsUpdateListener;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.database.ContentObserver;
-import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Handler;
@@ -47,7 +47,7 @@ public class Tabs implements GeckoEventListener {
     private final HashMap<Integer, Tab> mTabs = new HashMap<Integer, Tab>();
 
     private AccountManager mAccountManager;
-    private OnAccountsUpdateListener mAccountListener = null;
+    private OnAccountsUpdateListener mAccountListener;
 
     public static final int LOADURL_NONE         = 0;
     public static final int LOADURL_NEW_TAB      = 1 << 0;
@@ -61,49 +61,59 @@ public class Tabs implements GeckoEventListener {
 
     private static final long PERSIST_TABS_AFTER_MILLISECONDS = 1000 * 5;
 
-    private static AtomicInteger sTabId = new AtomicInteger(0);
+    public static final int INVALID_TAB_ID = -1;
+
+    private static final AtomicInteger sTabId = new AtomicInteger(0);
     private volatile boolean mInitialTabsAdded;
 
     private Context mAppContext;
     private ContentObserver mContentObserver;
+    private PersistTabsRunnable mPersistTabsRunnable;
 
-    private final Runnable mPersistTabsRunnable = new Runnable() {
+    private static class PersistTabsRunnable implements Runnable {
+        private final BrowserDB db;
+        private final Context context;
+        private final Iterable<Tab> tabs;
+
+        public PersistTabsRunnable(final Context context, Iterable<Tab> tabsInOrder) {
+            this.context = context;
+            this.db = GeckoProfile.get(context).getDB();
+            this.tabs = tabsInOrder;
+        }
+
         @Override
         public void run() {
             try {
-                final Context context = getAppContext();
                 boolean syncIsSetup = SyncAccounts.syncAccountsExist(context) ||
                                       FirefoxAccounts.firefoxAccountsExist(context);
                 if (syncIsSetup) {
-                    TabsAccessor.persistLocalTabs(getContentResolver(), getTabsInOrder());
+                    db.getTabsAccessor().persistLocalTabs(context.getContentResolver(), tabs);
                 }
             } catch (SecurityException se) {} // will fail without android.permission.GET_ACCOUNTS
         }
     };
 
     private Tabs() {
-        registerEventListener("Session:RestoreEnd");
-        registerEventListener("SessionHistory:New");
-        registerEventListener("SessionHistory:Back");
-        registerEventListener("SessionHistory:Forward");
-        registerEventListener("SessionHistory:Goto");
-        registerEventListener("SessionHistory:Purge");
-        registerEventListener("Tab:Added");
-        registerEventListener("Tab:Close");
-        registerEventListener("Tab:Select");
-        registerEventListener("Content:LocationChange");
-        registerEventListener("Content:SecurityChange");
-        registerEventListener("Content:ReaderEnabled");
-        registerEventListener("Content:StateChange");
-        registerEventListener("Content:LoadError");
-        registerEventListener("Content:PageShow");
-        registerEventListener("DOMContentLoaded");
-        registerEventListener("DOMTitleChanged");
-        registerEventListener("Link:Favicon");
-        registerEventListener("Link:Feed");
-        registerEventListener("Link:OpenSearch");
-        registerEventListener("DesktopMode:Changed");
-        registerEventListener("Tab:ViewportMetadata");
+        EventDispatcher.getInstance().registerGeckoThreadListener(this,
+            "Tab:Added",
+            "Tab:Close",
+            "Tab:Select",
+            "Content:LocationChange",
+            "Content:SecurityChange",
+            "Content:StateChange",
+            "Content:LoadError",
+            "Content:PageShow",
+            "DOMContentLoaded",
+            "DOMTitleChanged",
+            "Link:Favicon",
+            "Link:Feed",
+            "Link:OpenSearch",
+            "DesktopMode:Changed",
+            "Tab:ViewportMetadata",
+            "Tab:StreamStart",
+            "Tab:StreamStop",
+            "Reader:Toggle");
+
     }
 
     public synchronized void attachToContext(Context context) {
@@ -131,7 +141,9 @@ public class Tabs implements GeckoEventListener {
         mAccountManager.addOnAccountsUpdatedListener(mAccountListener, ThreadUtils.getBackgroundHandler(), false);
 
         if (mContentObserver != null) {
-            BrowserDB.registerBookmarkObserver(getContentResolver(), mContentObserver);
+            // It's safe to use the db here since we aren't doing any I/O.
+            final GeckoProfile profile = GeckoProfile.get(context);
+            profile.getDB().registerBookmarkObserver(getContentResolver(), mContentObserver);
         }
     }
 
@@ -178,17 +190,25 @@ public class Tabs implements GeckoEventListener {
                     }
                 }
             };
-            BrowserDB.registerBookmarkObserver(getContentResolver(), mContentObserver);
+
+            // It's safe to use the db here since we aren't doing any I/O.
+            final GeckoProfile profile = GeckoProfile.get(mAppContext);
+            profile.getDB().registerBookmarkObserver(getContentResolver(), mContentObserver);
         }
     }
 
-    private Tab addTab(int id, String url, boolean external, int parentId, String title, boolean isPrivate) {
+    private Tab addTab(int id, String url, boolean external, int parentId, String title, boolean isPrivate, int tabIndex) {
         final Tab tab = isPrivate ? new PrivateTab(mAppContext, id, url, external, parentId, title) :
                                     new Tab(mAppContext, id, url, external, parentId, title);
         synchronized (this) {
             lazyRegisterBookmarkObserver();
             mTabs.put(id, tab);
-            mOrder.add(tab);
+
+            if (tabIndex > -1) {
+                mOrder.add(tabIndex, tab);
+            } else {
+                mOrder.add(tab);
+            }
         }
 
         // Suppress the ADDED event to prevent animation of tabs created via session restore.
@@ -280,6 +300,7 @@ public class Tabs implements GeckoEventListener {
         return selected != null && selected.getId() == tabId;
     }
 
+    @RobocopTarget
     public synchronized Tab getTab(int id) {
         if (id == -1)
             return null;
@@ -294,12 +315,21 @@ public class Tabs implements GeckoEventListener {
     }
 
     /** Close tab and then select the default next tab */
+    @RobocopTarget
     public synchronized void closeTab(Tab tab) {
         closeTab(tab, getNextTab(tab));
     }
 
+    public synchronized void closeTab(Tab tab, Tab nextTab) {
+        closeTab(tab, nextTab, false);
+    }
+
+    public synchronized void closeTab(Tab tab, boolean showUndoToast) {
+        closeTab(tab, getNextTab(tab), showUndoToast);
+    }
+
     /** Close tab and then select nextTab */
-    public synchronized void closeTab(final Tab tab, Tab nextTab) {
+    public synchronized void closeTab(final Tab tab, Tab nextTab, boolean showUndoToast) {
         if (tab == null)
             return;
 
@@ -314,8 +344,16 @@ public class Tabs implements GeckoEventListener {
 
         tab.onDestroy();
 
+        final JSONObject args = new JSONObject();
+        try {
+            args.put("tabId", String.valueOf(tabId));
+            args.put("showUndoToast", showUndoToast);
+        } catch (JSONException e) {
+            Log.e(LOGTAG, "Error building Tab:Closed arguments: " + e);
+        }
+
         // Pass a message to Gecko to update tab state in BrowserApp
-        GeckoAppShell.sendEventToGecko(GeckoEvent.createBroadcastEvent("Tab:Closed", String.valueOf(tabId)));
+        GeckoAppShell.sendEventToGecko(GeckoEvent.createBroadcastEvent("Tab:Closed", args.toString()));
     }
 
     /** Return the tab that will be selected by default after this one is closed */
@@ -379,16 +417,10 @@ public class Tabs implements GeckoEventListener {
     }
 
     // GeckoEventListener implementation
-
     @Override
     public void handleMessage(String event, JSONObject message) {
         Log.d(LOGTAG, "handleMessage: " + event);
         try {
-            if (event.equals("Session:RestoreEnd")) {
-                notifyListeners(null, TabEvents.RESTORED);
-                return;
-            }
-
             // All other events handled below should contain a tabID property
             int id = message.getInt("tabID");
             Tab tab = getTab(id);
@@ -406,7 +438,8 @@ public class Tabs implements GeckoEventListener {
                     tab = addTab(id, url, message.getBoolean("external"),
                                           message.getInt("parentId"),
                                           message.getString("title"),
-                                          message.getBoolean("isPrivate"));
+                                          message.getBoolean("isPrivate"),
+                                          message.getInt("tabIndex"));
 
                     // If we added the tab as a stub, we should have already
                     // selected it, so ignore this flag for stubbed tabs.
@@ -425,10 +458,7 @@ public class Tabs implements GeckoEventListener {
             if (tab == null)
                 return;
 
-            if (event.startsWith("SessionHistory:")) {
-                event = event.substring("SessionHistory:".length());
-                tab.handleSessionHistoryMessage(event, message);
-            } else if (event.equals("Tab:Close")) {
+            if (event.equals("Tab:Close")) {
                 closeTab(tab);
             } else if (event.equals("Tab:Select")) {
                 selectTab(tab.getId());
@@ -437,9 +467,6 @@ public class Tabs implements GeckoEventListener {
             } else if (event.equals("Content:SecurityChange")) {
                 tab.updateIdentityData(message.getJSONObject("identity"));
                 notifyListeners(tab, TabEvents.SECURITY_CHANGE);
-            } else if (event.equals("Content:ReaderEnabled")) {
-                tab.setReaderEnabled(true);
-                notifyListeners(tab, TabEvents.READER_ENABLED);
             } else if (event.equals("Content:StateChange")) {
                 int state = message.getInt("state");
                 if ((state & GeckoAppShell.WPL_STATE_IS_NETWORK) != 0) {
@@ -457,6 +484,7 @@ public class Tabs implements GeckoEventListener {
                 notifyListeners(tab, Tabs.TabEvents.LOAD_ERROR);
             } else if (event.equals("Content:PageShow")) {
                 notifyListeners(tab, TabEvents.PAGE_SHOW);
+                tab.updateUserRequested(message.getString("userRequested"));
             } else if (event.equals("DOMContentLoaded")) {
                 tab.handleContentLoaded();
                 String backgroundColor = message.getString("bgColor");
@@ -467,12 +495,25 @@ public class Tabs implements GeckoEventListener {
                     tab.setBackgroundColor(Color.WHITE);
                 }
                 tab.setErrorType(message.optString("errorType"));
+                tab.setMetadata(message.optJSONObject("metadata"));
                 notifyListeners(tab, Tabs.TabEvents.LOADED);
             } else if (event.equals("DOMTitleChanged")) {
                 tab.updateTitle(message.getString("title"));
             } else if (event.equals("Link:Favicon")) {
-                tab.updateFaviconURL(message.getString("href"), message.getInt("size"));
-                notifyListeners(tab, TabEvents.LINK_FAVICON);
+                // Don't bother if the type isn't one we can decode.
+                if (!Favicons.canDecodeType(message.getString("mime"))) {
+                    return;
+                }
+
+                // Add the favicon to the set of available icons for this tab.
+                tab.addFavicon(message.getString("href"), message.getInt("size"), message.getString("mime"));
+
+                // Load the favicon. If the tab is still loading, we actually do the load once the
+                // page has loaded, in an attempt to prevent the favicon load from having a
+                // detrimental effect on page load time.
+                if (tab.getState() != Tab.STATE_LOADING) {
+                    tab.loadFavicon();
+                }
             } else if (event.equals("Link:Feed")) {
                 tab.setHasFeeds(true);
                 notifyListeners(tab, TabEvents.LINK_FEED);
@@ -486,37 +527,29 @@ public class Tabs implements GeckoEventListener {
                 tab.setZoomConstraints(new ZoomConstraints(message));
                 tab.setIsRTL(message.getBoolean("isRTL"));
                 notifyListeners(tab, TabEvents.VIEWPORT_CHANGE);
+            } else if (event.equals("Tab:StreamStart")) {
+                tab.setRecording(true);
+                notifyListeners(tab, TabEvents.RECORDING_CHANGE);
+            } else if (event.equals("Tab:StreamStop")) {
+                tab.setRecording(false);
+                notifyListeners(tab, TabEvents.RECORDING_CHANGE);
+            } else if (event.equals("Reader:Toggle")) {
+                tab.toggleReaderMode();
             }
+
         } catch (Exception e) {
             Log.w(LOGTAG, "handleMessage threw for " + event, e);
         }
     }
 
-    /**
-     * Set the favicon for any tabs loaded with this page URL.
-     */
-    public void updateFaviconForURL(String pageURL, Bitmap favicon) {
-        // The tab might be pointing to another URL by the time the
-        // favicon is finally loaded, in which case we won't find the tab.
-        // See also: Bug 920331.
-        for (Tab tab : mOrder) {
-            String tabURL = tab.getURL();
-            if (pageURL.equals(tabURL)) {
-                tab.setFaviconLoadId(Favicons.NOT_LOADING);
-                if (tab.updateFavicon(favicon)) {
-                    notifyListeners(tab, TabEvents.FAVICON);
-                }
-            }
-        }
-    }
-
     public void refreshThumbnails() {
         final ThumbnailHelper helper = ThumbnailHelper.getInstance();
+        final BrowserDB db = GeckoProfile.get(mAppContext).getDB();
         ThreadUtils.postToBackgroundThread(new Runnable() {
             @Override
             public void run() {
                 for (final Tab tab : mOrder) {
-                    helper.getAndProcessThumbnailFor(tab);
+                    helper.getAndProcessThumbnailFor(tab, db);
                 }
             }
         });
@@ -552,12 +585,13 @@ public class Tabs implements GeckoEventListener {
         LOCATION_CHANGE,
         MENU_UPDATED,
         PAGE_SHOW,
-        LINK_FAVICON,
         LINK_FEED,
         SECURITY_CHANGE,
-        READER_ENABLED,
         DESKTOP_MODE_CHANGE,
-        VIEWPORT_CHANGE
+        VIEWPORT_CHANGE,
+        RECORDING_CHANGE,
+        BOOKMARK_ADDED,
+        BOOKMARK_REMOVED
     }
 
     public void notifyListeners(Tab tab, TabEvents msg) {
@@ -612,6 +646,9 @@ public class Tabs implements GeckoEventListener {
 
     // This method persists the current ordered list of tabs in our tabs content provider.
     public void persistAllTabs() {
+        // If there is already a mPersistTabsRunnable in progress, the backgroundThread will hold onto
+        // it and ensure these still happen in the correct order.
+        mPersistTabsRunnable = new PersistTabsRunnable(mAppContext, getTabsInOrder());
         ThreadUtils.postToBackgroundThread(mPersistTabsRunnable);
     }
 
@@ -621,13 +658,16 @@ public class Tabs implements GeckoEventListener {
      * those requests are removed.
      */
     private void queuePersistAllTabs() {
-        Handler backgroundHandler = ThreadUtils.getBackgroundHandler();
-        backgroundHandler.removeCallbacks(mPersistTabsRunnable);
-        backgroundHandler.postDelayed(mPersistTabsRunnable, PERSIST_TABS_AFTER_MILLISECONDS);
-    }
+        final Handler backgroundHandler = ThreadUtils.getBackgroundHandler();
 
-    private void registerEventListener(String event) {
-        GeckoAppShell.getEventDispatcher().registerEventListener(event, this);
+        // Note: Its safe to modify the runnable here because all of the callers are on the same thread.
+        if (mPersistTabsRunnable != null) {
+            backgroundHandler.removeCallbacks(mPersistTabsRunnable);
+            mPersistTabsRunnable = null;
+        }
+
+        mPersistTabsRunnable = new PersistTabsRunnable(mAppContext, getTabsInOrder());
+        backgroundHandler.postDelayed(mPersistTabsRunnable, PERSIST_TABS_AFTER_MILLISECONDS);
     }
 
     /**
@@ -661,12 +701,46 @@ public class Tabs implements GeckoEventListener {
             if (isPrivate != null && isPrivate != tab.isPrivate()) {
                 continue;
             }
+            if (url.equals(tab.getURL())) {
+                return tab;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Looks for a reader mode enabled open tab with the given URL and private
+     * state.
+     *
+     * @param url
+     *            The URL of the tab we're looking for. The url parameter can be
+     *            the actual article URL or the reader mode article URL.
+     * @param isPrivate
+     *            If true, only look for tabs that are private. If false, only
+     *            look for tabs that are not private.
+     *
+     * @return The first Tab with the given URL, or null if there is no such
+     *         tab.
+     */
+    public Tab getFirstReaderTabForUrl(String url, boolean isPrivate) {
+        if (url == null) {
+            return null;
+        }
+
+        if (AboutPages.isAboutReader(url)) {
+            url = ReaderModeUtils.getUrlFromAboutReader(url);
+        }
+        for (Tab tab : mOrder) {
+            if (isPrivate != tab.isPrivate()) {
+                continue;
+            }
             String tabUrl = tab.getURL();
             if (AboutPages.isAboutReader(tabUrl)) {
                 tabUrl = ReaderModeUtils.getUrlFromAboutReader(tabUrl);
-            }
-            if (url.equals(tabUrl)) {
-                return tab;
+                if (url.equals(tabUrl)) {
+                    return tab;
+                }
             }
         }
 
@@ -740,7 +814,10 @@ public class Tabs implements GeckoEventListener {
                 // long as it's a valid URI.
                 String tabUrl = (url != null && Uri.parse(url).getScheme() != null) ? url : null;
 
-                added = addTab(tabId, tabUrl, external, parentId, url, isPrivate);
+                // Add the new tab to the end of the tab order.
+                final int tabIndex = -1;
+
+                added = addTab(tabId, tabUrl, external, parentId, url, isPrivate, tabIndex);
                 added.setDesktopMode(desktopMode);
             }
         } catch (Exception e) {
@@ -758,23 +835,21 @@ public class Tabs implements GeckoEventListener {
         }
 
         // TODO: surely we could just fetch *any* cached icon?
-        if (AboutPages.isDefaultIconPage(url)) {
+        if (AboutPages.isBuiltinIconPage(url)) {
             Log.d(LOGTAG, "Setting about: tab favicon inline.");
-            added.updateFavicon(getAboutPageFavicon(url));
+            added.addFavicon(url, Favicons.browserToolbarFaviconSize, "");
+            added.loadFavicon();
         }
 
         return added;
     }
 
-    /**
-     * These favicons are only used for the URL bar, so
-     * we fetch with that size.
-     *
-     * This method completes on the calling thread.
-     */
-    private Bitmap getAboutPageFavicon(final String url) {
-        int faviconSize = Math.round(mAppContext.getResources().getDimension(R.dimen.browser_toolbar_favicon_size));
-        return Favicons.getSizedFaviconForPageFromCache(url, faviconSize);
+    public Tab addTab() {
+        return loadUrl(AboutPages.HOME, Tabs.LOADURL_NEW_TAB);
+    }
+
+    public Tab addPrivateTab() {
+        return loadUrl(AboutPages.PRIVATEBROWSING, Tabs.LOADURL_NEW_TAB | Tabs.LOADURL_PRIVATE);
     }
 
     /**

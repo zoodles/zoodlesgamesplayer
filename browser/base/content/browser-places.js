@@ -63,6 +63,10 @@ var StarUI = {
           if (!this._element("editBookmarkPanelContent").hidden)
             this.quitEditMode();
 
+          if (this._anchorToolbarButton) {
+            this._anchorToolbarButton.removeAttribute("open");
+            this._anchorToolbarButton = null;
+          }
           this._restoreCommandsState();
           this._itemId = -1;
           if (this._batching) {
@@ -186,6 +190,21 @@ var StarUI = {
     this._itemId = aItemId !== undefined ? aItemId : this._itemId;
     this.beginBatch();
 
+    if (aAnchorElement) {
+      // Set the open=true attribute if the anchor is a
+      // descendent of a toolbarbutton.
+      let parent = aAnchorElement.parentNode;
+      while (parent) {
+        if (parent.localName == "toolbarbutton") {
+          break;
+        }
+        parent = parent.parentNode;
+      }
+      if (parent) {
+        this._anchorToolbarButton = parent;
+        parent.setAttribute("open", "true");
+      }
+    }
     this.panel.openPopup(aAnchorElement, aPosition);
 
     gEditItemOverlay.initPanel(this._itemId,
@@ -219,7 +238,7 @@ var StarUI = {
 
   cancelButtonOnCommand: function SU_cancelButtonOnCommand() {
     this._actionOnHide = "cancel";
-    this.panel.hidePopup();
+    this.panel.hidePopup(true);
   },
 
   removeBookmarkButtonCommand: function SU_removeBookmarkButtonCommand() {
@@ -293,7 +312,7 @@ var PlacesCommandHook = {
       PlacesUtils.transactionManager.doTransaction(txn);
       itemId = txn.item.id;
       // Set the character-set
-      if (charset && !PrivateBrowsingUtils.isWindowPrivate(aBrowser.contentWindow))
+      if (charset && !PrivateBrowsingUtils.isBrowserPrivate(aBrowser))
         PlacesUtils.setCharsetForURI(uri, charset);
     }
 
@@ -455,7 +474,8 @@ var PlacesCommandHook = {
    */
   showPlacesOrganizer: function PCH_showPlacesOrganizer(aLeftPaneRoot) {
     var organizer = Services.wm.getMostRecentWindow("Places:Organizer");
-    if (!organizer) {
+    // Due to bug 528706, getMostRecentWindow can return closed windows.
+    if (!organizer || organizer.closed) {
       // No currently open places window, so open one with the specified mode.
       openDialog("chrome://browser/content/places/places.xul", 
                  "", "chrome,toolbar=yes,dialog=no,resizable", aLeftPaneRoot);
@@ -485,12 +505,21 @@ function HistoryMenu(aPopupShowingEvent) {
 }
 
 HistoryMenu.prototype = {
+  _getClosedTabCount() {
+    // SessionStore doesn't track the hidden window, so just return zero then.
+    if (window == Services.appShell.hiddenDOMWindow) {
+      return 0;
+    }
+
+    return SessionStore.getClosedTabCount(window);
+  },
+
   toggleRecentlyClosedTabs: function HM_toggleRecentlyClosedTabs() {
     // enable/disable the Recently Closed Tabs sub menu
     var undoMenu = this._rootElt.getElementsByClassName("recentlyClosedTabsMenu")[0];
 
     // no restorable tabs, so disable menu
-    if (SessionStore.getClosedTabCount(window) == 0)
+    if (this._getClosedTabCount() == 0)
       undoMenu.setAttribute("disabled", true);
     else
       undoMenu.removeAttribute("disabled");
@@ -508,7 +537,7 @@ HistoryMenu.prototype = {
       undoPopup.removeChild(undoPopup.firstChild);
 
     // no restorable tabs, so make sure menu is disabled, and return
-    if (SessionStore.getClosedTabCount(window) == 0) {
+    if (this._getClosedTabCount() == 0) {
       undoMenu.setAttribute("disabled", true);
       return;
     }
@@ -680,13 +709,12 @@ var BookmarksEventHandler = {
 
     if (aDocument.tooltipNode.localName == "treechildren") {
       var tree = aDocument.tooltipNode.parentNode;
-      var row = {}, column = {};
       var tbo = tree.treeBoxObject;
-      tbo.getCellAt(aEvent.clientX, aEvent.clientY, row, column, {});
-      if (row.value == -1)
+      var cell = tbo.getCellAt(aEvent.clientX, aEvent.clientY);
+      if (cell.row == -1)
         return false;
-      node = tree.view.nodeForTreeIndex(row.value);
-      cropped = tbo.isCellCropped(row.value, column.value);
+      node = tree.view.nodeForTreeIndex(cell.row);
+      cropped = tbo.isCellCropped(cell.row, cell.col);
     }
     else {
       // Check whether the tooltipNode is a Places node.
@@ -884,6 +912,10 @@ let PlacesToolbarHelper = {
     if (!viewElt || viewElt._placesView)
       return;
 
+    // CustomizableUI.addListener is idempotent, so we can safely
+    // call this multiple times.
+    CustomizableUI.addListener(this);
+
     // If the bookmarks toolbar item is:
     // - not in a toolbar, or;
     // - the toolbar is collapsed, or;
@@ -899,7 +931,12 @@ let PlacesToolbarHelper = {
     if (forceToolbarOverflowCheck) {
       viewElt._placesView.updateOverflowStatus();
     }
-    this.customizeChange();
+    this._shouldWrap = false;
+    this._setupPlaceholder();
+  },
+
+  uninit: function PTH_uninit() {
+    CustomizableUI.removeListener(this);
   },
 
   customizeStart: function PTH_customizeStart() {
@@ -914,10 +951,15 @@ let PlacesToolbarHelper = {
   },
 
   customizeChange: function PTH_customizeChange() {
+    this._setupPlaceholder();
+  },
+
+  _setupPlaceholder: function PTH_setupPlaceholder() {
     let placeholder = this._placeholder;
     if (!placeholder) {
       return;
     }
+
     let shouldWrapNow = this._getShouldWrap();
     if (this._shouldWrap != shouldWrapNow) {
       if (shouldWrapNow) {
@@ -958,7 +1000,40 @@ let PlacesToolbarHelper = {
       element = element.parentNode;
     }
     return null;
-  }
+  },
+
+  onWidgetUnderflow: function(aNode, aContainer) {
+    // The view gets broken by being removed and reinserted by the overflowable
+    // toolbar, so we have to force an uninit and reinit.
+    let win = aNode.ownerDocument.defaultView;
+    if (aNode.id == "personal-bookmarks" && win == window) {
+      this._resetView();
+    }
+  },
+
+  onWidgetAdded: function(aWidgetId, aArea, aPosition) {
+    if (aWidgetId == "personal-bookmarks" && !this._isCustomizing) {
+      // It's possible (with the "Add to Menu", "Add to Toolbar" context
+      // options) that the Places Toolbar Items have been moved without
+      // letting us prepare and handle it with with customizeStart and
+      // customizeDone. If that's the case, we need to reset the views
+      // since they're probably broken from the DOM reparenting.
+      this._resetView();
+    }
+  },
+
+  _resetView: function() {
+    if (this._viewElt) {
+      // It's possible that the placesView might not exist, and we need to
+      // do a full init. This could happen if the Bookmarks Toolbar Items are
+      // moved to the Menu Panel, and then to the toolbar with the "Add to Toolbar"
+      // context menu option, outside of customize mode.
+      if (this._viewElt._placesView) {
+        this._viewElt._placesView.uninit();
+      }
+      this.init(true);
+    }
+  },
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -970,6 +1045,7 @@ let PlacesToolbarHelper = {
 
 let BookmarkingUI = {
   BOOKMARK_BUTTON_ID: "bookmarks-menu-button",
+  BOOKMARK_BUTTON_SHORTCUT: "addBookmarkAsKb",
   get button() {
     delete this.button;
     let widgetGroup = CustomizableUI.getWidget(this.BOOKMARK_BUTTON_ID);
@@ -1031,14 +1107,22 @@ let BookmarkingUI = {
   {
     delete this._starredTooltip;
     return this._starredTooltip =
-      gNavigatorBundle.getString("starButtonOn.tooltip");
+      this._getFormattedTooltip("starButtonOn.tooltip2");
   },
 
   get _unstarredTooltip()
   {
     delete this._unstarredTooltip;
     return this._unstarredTooltip =
-      gNavigatorBundle.getString("starButtonOff.tooltip");
+      this._getFormattedTooltip("starButtonOff.tooltip2");
+  },
+
+  _getFormattedTooltip: function(strId) {
+    let args = [];
+    let shortcut = document.getElementById(this.BOOKMARK_BUTTON_SHORTCUT);
+    if (shortcut)
+      args.push(ShortcutUtils.prettifyShortcut(shortcut));
+    return gNavigatorBundle.getFormattedString(strId, args);
   },
 
   /**
@@ -1164,6 +1248,16 @@ let BookmarkingUI = {
     // so kill current view and let popupshowing generate a new one.
     if (this.button._placesView)
       this.button._placesView.uninit();
+
+    // We have to do the same thing for the "special" views underneath the
+    // the bookmarks menu.
+    const kSpecialViewNodeIDs = ["BMB_bookmarksToolbar", "BMB_unsortedBookmarks"];
+    for (let viewNodeID of kSpecialViewNodeIDs) {
+      let elem = document.getElementById(viewNodeID);
+      if (elem && elem._placesView) {
+        elem._placesView.uninit();
+      }
+    }
   },
 
   onCustomizeStart: function BUI_customizeStart(aWindow) {
@@ -1266,7 +1360,7 @@ let BookmarkingUI = {
       return;
     }
 
-    this._pendingStmt = PlacesUtils.asyncGetBookmarkIds(this._uri, function (aItemIds, aURI) {
+    this._pendingStmt = PlacesUtils.asyncGetBookmarkIds(this._uri, (aItemIds, aURI) => {
       // Safety check that the bookmarked URI equals the tracked one.
       if (!aURI.equals(this._uri)) {
         Components.utils.reportError("BookmarkingUI did not receive current URI");
@@ -1293,7 +1387,7 @@ let BookmarkingUI = {
       }
 
       delete this._pendingStmt;
-    }, this);
+    });
   },
 
   _updateStar: function BUI__updateStar() {
@@ -1382,10 +1476,6 @@ let BookmarkingUI = {
       dropmarkerAnimationNode.style.listStyleImage = dropmarkerStyle.listStyleImage;
     }
 
-    let isInBookmarksToolbar = this.button.classList.contains("bookmark-item");
-    if (isInBookmarksToolbar)
-      this.notifier.setAttribute("in-bookmarks-toolbar", true);
-
     let isInOverflowPanel = this.button.getAttribute("overflowedItem") == "true";
     if (!isInOverflowPanel) {
       this.notifier.setAttribute("notification", "finish");
@@ -1394,7 +1484,6 @@ let BookmarkingUI = {
     }
 
     this._notificationTimeout = setTimeout( () => {
-      this.notifier.removeAttribute("in-bookmarks-toolbar");
       this.notifier.removeAttribute("notification");
       this.dropmarkerNotifier.removeAttribute("notification");
       this.button.removeAttribute("notification");
@@ -1465,6 +1554,10 @@ let BookmarkingUI = {
       viewToolbar.removeAttribute("checked");
     else
       viewToolbar.setAttribute("checked", "true");
+    // Get all statically placed buttons to supply them with keyboard shortcuts.
+    let staticButtons = viewToolbar.parentNode.getElementsByTagName("toolbarbutton");
+    for (let i = 0, l = staticButtons.length; i < l; ++i)
+      CustomizableUI.addShortcut(staticButtons[i]);
     // Setup the Places view.
     this._panelMenuView = new PlacesPanelMenuView("place:folder=BOOKMARKS_MENU",
                                                   "panelMenu_bookmarksMenu",

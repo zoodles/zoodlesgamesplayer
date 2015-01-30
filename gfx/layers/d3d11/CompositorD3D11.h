@@ -7,6 +7,7 @@
 #define MOZILLA_GFX_COMPOSITORD3D11_H
 
 #include "mozilla/gfx/2D.h"
+#include "gfx2DGlue.h"
 #include "mozilla/layers/Compositor.h"
 #include "TextureD3D11.h"
 #include <d3d11.h>
@@ -26,6 +27,8 @@ struct VertexShaderConstants
   gfx::Rect textureCoords;
   gfx::Rect layerQuad;
   gfx::Rect maskQuad;
+  float vrEyeToSourceUVScale[2];
+  float vrEyeToSourceUVOffset[2];
 };
 
 struct PixelShaderConstants
@@ -49,15 +52,10 @@ public:
     GetTextureFactoryIdentifier() MOZ_OVERRIDE;
 
   virtual TemporaryRef<DataTextureSource>
-    CreateDataTextureSource(TextureFlags aFlags = 0) MOZ_OVERRIDE;
+    CreateDataTextureSource(TextureFlags aFlags = TextureFlags::NO_FLAGS) MOZ_OVERRIDE;
 
   virtual bool CanUseCanvasLayerForSize(const gfx::IntSize& aSize) MOZ_OVERRIDE;
   virtual int32_t GetMaxTextureSize() const MOZ_FINAL;
-
-  virtual void SetTargetContext(gfx::DrawTarget* aTarget)  MOZ_OVERRIDE
-  {
-    mTarget = aTarget;
-  }
 
   virtual void MakeCurrent(MakeCurrentFlags aFlags = 0)  MOZ_OVERRIDE {}
 
@@ -71,7 +69,7 @@ public:
                                  const gfx::IntPoint& aSourcePoint) MOZ_OVERRIDE;
 
   virtual void SetRenderTarget(CompositingRenderTarget* aSurface) MOZ_OVERRIDE;
-  virtual CompositingRenderTarget* GetCurrentRenderTarget() MOZ_OVERRIDE
+  virtual CompositingRenderTarget* GetCurrentRenderTarget() const MOZ_OVERRIDE
   {
     return mCurrentRT;
   }
@@ -90,11 +88,20 @@ public:
     // If the offset is 0, 0 that's okay.
   }
 
+  virtual void ClearRect(const gfx::Rect& aRect) MOZ_OVERRIDE;
+
   virtual void DrawQuad(const gfx::Rect &aRect,
                         const gfx::Rect &aClipRect,
                         const EffectChain &aEffectChain,
                         gfx::Float aOpacity,
                         const gfx::Matrix4x4 &aTransform) MOZ_OVERRIDE;
+
+  /* Helper for when the primary effect is VR_DISTORTION */
+  void DrawVRDistortion(const gfx::Rect &aRect,
+                        const gfx::Rect &aClipRect,
+                        const EffectChain &aEffectChain,
+                        gfx::Float aOpacity,
+                        const gfx::Matrix4x4 &aTransform);
 
   /**
    * Start a new frame. If aClipRectIn is null, sets *aClipRectOut to the
@@ -102,7 +109,6 @@ public:
    */
   virtual void BeginFrame(const nsIntRegion& aInvalidRegion,
                           const gfx::Rect *aClipRectIn,
-                          const gfx::Matrix& aTransform,
                           const gfx::Rect& aRenderBounds,
                           gfx::Rect *aClipRectOut = nullptr,
                           gfx::Rect *aRenderBoundsOut = nullptr) MOZ_OVERRIDE;
@@ -119,16 +125,10 @@ public:
   virtual void EndFrameForExternalComposition(const gfx::Matrix& aTransform) MOZ_OVERRIDE {}
 
   /**
-   * Tidy up if BeginFrame has been called, but EndFrame won't be
-   */
-  virtual void AbortFrame() MOZ_OVERRIDE {}
-
-  /**
    * Setup the viewport and projection matrix for rendering
    * to a window of the given dimensions.
    */
-  virtual void PrepareViewport(const gfx::IntSize& aSize,
-                               const gfx::Matrix& aWorldTransform) MOZ_OVERRIDE;
+  virtual void PrepareViewport(const gfx::IntSize& aSize) MOZ_OVERRIDE;
 
   virtual bool SupportsPartialTextureUpdate() MOZ_OVERRIDE { return true; }
 
@@ -144,16 +144,30 @@ public:
 
   ID3D11Device* GetDevice() { return mDevice; }
 
+  ID3D11DeviceContext* GetDC() { return mContext; }
+
 private:
+  enum Severity {
+    Recoverable,
+    DebugAssert,
+    Critical,
+  };
+
+  void HandleError(HRESULT hr, Severity aSeverity = DebugAssert);
+  bool Failed(HRESULT hr, Severity aSeverity = DebugAssert);
+  bool Succeeded(HRESULT hr, Severity aSeverity = DebugAssert);
+
   // ensure mSize is up to date with respect to mWidget
   void EnsureSize();
-  void VerifyBufferSize();
+  bool VerifyBufferSize();
   void UpdateRenderTarget();
   bool CreateShaders();
-  void UpdateConstantBuffers();
+  bool UpdateConstantBuffers();
   void SetSamplerForFilter(gfx::Filter aFilter);
   void SetPSForEffect(Effect *aEffect, MaskType aMaskType, gfx::SurfaceFormat aFormat);
   void PaintToTarget();
+
+  virtual gfx::IntSize GetWidgetSize() const MOZ_OVERRIDE { return gfx::ToIntSize(mSize); }
 
   RefPtr<ID3D11DeviceContext> mContext;
   RefPtr<ID3D11Device> mDevice;
@@ -162,8 +176,6 @@ private:
   RefPtr<CompositingRenderTargetD3D11> mCurrentRT;
 
   DeviceAttachmentsD3D11* mAttachments;
-
-  RefPtr<gfx::DrawTarget> mTarget;
 
   nsIWidget* mWidget;
 
@@ -176,6 +188,11 @@ private:
   VertexShaderConstants mVSConstants;
   PixelShaderConstants mPSConstants;
   bool mDisableSequenceForNextFrame;
+
+  gfx::IntRect mInvalidRect;
+  // This is the clip rect applied to the default DrawTarget (i.e. the window)
+  gfx::IntRect mCurrentClip;
+  nsIntRegion mInvalidRegion;
 };
 
 }

@@ -145,6 +145,8 @@ static Test kTests[] =
 
 class FakeInputStream MOZ_FINAL : public nsIInputStream
 {
+  ~FakeInputStream() {}
+
 public:
 
   FakeInputStream()
@@ -168,7 +170,7 @@ private:
   bool mClosed;
 };
 
-NS_IMPL_ISUPPORTS1(FakeInputStream, nsIInputStream)
+NS_IMPL_ISUPPORTS(FakeInputStream, nsIInputStream)
 
 NS_IMETHODIMP
 FakeInputStream::Close()

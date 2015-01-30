@@ -51,6 +51,14 @@ const STORAGE_INFO_TYPES = [INFO_COLLECTIONS,
                             INFO_COLLECTION_COUNTS,
                             INFO_QUOTA];
 
+// A structure mapping a (boolean) telemetry probe name to a preference name.
+// The probe will record true if the pref is modified, false otherwise.
+const TELEMETRY_CUSTOM_SERVER_PREFS = {
+  WEAVE_CUSTOM_LEGACY_SERVER_CONFIGURATION: "services.sync.serverURL",
+  WEAVE_CUSTOM_FXA_SERVER_CONFIGURATION: "identity.fxaccounts.auth.uri",
+  WEAVE_CUSTOM_TOKEN_SERVER_CONFIGURATION: "services.sync.tokenServerURI",
+};
+
 
 function Sync11Service() {
   this._notify = Utils.notify("weave:service:");
@@ -356,6 +364,12 @@ Sync11Service.prototype = {
       Svc.Obs.notify("weave:engine:start-tracking");
     }
 
+    // Telemetry probes to indicate if the user is using custom servers.
+    for (let [probeName, prefName] of Iterator(TELEMETRY_CUSTOM_SERVER_PREFS)) {
+      let isCustomized = Services.prefs.prefHasUserValue(prefName);
+      Services.telemetry.getHistogramById(probeName).add(isCustomized);
+    }
+
     // Send an event now that Weave service is ready.  We don't do this
     // synchronously so that observers can import this module before
     // registering an observer.
@@ -656,7 +670,7 @@ Sync11Service.prototype = {
     }
   },
 
-  verifyLogin: function verifyLogin() {
+  verifyLogin: function verifyLogin(allow40XRecovery = true) {
     // If the identity isn't ready it  might not know the username...
     if (!this.identity.readyToAuthenticate) {
       this._log.info("Not ready to authenticate in verifyLogin.");
@@ -670,17 +684,21 @@ Sync11Service.prototype = {
       return false;
     }
 
-    // Unlock master password, or return.
     // Attaching auth credentials to a request requires access to
     // passwords, which means that Resource.get can throw MP-related
     // exceptions!
-    // Try to fetch the passphrase first, while we still have control.
-    try {
-      this.identity.syncKey;
-    } catch (ex) {
-      this._log.debug("Fetching passphrase threw " + ex +
-                      "; assuming master password locked.");
-      this.status.login = MASTER_PASSWORD_LOCKED;
+    // So we ask the identity to verify the login state after unlocking the
+    // master password (ie, this call is expected to prompt for MP unlock
+    // if necessary) while we still have control.
+    let cb = Async.makeSpinningCallback();
+    this.identity.unlockAndVerifyAuthState().then(
+      result => cb(null, result),
+      cb
+    );
+    let unlockedState = cb.wait();
+    this._log.debug("Fetching unlocked auth state returned " + unlockedState);
+    if (unlockedState != STATUS_OK) {
+      this.status.login = unlockedState;
       return false;
     }
 
@@ -690,7 +708,6 @@ Sync11Service.prototype = {
       // to succeed, since that probably means we just don't have storage.
       if (this.clusterURL == "" && !this._clusterManager.setCluster()) {
         this.status.sync = NO_SYNC_NODE_FOUND;
-        Svc.Obs.notify("weave:service:sync:delayed");
         return true;
       }
 
@@ -712,7 +729,7 @@ Sync11Service.prototype = {
 
           // Go ahead and do remote setup, so that we can determine
           // conclusively that our passphrase is correct.
-          if (this._remoteSetup()) {
+          if (this._remoteSetup(test)) {
             // Username/password verified.
             this.status.login = LOGIN_SUCCEEDED;
             return true;
@@ -728,8 +745,8 @@ Sync11Service.prototype = {
 
         case 404:
           // Check that we're verifying with the correct cluster
-          if (this._clusterManager.setCluster()) {
-            return this.verifyLogin();
+          if (allow40XRecovery && this._clusterManager.setCluster()) {
+            return this.verifyLogin(false);
           }
 
           // We must have the right cluster, but the server doesn't expect us
@@ -969,7 +986,7 @@ Sync11Service.prototype = {
           && (username || password || passphrase)) {
         Svc.Obs.notify("weave:service:setup-complete");
       }
-      this._log.info("Logging in user " + this.identity.username);
+      this._log.info("Logging in the user.");
       this._updateCachedURLs();
 
       if (!this.verifyLogin()) {
@@ -987,10 +1004,9 @@ Sync11Service.prototype = {
   },
 
   logout: function logout() {
-    // No need to do anything if we're already logged out.
-    if (!this._loggedIn)
-      return;
-
+    // If we failed during login, we aren't going to have this._loggedIn set,
+    // but we still want to ask the identity to logout, so it doesn't try and
+    // reuse any old credentials next time we sync.
     this._log.info("Logging out");
     this.identity.logout();
     this._loggedIn = false;
@@ -1059,6 +1075,14 @@ Sync11Service.prototype = {
 
       // ... fetch the current record from the server, and COPY THE FLAGS.
       let newMeta = this.recordManager.get(this.metaURL);
+
+      // If we got a 401, we do not want to create a new meta/global - we
+      // should be able to get the existing meta after we get a new node.
+      if (this.recordManager.response.status == 401) {
+        this._log.debug("Fetching meta/global record on the server returned 401.");
+        this.errorHandler.checkServerError(this.recordManager.response);
+        return false;
+      }
 
       if (!this.recordManager.response.success || !newMeta) {
         this._log.debug("No meta/global record on the server. Creating one.");
@@ -1241,6 +1265,9 @@ Sync11Service.prototype = {
     return this._lock("service.js: sync",
                       this._notify("sync", "", function onNotify() {
 
+      let histogram = Services.telemetry.getHistogramById("WEAVE_START_COUNT");
+      histogram.add(1);
+
       let synchronizer = new EngineSynchronizer(this);
       let cb = Async.makeSpinningCallback();
       synchronizer.onComplete = cb;
@@ -1250,7 +1277,19 @@ Sync11Service.prototype = {
       // we want.
       let result = cb.wait();
 
-      // We successfully synchronized. Now let's update our declined engines.
+      histogram = Services.telemetry.getHistogramById("WEAVE_COMPLETE_SUCCESS_COUNT");
+      histogram.add(1);
+
+      // We successfully synchronized.
+      // Check if the identity wants to pre-fetch a migration sentinel from
+      // the server.
+      // If we have no clusterURL, we are probably doing a node reassignment
+      // so don't attempt to get it in that case.
+      if (this.clusterURL) {
+        this.identity.prefetchMigrationSentinel(this);
+      }
+
+      // Now let's update our declined engines.
       let meta = this.recordManager.get(this.metaURL);
       if (!meta) {
         this._log.warn("No meta/global; can't update declined state.");
@@ -1284,6 +1323,92 @@ Sync11Service.prototype = {
       throw response;
     }
     this.recordManager.set(this.metaURL, meta);
+  },
+
+  /**
+   * Get a migration sentinel for the Firefox Accounts migration.
+   * Returns a JSON blob - it is up to callers of this to make sense of the
+   * data.
+   *
+   * Returns a promise that resolves with the sentinel, or null.
+   */
+  getFxAMigrationSentinel: function() {
+    if (this._shouldLogin()) {
+      this._log.debug("In getFxAMigrationSentinel: should login.");
+      if (!this.login()) {
+        this._log.debug("Can't get migration sentinel: login returned false.");
+        return Promise.resolve(null);
+      }
+    }
+    if (!this.identity.syncKeyBundle) {
+      this._log.error("Can't get migration sentinel: no syncKeyBundle.");
+      return Promise.resolve(null);
+    }
+    try {
+      let collectionURL = this.storageURL + "meta/fxa_credentials";
+      let cryptoWrapper = this.recordManager.get(collectionURL);
+      if (!cryptoWrapper || !cryptoWrapper.payload) {
+        // nothing to decrypt - .decrypt is noisy in that case, so just bail
+        // now.
+        return Promise.resolve(null);
+      }
+      // If the payload has a sentinel it means we must have put back the
+      // decrypted version last time we were called.
+      if (cryptoWrapper.payload.sentinel) {
+        return Promise.resolve(cryptoWrapper.payload.sentinel);
+      }
+      // If decryption fails it almost certainly means the key is wrong - but
+      // it's not clear if we need to take special action for that case?
+      let payload = cryptoWrapper.decrypt(this.identity.syncKeyBundle);
+      // After decrypting the ciphertext is lost, so we just stash the
+      // decrypted payload back into the wrapper.
+      cryptoWrapper.payload = payload;
+      return Promise.resolve(payload.sentinel);
+    } catch (ex) {
+      this._log.error("Failed to fetch the migration sentinel: ${}", ex);
+      return Promise.resolve(null);
+    }
+  },
+
+  /**
+   * Set a migration sentinel for the Firefox Accounts migration.
+   * Accepts a JSON blob - it is up to callers of this to make sense of the
+   * data.
+   *
+   * Returns a promise that resolves with a boolean which indicates if the
+   * sentinel was successfully written.
+   */
+  setFxAMigrationSentinel: function(sentinel) {
+    if (this._shouldLogin()) {
+      this._log.debug("In setFxAMigrationSentinel: should login.");
+      if (!this.login()) {
+        this._log.debug("Can't set migration sentinel: login returned false.");
+        return Promise.resolve(false);
+      }
+    }
+    if (!this.identity.syncKeyBundle) {
+      this._log.error("Can't set migration sentinel: no syncKeyBundle.");
+      return Promise.resolve(false);
+    }
+    try {
+      let collectionURL = this.storageURL + "meta/fxa_credentials";
+      let cryptoWrapper = new CryptoWrapper("meta", "fxa_credentials");
+      cryptoWrapper.cleartext.sentinel = sentinel;
+
+      cryptoWrapper.encrypt(this.identity.syncKeyBundle);
+
+      let res = this.resource(collectionURL);
+      let response = res.put(cryptoWrapper.toJSON());
+
+      if (!response.success) {
+        throw response;
+      }
+      this.recordManager.set(collectionURL, cryptoWrapper);
+    } catch (ex) {
+      this._log.error("Failed to set the migration sentinel: ${}", ex);
+      return Promise.resolve(false);
+    }
+    return Promise.resolve(true);
   },
 
   /**

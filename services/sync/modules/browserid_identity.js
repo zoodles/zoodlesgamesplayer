@@ -80,6 +80,7 @@ this.BrowserIDManager = function BrowserIDManager() {
   // the test suite.
   this._fxaService = fxAccounts;
   this._tokenServerClient = new TokenServerClient();
+  this._tokenServerClient.observerPrefix = "weave:service";
   // will be a promise that resolves when we are ready to authenticate
   this.whenReadyToAuthenticate = null;
   this._log = log;
@@ -183,7 +184,15 @@ this.BrowserIDManager.prototype = {
 
     // Reset the world before we do anything async.
     this.whenReadyToAuthenticate = Promise.defer();
-    this._shouldHaveSyncKeyBundle = false;
+    this.whenReadyToAuthenticate.promise.then(null, (err) => {
+      this._log.error("Could not authenticate", err);
+    });
+
+    // initializeWithCurrentIdentity() can be called after the
+    // identity module was first initialized, e.g., after the
+    // user completes a force authentication, so we should make
+    // sure all credentials are reset before proceeding.
+    this.resetCredentials();
     this._authFailureReason = null;
 
     return this._fxaService.getSignedInUser().then(accountData => {
@@ -218,8 +227,9 @@ this.BrowserIDManager.prototype = {
           }
         }
       }).then(() => {
-        return this._fetchSyncKeyBundle();
-      }).then(() => {
+        return this._fetchTokenForUser();
+      }).then(token => {
+        this._token = token;
         this._shouldHaveSyncKeyBundle = true; // and we should actually have one...
         this.whenReadyToAuthenticate.resolve();
         this._log.info("Background fetch for key bundle done");
@@ -234,11 +244,11 @@ this.BrowserIDManager.prototype = {
         this._shouldHaveSyncKeyBundle = true; // but we probably don't have one...
         this.whenReadyToAuthenticate.reject(err);
         // report what failed...
-        this._log.error("Background fetch for key bundle failed: " + err);
+        this._log.error("Background fetch for key bundle failed", err);
       });
       // and we are done - the fetch continues on in the background...
     }).then(null, err => {
-      this._log.error("Processing logged in account: " + err);
+      this._log.error("Processing logged in account", err);
     });
   },
 
@@ -390,10 +400,30 @@ this.BrowserIDManager.prototype = {
   },
 
   /**
+   * Pre-fetches any information that might help with migration away from this
+   * identity.  Called after every sync and is really just an optimization that
+   * allows us to avoid a network request for when we actually need the
+   * migration info.
+   */
+  prefetchMigrationSentinel: function(service) {
+    // nothing to do here until we decide to migrate away from FxA.
+  },
+
+  /**
+    * Return credentials hosts for this identity only.
+    */
+  _getSyncCredentialsHosts: function() {
+    return Utils.getSyncCredentialsHostsFxA();
+  },
+
+  /**
    * The current state of the auth credentials.
    *
    * This essentially validates that enough credentials are available to use
-   * Sync.
+   * Sync, although it effectively ignores the state of the master-password -
+   * if that's locked and that's the only problem we can see, say everything
+   * is OK - unlockAndVerifyAuthState will be used to perform the unlock
+   * and re-verification if necessary.
    */
   get currentAuthState() {
     if (this._authFailureReason) {
@@ -410,12 +440,51 @@ this.BrowserIDManager.prototype = {
 
     // No need to check this.syncKey as our getter for that attribute
     // uses this.syncKeyBundle
-    // If bundle creation started, but failed.
-    if (this._shouldHaveSyncKeyBundle && !this.syncKeyBundle) {
-      return LOGIN_FAILED_NO_PASSPHRASE;
+    // If bundle creation started, but failed due to any reason other than
+    // the MP being locked...
+    if (this._shouldHaveSyncKeyBundle && !this.syncKeyBundle && !Utils.mpLocked()) {
+      // Return a state that says a re-auth is necessary so we can get keys.
+      return LOGIN_FAILED_LOGIN_REJECTED;
     }
 
     return STATUS_OK;
+  },
+
+  // Do we currently have keys, or do we have enough that we should be able
+  // to successfully fetch them?
+  _canFetchKeys: function() {
+    let userData = this._signedInUser;
+    // a keyFetchToken means we can almost certainly grab them.
+    // kA and kB means we already have them.
+    return userData && (userData.keyFetchToken || (userData.kA && userData.kB));
+  },
+
+  /**
+   * Verify the current auth state, unlocking the master-password if necessary.
+   *
+   * Returns a promise that resolves with the current auth state after
+   * attempting to unlock.
+   */
+  unlockAndVerifyAuthState: function() {
+    if (this._canFetchKeys()) {
+      return Promise.resolve(STATUS_OK);
+    }
+    // so no keys - ensure MP unlocked.
+    if (!Utils.ensureMPUnlocked()) {
+      // user declined to unlock, so we don't know if they are stored there.
+      return Promise.resolve(MASTER_PASSWORD_LOCKED);
+    }
+    // now we are unlocked we must re-fetch the user data as we may now have
+    // the details that were previously locked away.
+    return this._fxaService.getSignedInUser().then(
+      accountData => {
+        this._updateSignedInUser(accountData);
+        // If we still can't get keys it probably means the user authenticated
+        // without unlocking the MP or cleared the saved logins, so we've now
+        // lost them - the user will need to reauth before continuing.
+        return this._canFetchKeys() ? STATUS_OK : LOGIN_FAILED_LOGIN_REJECTED;
+      }
+    );
   },
 
   /**
@@ -423,6 +492,17 @@ this.BrowserIDManager.prototype = {
    * signed in?
    */
   hasValidToken: function() {
+    // If pref is set to ignore cached authentication credentials for debugging,
+    // then return false to force the fetching of a new token.
+    let ignoreCachedAuthCredentials = false;
+    try {
+      ignoreCachedAuthCredentials = Svc.Prefs.get("debug.ignoreCachedAuthCredentials");
+    } catch(e) {
+      // Pref doesn't exist
+    }
+    if (ignoreCachedAuthCredentials) {
+      return false;
+    }
     if (!this._token) {
       return false;
     }
@@ -432,69 +512,68 @@ this.BrowserIDManager.prototype = {
     return true;
   },
 
-  _fetchSyncKeyBundle: function() {
-    // Fetch a sync token for the logged in user from the token server.
-    return this._fxaService.getKeys().then(userData => {
-      this._updateSignedInUser(userData); // throws if the user changed.
-      return this._fetchTokenForUser().then(token => {
-        this._token = token;
-        // both Jelly and FxAccounts give us kA/kB as hex.
-        let kB = Utils.hexToBytes(userData.kB);
-        this._syncKeyBundle = deriveKeyBundle(kB);
-        return;
-      });
-    });
-  },
-
-  // Refresh the sync token for our user.
+  // Refresh the sync token for our user. Returns a promise that resolves
+  // with a token (which may be null in one sad edge-case), or rejects with an
+  // error.
   _fetchTokenForUser: function() {
     let tokenServerURI = Svc.Prefs.get("tokenServerURI");
+    if (tokenServerURI.endsWith("/")) { // trailing slashes cause problems...
+      tokenServerURI = tokenServerURI.slice(0, -1);
+    }
     let log = this._log;
     let client = this._tokenServerClient;
     let fxa = this._fxaService;
     let userData = this._signedInUser;
 
-    // Both Jelly and FxAccounts give us kB as hex
-    let kBbytes = CommonUtils.hexToBytes(userData.kB);
-    let headers = {"X-Client-State": this._computeXClientState(kBbytes)};
-    log.info("Fetching assertion and token from: " + tokenServerURI);
+    // We need kA and kB for things to work.  If we don't have them, just
+    // return null for the token - sync calling unlockAndVerifyAuthState()
+    // before actually syncing will setup the error states if necessary.
+    if (!this._canFetchKeys()) {
+      return Promise.resolve(null);
+    }
 
-    function getToken(tokenServerURI, assertion) {
+    let maybeFetchKeys = () => {
+      // This is called at login time and every time we need a new token - in
+      // the latter case we already have kA and kB, so optimise that case.
+      if (userData.kA && userData.kB) {
+        return;
+      }
+      log.info("Fetching new keys");
+      return this._fxaService.getKeys().then(
+        newUserData => {
+          userData = newUserData;
+          this._updateSignedInUser(userData); // throws if the user changed.
+        }
+      );
+    }
+
+    let getToken = (tokenServerURI, assertion) => {
       log.debug("Getting a token");
       let deferred = Promise.defer();
       let cb = function (err, token) {
         if (err) {
-          log.info("TokenServerClient.getTokenFromBrowserIDAssertion() failed with: " + err);
-          if (err.response && err.response.status === 401) {
-            err = new AuthenticationError(err);
-          }
           return deferred.reject(err);
-        } else {
-          log.debug("Successfully got a sync token");
-          return deferred.resolve(token);
         }
+        log.debug("Successfully got a sync token");
+        return deferred.resolve(token);
       };
 
+      let kBbytes = CommonUtils.hexToBytes(userData.kB);
+      let headers = {"X-Client-State": this._computeXClientState(kBbytes)};
       client.getTokenFromBrowserIDAssertion(tokenServerURI, assertion, cb, headers);
       return deferred.promise;
     }
 
-    function getAssertion() {
-      log.debug("Getting an assertion");
+    let getAssertion = () => {
+      log.info("Getting an assertion from", tokenServerURI);
       let audience = Services.io.newURI(tokenServerURI, null, null).prePath;
-      return fxa.getAssertion(audience).then(null, err => {
-        log.error("fxa.getAssertion() failed with: " + err.code + " - " + err.message);
-        if (err.code === 401) {
-          throw new AuthenticationError("Unable to get assertion for user");
-        } else {
-          throw err;
-        }
-      });
+      return fxa.getAssertion(audience);
     };
 
     // wait until the account email is verified and we know that
     // getAssertion() will return a real assertion (not null).
     return fxa.whenVerified(this._signedInUser)
+      .then(() => maybeFetchKeys())
       .then(() => getAssertion())
       .then(assertion => getToken(tokenServerURI, assertion))
       .then(token => {
@@ -502,24 +581,40 @@ this.BrowserIDManager.prototype = {
         // before it actually expires. This is to avoid sync storage errors
         // otherwise, we get a nasty notification bar briefly. Bug 966568.
         token.expiration = this._now() + (token.duration * 1000) * 0.80;
+        if (!this._syncKeyBundle) {
+          // We are given kA/kB as hex.
+          this._syncKeyBundle = deriveKeyBundle(Utils.hexToBytes(userData.kB));
+        }
         return token;
       })
       .then(null, err => {
+        // TODO: unify these errors - we need to handle errors thrown by
+        // both tokenserverclient and hawkclient.
+        // A tokenserver error thrown based on a bad response.
+        if (err.response && err.response.status === 401) {
+          err = new AuthenticationError(err);
+        // A hawkclient error.
+        } else if (err.code && err.code === 401) {
+          err = new AuthenticationError(err);
+        }
+
         // TODO: write tests to make sure that different auth error cases are handled here
         // properly: auth error getting assertion, auth error getting token (invalid generation
         // and client-state error)
         if (err instanceof AuthenticationError) {
-          this._log.error("Authentication error in _fetchTokenForUser: " + err);
+          this._log.error("Authentication error in _fetchTokenForUser", err);
           // set it to the "fatal" LOGIN_FAILED_LOGIN_REJECTED reason.
           this._authFailureReason = LOGIN_FAILED_LOGIN_REJECTED;
         } else {
-          this._log.error("Non-authentication error in _fetchTokenForUser: " + err.message);
-          // for now assume it is just a transient network related problem.
+          this._log.error("Non-authentication error in _fetchTokenForUser", err);
+          // for now assume it is just a transient network related problem
+          // (although sadly, it might also be a regular unhandled exception)
           this._authFailureReason = LOGIN_FAILED_NETWORK_ERROR;
         }
-        // Drop the sync key bundle, but still expect to have one.
-        // This will arrange for us to be in the right 'currentAuthState'
-        // such that UI will show the right error.
+        // this._authFailureReason being set to be non-null in the above if clause
+        // ensures we are in the correct currentAuthState, and
+        // this._shouldHaveSyncKeyBundle being true ensures everything that cares knows
+        // that there is no authentication dance still under way.
         this._shouldHaveSyncKeyBundle = true;
         Weave.Status.login = this._authFailureReason;
         Services.obs.notifyObservers(null, "weave:service:login:error", null);
@@ -531,8 +626,12 @@ this.BrowserIDManager.prototype = {
   // current user stored in this._token.  When resolved, this._token is valid.
   _ensureValidToken: function() {
     if (this.hasValidToken()) {
+      this._log.debug("_ensureValidToken already has one");
       return Promise.resolve();
     }
+    // reset this._token as a safety net to reduce the possibility of us
+    // repeatedly attempting to use an invalid token if _fetchTokenForUser throws.
+    this._token = null;
     return this._fetchTokenForUser().then(
       token => {
         this._token = token;
@@ -561,7 +660,7 @@ this.BrowserIDManager.prototype = {
     try {
       cb.wait();
     } catch (ex) {
-      this._log.error("Failed to fetch a token for authentication: " + ex);
+      this._log.error("Failed to fetch a token for authentication", ex);
       return null;
     }
     if (!this._token) {
@@ -612,6 +711,17 @@ BrowserIDClusterManager.prototype = {
 
   _findCluster: function() {
     let endPointFromIdentityToken = function() {
+      // The only reason (in theory ;) that we can end up with a null token
+      // is when this.identity._canFetchKeys() returned false.  In turn, this
+      // should only happen if the master-password is locked or the credentials
+      // storage is screwed, and in those cases we shouldn't have started
+      // syncing so shouldn't get here anyway.
+      // But better safe than sorry! To keep things clearer, throw an explicit
+      // exception - the message will appear in the logs and the error will be
+      // treated as transient.
+      if (!this.identity._token) {
+        throw new Error("Can't get a cluster URL as we can't fetch keys.");
+      }
       let endpoint = this.identity._token.endpoint;
       // For Sync 1.5 storage endpoints, we use the base endpoint verbatim.
       // However, it should end in "/" because we will extend it with
@@ -619,15 +729,25 @@ BrowserIDClusterManager.prototype = {
       if (!endpoint.endsWith("/")) {
         endpoint += "/";
       }
+      log.debug("_findCluster returning " + endpoint);
       return endpoint;
     }.bind(this);
 
     // Spinningly ensure we are ready to authenticate and have a valid token.
     let promiseClusterURL = function() {
       return this.identity.whenReadyToAuthenticate.promise.then(
-        () => this.identity._ensureValidToken()
-      ).then(
-        () => endPointFromIdentityToken()
+        () => {
+          // We need to handle node reassignment here.  If we are being asked
+          // for a clusterURL while the service already has a clusterURL, then
+          // it's likely a 401 was received using the existing token - in which
+          // case we just discard the existing token and fetch a new one.
+          if (this.service.clusterURL) {
+            log.debug("_findCluster found existing clusterURL, so discarding the current token");
+            this.identity._token = null;
+          }
+          return this.identity._ensureValidToken();
+        }
+      ).then(endPointFromIdentityToken
       );
     }.bind(this);
 
@@ -636,6 +756,7 @@ BrowserIDClusterManager.prototype = {
       cb(null, clusterURL);
     }).then(
       null, err => {
+      log.info("Failed to fetch the cluster URL", err);
       // service.js's verifyLogin() method will attempt to fetch a cluster
       // URL when it sees a 401.  If it gets null, it treats it as a "real"
       // auth error and sets Status.login to LOGIN_FAILED_LOGIN_REJECTED, which

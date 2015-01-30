@@ -1,6 +1,8 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
+const XUL_NS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
+
 // Some tests here assume that all restored tabs are loaded without waiting for
 // the user to bring them to the foreground. We ensure this by resetting the
 // related preference (see the "firefox.js" defaults file for details).
@@ -103,7 +105,7 @@ function newWindowWithTabView(shownCallback, loadCallback, width, height) {
   let winHeight = height || 800;
   let win = window.openDialog(getBrowserURL(), "_blank",
                               "chrome,all,dialog=no,height=" + winHeight +
-                              ",width=" + winWidth);
+                              ",width=" + winWidth, "about:blank");
 
   whenWindowLoaded(win, function () {
     if (loadCallback)
@@ -140,8 +142,7 @@ function afterAllTabsLoaded(callback, win) {
                          browser.__SS_restoreState &&
                          browser.__SS_restoreState == TAB_STATE_NEEDS_RESTORE);
 
-    if (isRestorable && browser.contentDocument.readyState != "complete" ||
-        browser.webProgress.isLoadingDocument) {
+    if (isRestorable && browser.webProgress.isLoadingDocument) {
       stillToLoad++;
       browser.addEventListener("load", onLoad, true);
     }
@@ -332,7 +333,7 @@ function newWindowWithState(state, callback) {
              .getService(Ci.nsISessionStore);
 
   let opts = "chrome,all,dialog=no,height=800,width=800";
-  let win = window.openDialog(getBrowserURL(), "_blank", opts);
+  let win = window.openDialog(getBrowserURL(), "_blank", opts, "about:blank");
 
   let numConditions = 2;
   let check = function () {
@@ -417,4 +418,34 @@ function promiseWindowClosed(win) {
 
   win.close();
   return deferred.promise;
+}
+
+// ----------
+function waitForOnBeforeUnloadDialog(browser, callback) {
+  browser.addEventListener("DOMWillOpenModalDialog", function onModalDialog() {
+    browser.removeEventListener("DOMWillOpenModalDialog", onModalDialog, true);
+
+    executeSoon(() => {
+      let stack = browser.parentNode;
+      let dialogs = stack.getElementsByTagNameNS(XUL_NS, "tabmodalprompt");
+      let {button0, button1} = dialogs[0].ui;
+      callback(button0, button1);
+    });
+  }, true);
+}
+
+/**
+ * Overrides browser.js' OpenBrowserWindow() function to enforce an initial
+ * tab different from about:home to not hit the network.
+ */
+function OpenBrowserWindow(aOptions) {
+  let features = "";
+  let url = "about:blank";
+
+  if (aOptions && aOptions.private || false) {
+    features = ",private";
+    url = "about:privatebrowsing";
+  }
+
+  return openDialog(getBrowserURL(), "", "chrome,all,dialog=no" + features, url);
 }

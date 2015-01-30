@@ -10,8 +10,8 @@
 #include "mozilla/dom/UIEvent.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/EventForwards.h"
+#include "mozilla/TouchEvents.h"
 #include "nsJSEnvironment.h"
-#include "nsTArray.h"
 #include "nsWrapperCache.h"
 
 class nsAString;
@@ -26,18 +26,16 @@ public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(TouchList)
 
-  TouchList(nsISupports* aParent)
+  explicit TouchList(nsISupports* aParent)
     : mParent(aParent)
   {
-    SetIsDOMBinding();
     nsJSContext::LikelyShortLivingObjectCreated();
   }
   TouchList(nsISupports* aParent,
-            const nsTArray<nsRefPtr<Touch> >& aTouches)
+            const WidgetTouchEvent::TouchArray& aTouches)
     : mParent(aParent)
     , mPoints(aTouches)
   {
-    SetIsDOMBinding();
     nsJSContext::LikelyShortLivingObjectCreated();
   }
 
@@ -46,8 +44,7 @@ public:
     mPoints.AppendElement(aPoint);
   }
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   nsISupports* GetParentObject() const
   {
@@ -76,8 +73,10 @@ public:
   Touch* IdentifiedTouch(int32_t aIdentifier) const;
 
 protected:
+  ~TouchList() {}
+
   nsCOMPtr<nsISupports> mParent;
-  nsTArray<nsRefPtr<Touch> > mPoints;
+  WidgetTouchEvent::TouchArray mPoints;
 };
 
 class TouchEvent : public UIEvent
@@ -90,10 +89,9 @@ public:
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(TouchEvent, UIEvent)
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE
+  virtual JSObject* WrapObjectInternal(JSContext* aCx) MOZ_OVERRIDE
   {
-    return TouchEventBinding::Wrap(aCx, aScope, this);
+    return TouchEventBinding::Wrap(aCx, this);
   }
 
   TouchList* Touches();
@@ -121,7 +119,10 @@ public:
 
   static bool PrefEnabled(JSContext* aCx = nullptr,
                           JSObject* aGlobal = nullptr);
+
 protected:
+  ~TouchEvent() {}
+
   nsRefPtr<TouchList> mTouches;
   nsRefPtr<TouchList> mTargetTouches;
   nsRefPtr<TouchList> mChangedTouches;

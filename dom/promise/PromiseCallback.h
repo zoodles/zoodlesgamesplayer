@@ -17,14 +17,21 @@ namespace dom {
 // It's a logical step in the promise chain of callbacks.
 class PromiseCallback : public nsISupports
 {
+protected:
+  virtual ~PromiseCallback();
+
 public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_CLASS(PromiseCallback)
 
   PromiseCallback();
-  virtual ~PromiseCallback();
 
-  virtual void Call(JS::Handle<JS::Value> aValue) = 0;
+  virtual void Call(JSContext* aCx,
+                    JS::Handle<JS::Value> aValue) = 0;
+
+  // Return the Promise that this callback will end up resolving or
+  // rejecting, if any.
+  virtual Promise* GetDependentPromise() = 0;
 
   enum Task {
     Resolve,
@@ -33,7 +40,8 @@ public:
 
   // This factory returns a PromiseCallback object with refcount of 0.
   static PromiseCallback*
-  Factory(Promise* aNextPromise, AnyCallback* aCallback, Task aTask);
+  Factory(Promise* aNextPromise, JS::Handle<JSObject*> aObject,
+          AnyCallback* aCallback, Task aTask);
 };
 
 // WrapperPromiseCallback execs a JS Callback with a value, and then the return
@@ -43,35 +51,25 @@ class WrapperPromiseCallback MOZ_FINAL : public PromiseCallback
 {
 public:
   NS_DECL_ISUPPORTS_INHERITED
-  NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(WrapperPromiseCallback,
-                                           PromiseCallback)
+  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_INHERITED(WrapperPromiseCallback,
+                                                         PromiseCallback)
 
-  void Call(JS::Handle<JS::Value> aValue) MOZ_OVERRIDE;
+  void Call(JSContext* aCx,
+            JS::Handle<JS::Value> aValue) MOZ_OVERRIDE;
 
-  WrapperPromiseCallback(Promise* aNextPromise, AnyCallback* aCallback);
+  Promise* GetDependentPromise() MOZ_OVERRIDE
+  {
+    return mNextPromise;
+  }
+
+  WrapperPromiseCallback(Promise* aNextPromise, JS::Handle<JSObject*> aGlobal,
+                         AnyCallback* aCallback);
+
+private:
   ~WrapperPromiseCallback();
 
-private:
   nsRefPtr<Promise> mNextPromise;
-  nsRefPtr<AnyCallback> mCallback;
-};
-
-// SimpleWrapperPromiseCallback execs a JS Callback with a value.
-class SimpleWrapperPromiseCallback MOZ_FINAL : public PromiseCallback
-{
-public:
-  NS_DECL_ISUPPORTS_INHERITED
-  NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(SimpleWrapperPromiseCallback,
-                                           PromiseCallback)
-
-  void Call(JS::Handle<JS::Value> aValue) MOZ_OVERRIDE;
-
-  SimpleWrapperPromiseCallback(Promise* aPromise,
-                               AnyCallback* aCallback);
-  ~SimpleWrapperPromiseCallback();
-
-private:
-  nsRefPtr<Promise> mPromise;
+  JS::Heap<JSObject*> mGlobal;
   nsRefPtr<AnyCallback> mCallback;
 };
 
@@ -81,16 +79,24 @@ class ResolvePromiseCallback MOZ_FINAL : public PromiseCallback
 {
 public:
   NS_DECL_ISUPPORTS_INHERITED
-  NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(ResolvePromiseCallback,
-                                           PromiseCallback)
+  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_INHERITED(ResolvePromiseCallback,
+                                                         PromiseCallback)
 
-  void Call(JS::Handle<JS::Value> aValue) MOZ_OVERRIDE;
+  void Call(JSContext* aCx,
+            JS::Handle<JS::Value> aValue) MOZ_OVERRIDE;
 
-  ResolvePromiseCallback(Promise* aPromise);
-  ~ResolvePromiseCallback();
+  Promise* GetDependentPromise() MOZ_OVERRIDE
+  {
+    return mPromise;
+  }
+
+  ResolvePromiseCallback(Promise* aPromise, JS::Handle<JSObject*> aGlobal);
 
 private:
+  ~ResolvePromiseCallback();
+
   nsRefPtr<Promise> mPromise;
+  JS::Heap<JSObject*> mGlobal;
 };
 
 // RejectPromiseCallback calls aPromise->RejectFunction() with the value
@@ -99,16 +105,24 @@ class RejectPromiseCallback MOZ_FINAL : public PromiseCallback
 {
 public:
   NS_DECL_ISUPPORTS_INHERITED
-  NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(RejectPromiseCallback,
-                                           PromiseCallback)
+  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_INHERITED(RejectPromiseCallback,
+                                                         PromiseCallback)
 
-  void Call(JS::Handle<JS::Value> aValue) MOZ_OVERRIDE;
+  void Call(JSContext* aCx,
+            JS::Handle<JS::Value> aValue) MOZ_OVERRIDE;
 
-  RejectPromiseCallback(Promise* aPromise);
-  ~RejectPromiseCallback();
+  Promise* GetDependentPromise() MOZ_OVERRIDE
+  {
+    return mPromise;
+  }
+
+  RejectPromiseCallback(Promise* aPromise, JS::Handle<JSObject*> aGlobal);
 
 private:
+  ~RejectPromiseCallback();
+
   nsRefPtr<Promise> mPromise;
+  JS::Heap<JSObject*> mGlobal;
 };
 
 // NativePromiseCallback wraps a NativePromiseHandler.
@@ -119,13 +133,20 @@ public:
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(NativePromiseCallback,
                                            PromiseCallback)
 
-  void Call(JS::Handle<JS::Value> aValue) MOZ_OVERRIDE;
+  void Call(JSContext* aCx,
+            JS::Handle<JS::Value> aValue) MOZ_OVERRIDE;
+
+  Promise* GetDependentPromise() MOZ_OVERRIDE
+  {
+    return nullptr;
+  }
 
   NativePromiseCallback(PromiseNativeHandler* aHandler,
                         Promise::PromiseState aState);
-  ~NativePromiseCallback();
 
 private:
+  ~NativePromiseCallback();
+
   nsRefPtr<PromiseNativeHandler> mHandler;
   Promise::PromiseState mState;
 };

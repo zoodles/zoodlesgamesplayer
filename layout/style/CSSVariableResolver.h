@@ -32,9 +32,11 @@ public:
    * Creates a new CSSVariableResolver that will output a set of resolved,
    * computed variables into aOutput.
    */
-  CSSVariableResolver(CSSVariableValues* aOutput)
+  explicit CSSVariableResolver(CSSVariableValues* aOutput)
     : mOutput(aOutput)
+#ifdef DEBUG
     , mResolved(false)
+#endif
   {
     MOZ_ASSERT(aOutput);
   }
@@ -92,7 +94,7 @@ private:
    * the CSSVariableDeclarations and CSSVariableValues objects passed in to
    * Resolve.
    *
-   * @param aName The variable name (not including any "var-" prefix that would
+   * @param aName The variable name (not including any "--" prefix that would
    *   be part of the custom property name) whose value is to be set.
    * @param aValue The variable value.
    * @param aFirstToken The type of token at the start of the variable value.
@@ -135,8 +137,10 @@ private:
   // The object to output the resolved variables into.
   CSSVariableValues* mOutput;
 
+#ifdef DEBUG
   // Whether Resolve has been called.
-  DebugOnly<bool> mResolved;
+  bool mResolved;
+#endif
 };
 
 }

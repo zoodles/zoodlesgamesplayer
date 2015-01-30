@@ -11,13 +11,12 @@
 #include "ChildIterator.h"
 #include "nsDOMClassInfoID.h"
 #include "nsError.h"
-#include "nsEventStates.h"
-#include "nsINodeInfo.h"
 #include "nsIXULSortService.h"
 #include "nsContentUtils.h"
 #include "nsTreeBodyFrame.h"
 #include "mozilla/dom/Element.h"
 #include "nsServiceManagerUtils.h"
+#include "nsIDocument.h"
 
 using namespace mozilla;
 
@@ -111,16 +110,14 @@ NS_NewTreeContentView(nsITreeView** aResult)
   return NS_OK;
 }
 
-NS_IMPL_CYCLE_COLLECTION_4(nsTreeContentView,
-                           mBoxObject,
-                           mSelection,
-                           mRoot,
-                           mBody)
+NS_IMPL_CYCLE_COLLECTION(nsTreeContentView,
+                         mBoxObject,
+                         mSelection,
+                         mRoot,
+                         mBody)
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(nsTreeContentView)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(nsTreeContentView)
-
-DOMCI_DATA(TreeContentView, nsTreeContentView)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(nsTreeContentView)
   NS_INTERFACE_MAP_ENTRY(nsITreeView)
@@ -489,7 +486,7 @@ nsTreeContentView::SetTree(nsITreeBoxObject* aTree)
     NS_ENSURE_STATE(mRoot);
 
     // Add ourselves to document's observers.
-    nsIDocument* document = mRoot->GetDocument();
+    nsIDocument* document = mRoot->GetComposedDoc();
     if (document) {
       document->AddObserver(this);
       mDocument = document;
@@ -556,7 +553,7 @@ nsTreeContentView::CycleHeader(nsITreeColumn* aCol)
 
         nsAutoString hints;
         column->GetAttr(kNameSpaceID_None, nsGkAtoms::sorthints, hints);
-        sortdirection.AppendLiteral(" ");
+        sortdirection.Append(' ');
         sortdirection += hints;
 
         nsCOMPtr<nsIDOMNode> rootnode = do_QueryInterface(mRoot);

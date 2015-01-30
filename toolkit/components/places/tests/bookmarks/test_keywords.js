@@ -11,8 +11,16 @@ function check_bookmark_keyword(aItemId, aKeyword)
 function check_uri_keyword(aURI, aKeyword)
 {
   let keyword = aKeyword ? aKeyword.toLowerCase() : null;
-  do_check_eq(PlacesUtils.bookmarks.getKeywordForURI(aURI),
-              keyword);
+
+  for (let bm of PlacesUtils.getBookmarksForURI(aURI)) {
+    let kid = PlacesUtils.bookmarks.getKeywordForBookmark(bm);
+    if (kid && !keyword) {
+      Assert.ok(false, `${aURI.spec} should not have a keyword`);
+    } else if (keyword && kid == keyword) {
+      Assert.equal(kid, keyword, "Found the keyword");
+      break;
+    }
+  }
 
   if (aKeyword) {
     // This API can't tell which uri the user wants, so it returns a random one.
@@ -27,10 +35,10 @@ function check_uri_keyword(aURI, aKeyword)
 
 function check_orphans()
 {
-  stmt = DBConn().createStatement(
-    "SELECT id FROM moz_keywords k WHERE NOT EXISTS ("
-  +    "SELECT id FROM moz_bookmarks WHERE keyword_id = k.id "
-  + ")"
+  let stmt = DBConn().createStatement(
+    `SELECT id FROM moz_keywords k WHERE NOT EXISTS (
+        SELECT id FROM moz_bookmarks WHERE keyword_id = k.id
+     )`
   );
   try {
     do_check_false(stmt.executeStep());
@@ -39,10 +47,10 @@ function check_orphans()
   }
 
   print("Check there are no orphan database entries");
-  let stmt = DBConn().createStatement(
-    "SELECT b.id FROM moz_bookmarks b "
-  + "LEFT JOIN moz_keywords k ON b.keyword_id = k.id "
-  + "WHERE keyword_id NOTNULL AND k.id ISNULL"
+  stmt = DBConn().createStatement(
+    `SELECT b.id FROM moz_bookmarks b
+     LEFT JOIN moz_keywords k ON b.keyword_id = k.id
+     WHERE keyword_id NOTNULL AND k.id ISNULL`
   );
   try {
     do_check_false(stmt.executeStep());

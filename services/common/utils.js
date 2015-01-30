@@ -69,52 +69,9 @@ this.CommonUtils = {
     return true;
   },
 
-  exceptionStr: function exceptionStr(e) {
-    if (!e) {
-      return "" + e;
-    }
-    let message = e.message ? e.message : e;
-    return message + " " + CommonUtils.stackTrace(e);
-  },
-
-  stackTrace: function stackTrace(e) {
-    // Wrapped nsIException
-    if (e.location) {
-      let frame = e.location;
-      let output = [];
-      while (frame) {
-        // Works on frames or exceptions, munges file:// URIs to shorten the paths
-        // FIXME: filename munging is sort of hackish, might be confusing if
-        // there are multiple extensions with similar filenames
-        let str = "<file:unknown>";
-
-        let file = frame.filename || frame.fileName;
-        if (file){
-          str = file.replace(/^(?:chrome|file):.*?([^\/\.]+\.\w+)$/, "$1");
-        }
-
-        if (frame.lineNumber){
-          str += ":" + frame.lineNumber;
-        }
-        if (frame.name){
-          str = frame.name + "()@" + str;
-        }
-
-        if (str){
-          output.push(str);
-        }
-        frame = frame.caller;
-      }
-      return "Stack trace: " + output.join(" < ");
-    }
-    // Standard JS exception
-    if (e.stack){
-      return "JS Stack trace: " + e.stack.trim().replace(/\n/g, " < ").
-        replace(/@[^@]*?([^\/\.]+\.\w+:)/g, "@$1");
-    }
-
-    return "No traceback available";
-  },
+  // Import these from Log.jsm for backward compatibility
+  exceptionStr: Log.exceptionStr,
+  stackTrace: Log.stackTrace,
 
   /**
    * Encode byte string as base64URL (RFC 4648).
@@ -209,8 +166,7 @@ this.CommonUtils = {
     }
 
     // Create a special timer that we can add extra properties
-    let timer = {};
-    timer.__proto__ = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);
+    let timer = Object.create(Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer));
 
     // Provide an easy way to clear out the timer
     timer.clear = function() {
@@ -429,10 +385,8 @@ this.CommonUtils = {
    * @return a promise that resolves to the JSON contents of the named file.
    */
   readJSON: function(path) {
-    let decoder = new TextDecoder();
-    let promise = OS.File.read(path);
-    return promise.then(function onSuccess(array) {
-      return JSON.parse(decoder.decode(array));
+    return OS.File.read(path, { encoding: "utf-8" }).then((data) => {
+      return JSON.parse(data);
     });
   },
 
@@ -444,9 +398,8 @@ this.CommonUtils = {
    * @return a promise, as produced by OS.File.writeAtomic.
    */
   writeJSON: function(contents, path) {
-    let encoder = new TextEncoder();
-    let array = encoder.encode(JSON.stringify(contents));
-    return OS.File.writeAtomic(path, array, {tmpPath: path + ".tmp"});
+    let data = JSON.stringify(contents);
+    return OS.File.writeAtomic(path, data, {encoding: "utf-8", tmpPath: path + ".tmp"});
   },
 
 

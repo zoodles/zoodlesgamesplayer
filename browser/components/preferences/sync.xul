@@ -36,6 +36,30 @@
     <script type="application/javascript"
             src="chrome://browser/content/sync/utils.js"/>
 
+      <vbox id="sync-migration" flex="1" hidden="true">
+
+        <deck id="sync-migration-deck">
+          <!-- When we are in the "need FxA user" state -->
+          <hbox align="center">
+            <description id="sync-migrate-upgrade-description" flex="1"/>
+            <spacer flex="1"/>
+            <button id="sync-migrate-unlink"
+                    onclick="event.stopPropagation(); gSyncPane.startOverMigration();"/>
+            <button id="sync-migrate-upgrade"
+                    onclick="event.stopPropagation(); gSyncPane.migrateUpgrade();"/>
+          </hbox>
+
+          <!-- When we are in the "need the user to be verified" state -->
+          <hbox align="center">
+            <description id="sync-migrate-verify-description" flex="1"/>
+            <spacer flex="1"/>
+            <button id="sync-migrate-forget"
+                    onclick="event.stopPropagation(); gSyncPane.migrateForget();"/>
+            <button id="sync-migrate-resend"
+                    onclick="event.stopPropagation(); gSyncPane.migrateResend();"/>
+          </hbox>
+        </deck>
+      </vbox>
 
       <deck id="weavePrefsDeck">
 
@@ -153,7 +177,7 @@
                      value="&unlinkDevice.label;"/>
             </hbox>
           </groupbox>
-          <hbox id="tosPP" pack="center">
+          <hbox id="tosPP-normal" pack="center">
             <label class="text-link"
                    onclick="event.stopPropagation();gSyncUtils.openToS();"
                    value="&prefs.tosLink.label;"/>
@@ -185,18 +209,18 @@
           <spacer flex="1"/>
         </vbox>
 
-        <vbox id="noFxaAccount">
+        <vbox id="noFxaAccount" align="start">
           <label>&welcome.description;</label>
-          <label class="text-link"
-                 onclick="gSyncPane.signUp(); return false;"
-                 value="&welcome.createAccount.label;"/>
-          <label class="text-link"
-                 onclick="gSyncPane.signIn(); return false;"
-                 value="&welcome.signIn.label;"/>
-          <separator/>
-          <label class="text-link"
-                 onclick="gSyncPane.openOldSyncSupportPage(); return false;"
-                 value="&welcome.useOldSync.label;"/>
+            <label class="text-link"
+                   onclick="gSyncPane.signUp(); return false;"
+                   value="&welcome.createAccount.label;"/>
+            <label class="text-link"
+                   onclick="gSyncPane.signIn(); return false;"
+                   value="&welcome.signIn.label;"/>
+            <separator/>
+            <label class="text-link"
+                   onclick="gSyncPane.openOldSyncSupportPage(); return false;"
+                   value="&welcome.useOldSync.label;"/>
         </vbox>
 
         <vbox id="hasFxaAccount">
@@ -223,12 +247,11 @@
 
               <!-- logged in to an unverified account -->
               <hbox flex="1">
-                <description>
+                <description flex="1">
                   &signedInUnverified.beforename.label;
                   <span id="fxaEmailAddress2"></span>
                   &signedInUnverified.aftername.label;
                 </description>
-                <spacer flex="1"/>
                 <vbox align="end">
                   <button oncommand="gSyncPane.verifyFirefoxAccount();"
                           label="&verify.label;"/>
@@ -240,12 +263,11 @@
 
               <!-- logged in locally but server rejected credentials -->
               <hbox flex="1">
-                <description>
+                <description flex="1">
                   &signedInLoginFailure.beforename.label;
                   <span id="fxaEmailAddress3"></span>
                   &signedInLoginFailure.aftername.label;
                 </description>
-                <spacer flex="1"/>
                 <vbox align="end">
                   <button oncommand="gSyncPane.reSignIn();"
                          label="&signIn.label;"/>
@@ -267,23 +289,9 @@
                 <checkbox label="&engine.bookmarks.label;"
                           accesskey="&engine.bookmarks.accesskey;"
                           preference="engine.bookmarks"/>
-                <hbox>
-                  <checkbox id="fxa-pweng-chk"
-                            label="&engine.passwords.label;"
-                            accesskey="&engine.passwords.accesskey;"
-                            preference="engine.passwords"/>
-
-                  <vbox id="fxa-pweng-help">
-                    <spacer flex="1"/>
-                    <hbox id="fxa-pweng-help-link">
-                      <label value=" ["/>
-                      <label class="text-link" value="?"
-                             onclick="gSyncUtils.openMPInfoPage(event);"/>
-                      <label value="]"/>
-                    </hbox>
-                    <spacer flex="1"/>
-                  </vbox>
-                </hbox>
+                <checkbox label="&engine.passwords.label;"
+                          accesskey="&engine.passwords.accesskey;"
+                          preference="engine.passwords"/>
                 <checkbox label="&engine.history.label;"
                           accesskey="&engine.history.accesskey;"
                           preference="engine.history"/>
@@ -306,7 +314,7 @@
                      onchange="gSyncUtils.changeName(this)"/>
           </hbox>
           <spacer flex="1"/>
-          <hbox id="tosPP" pack="center">
+          <hbox id="tosPP-small" pack="center">
             <label class="text-link small"
                    onclick="event.stopPropagation();gSyncUtils.openToS();"
                    value="&prefs.tosLink.label;"/>

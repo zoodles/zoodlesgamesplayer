@@ -83,13 +83,14 @@ public:
                     nsStyleContext*  aStyleContext,
                     nsString&        aThicknessAttribute,
                     nscoord          onePixel,
-                    nscoord          aDefaultRuleThickness);
+                    nscoord          aDefaultRuleThickness,
+                    float            aFontSizeInflation);
 
   uint8_t
   ScriptIncrement(nsIFrame* aFrame) MOZ_OVERRIDE;
 
 protected:
-  nsMathMLmfracFrame(nsStyleContext* aContext) : nsMathMLContainerFrame(aContext) {}
+  explicit nsMathMLmfracFrame(nsStyleContext* aContext) : nsMathMLContainerFrame(aContext) {}
   virtual ~nsMathMLmfracFrame();
   
   nsresult PlaceInternal(nsRenderingContext& aRenderingContext,

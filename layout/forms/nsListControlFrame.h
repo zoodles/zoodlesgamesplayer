@@ -46,13 +46,14 @@ class HTMLOptionsCollection;
  * Frame-based listbox.
  */
 
-class nsListControlFrame : public nsHTMLScrollFrame,
-                           public nsIFormControlFrame, 
-                           public nsIListControlFrame,
-                           public nsISelectControlFrame
+class nsListControlFrame MOZ_FINAL : public nsHTMLScrollFrame,
+                                     public nsIFormControlFrame,
+                                     public nsIListControlFrame,
+                                     public nsISelectControlFrame
 {
 public:
-  friend nsIFrame* NS_NewListControlFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
+  friend nsContainerFrame* NS_NewListControlFrame(nsIPresShell* aPresShell,
+                                                  nsStyleContext* aContext);
 
   NS_DECL_QUERYFRAME
   NS_DECL_FRAMEARENA_HELPERS
@@ -62,31 +63,31 @@ public:
                                mozilla::WidgetGUIEvent* aEvent,
                                nsEventStatus* aEventStatus) MOZ_OVERRIDE;
   
-  virtual nsresult SetInitialChildList(ChildListID     aListID,
-                                       nsFrameList&    aChildList) MOZ_OVERRIDE;
+  virtual void SetInitialChildList(ChildListID     aListID,
+                                   nsFrameList&    aChildList) MOZ_OVERRIDE;
 
-  virtual nscoord GetPrefWidth(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
-  virtual nscoord GetMinWidth(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
+  virtual nscoord GetPrefISize(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
+  virtual nscoord GetMinISize(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
 
-  virtual nsresult Reflow(nsPresContext*           aCX,
-                          nsHTMLReflowMetrics&     aDesiredSize,
-                          const nsHTMLReflowState& aReflowState,
-                          nsReflowStatus&          aStatus) MOZ_OVERRIDE;
+  virtual void Reflow(nsPresContext*           aCX,
+                      nsHTMLReflowMetrics&     aDesiredSize,
+                      const nsHTMLReflowState& aReflowState,
+                      nsReflowStatus&          aStatus) MOZ_OVERRIDE;
 
-  virtual void Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
 
-  virtual nsresult DidReflow(nsPresContext*            aPresContext, 
-                             const nsHTMLReflowState*  aReflowState, 
-                             nsDidReflowStatus         aStatus) MOZ_OVERRIDE;
+  virtual void DidReflow(nsPresContext*            aPresContext, 
+                         const nsHTMLReflowState*  aReflowState, 
+                         nsDidReflowStatus         aStatus) MOZ_OVERRIDE;
   virtual void DestroyFrom(nsIFrame* aDestructRoot) MOZ_OVERRIDE;
 
   virtual void BuildDisplayList(nsDisplayListBuilder*   aBuilder,
                                 const nsRect&           aDirtyRect,
                                 const nsDisplayListSet& aLists) MOZ_OVERRIDE;
 
-  virtual nsIFrame* GetContentInsertionFrame() MOZ_OVERRIDE;
+  virtual nsContainerFrame* GetContentInsertionFrame() MOZ_OVERRIDE;
 
   /**
    * Get the "type" of the frame
@@ -314,7 +315,7 @@ protected:
    */
   virtual void ResetList(bool aAllowScrolling);
 
-  nsListControlFrame(nsIPresShell* aShell, nsIDocument* aDocument, nsStyleContext* aContext);
+  explicit nsListControlFrame(nsStyleContext* aContext);
   virtual ~nsListControlFrame();
 
   /**
@@ -331,9 +332,9 @@ protected:
   // guess at a row height based on our own style.
   nscoord  CalcFallbackRowHeight(float aFontSizeInflation);
 
-  // CalcIntrinsicHeight computes our intrinsic height (taking the "size"
+  // CalcIntrinsicBSize computes our intrinsic height (taking the "size"
   // attribute into account).  This should only be called in non-dropdown mode.
-  nscoord CalcIntrinsicHeight(nscoord aHeightOfARow, int32_t aNumberOfOptions);
+  nscoord CalcIntrinsicBSize(nscoord aHeightOfARow, int32_t aNumberOfOptions);
 
   // Dropped down stuff
   void     SetComboboxItem(int32_t aIndex);
@@ -343,10 +344,10 @@ protected:
    * reflow as a listbox because the criteria for needing a second
    * pass are different.  This will be called from Reflow() as needed.
    */
-  nsresult ReflowAsDropdown(nsPresContext*           aPresContext,
-                            nsHTMLReflowMetrics&     aDesiredSize,
-                            const nsHTMLReflowState& aReflowState,
-                            nsReflowStatus&          aStatus);
+  void ReflowAsDropdown(nsPresContext*           aPresContext,
+                        nsHTMLReflowMetrics&     aDesiredSize,
+                        const nsHTMLReflowState& aReflowState,
+                        nsReflowStatus&          aStatus);
 
   // Selection
   bool     SetOptionsSelectedFromFrame(int32_t aStartIndex,
@@ -422,6 +423,9 @@ protected:
   // True if the drop-down can show more rows.  Always false if this list
   // is not in drop-down mode.
   bool mDropdownCanGrow:1;
+
+  // True if the selection can be set to nothing or disabled options.
+  bool mForceSelection:1;
   
   // The last computed height we reflowed at if we're a combobox dropdown.
   // XXXbz should we be using a subclass here?  Or just not worry

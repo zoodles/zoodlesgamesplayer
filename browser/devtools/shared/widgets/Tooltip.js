@@ -5,14 +5,19 @@
 "use strict";
 
 const {Cc, Cu, Ci} = require("chrome");
-const promise = require("sdk/core/promise");
+const {Promise: promise} = Cu.import("resource://gre/modules/Promise.jsm", {});
 const IOService = Cc["@mozilla.org/network/io-service;1"]
   .getService(Ci.nsIIOService);
 const {Spectrum} = require("devtools/shared/widgets/Spectrum");
+const {CubicBezierWidget} = require("devtools/shared/widgets/CubicBezierWidget");
 const EventEmitter = require("devtools/toolkit/event-emitter");
 const {colorUtils} = require("devtools/css-color");
 const Heritage = require("sdk/core/heritage");
-const {CSSTransformPreviewer} = require("devtools/shared/widgets/CSSTransformPreviewer");
+const {Eyedropper} = require("devtools/eyedropper/eyedropper");
+const Editor = require("devtools/sourceeditor/editor");
+const {devtools} = Cu.import("resource://gre/modules/devtools/Loader.jsm", {});
+
+devtools.lazyRequireGetter(this, "beautify", "devtools/jsbeautify");
 
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
@@ -25,12 +30,15 @@ XPCOMUtils.defineLazyModuleGetter(this, "VariablesView",
   "resource:///modules/devtools/VariablesView.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "VariablesViewController",
   "resource:///modules/devtools/VariablesViewController.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "Task",
+  "resource://gre/modules/Task.jsm");
 
 const GRADIENT_RE = /\b(repeating-)?(linear|radial)-gradient\(((rgb|hsl)a?\(.+?\)|[^\)])+\)/gi;
 const BORDERCOLOR_RE = /^border-[-a-z]*color$/ig;
 const BORDER_RE = /^border(-(top|bottom|left|right))?$/ig;
 const XHTML_NS = "http://www.w3.org/1999/xhtml";
 const SPECTRUM_FRAME = "chrome://browser/content/devtools/spectrum-frame.xhtml";
+const CUBIC_BEZIER_FRAME = "chrome://browser/content/devtools/cubic-bezier-frame.xhtml";
 const ESCAPE_KEYCODE = Ci.nsIDOMKeyEvent.DOM_VK_ESCAPE;
 const RETURN_KEYCODE = Ci.nsIDOMKeyEvent.DOM_VK_RETURN;
 const POPUP_EVENTS = ["shown", "hidden", "showing", "hiding"];
@@ -100,6 +108,7 @@ let PanelFactory = {
     let panel = doc.createElement("panel");
     panel.setAttribute("hidden", true);
     panel.setAttribute("ignorekeys", true);
+    panel.setAttribute("animate", false);
 
     panel.setAttribute("consumeoutsideclicks", options.get("consumeOutsideClick"));
     panel.setAttribute("noautofocus", options.get("noAutoFocus"));
@@ -192,11 +201,13 @@ function Tooltip(doc, options) {
   // Listen to keypress events to close the tooltip if configured to do so
   let win = this.doc.querySelector("window");
   this._onKeyPress = event => {
+    if (this.panel.hidden) {
+      return;
+    }
+
     this.emit("keypress", event.keyCode);
     if (this.options.get("closeOnKeys").indexOf(event.keyCode) !== -1) {
-      if (!this.panel.hidden) {
-        event.stopPropagation();
-      }
+      event.stopPropagation();
       this.hide();
     }
   };
@@ -252,7 +263,9 @@ Tooltip.prototype = {
   },
 
   isShown: function() {
-    return this.panel.state !== "closed" && this.panel.state !== "hiding";
+    return this.panel &&
+           this.panel.state !== "closed" &&
+           this.panel.state !== "hiding";
   },
 
   setSize: function(width, height) {
@@ -357,6 +370,10 @@ Tooltip.prototype = {
     if (this._basedNode) {
       this.stopTogglingOnHover();
     }
+    if (!baseNode) {
+      // Calling tool is in the process of being destroyed.
+      return;
+    }
 
     this._basedNode = baseNode;
     this._showDelay = showDelay;
@@ -377,6 +394,10 @@ Tooltip.prototype = {
   stopTogglingOnHover: function() {
     clearNamedTimeout(this.uid);
 
+    if (!this._basedNode) {
+      return;
+    }
+
     this._basedNode.removeEventListener("mousemove",
       this._onBaseNodeMouseMove, false);
     this._basedNode.removeEventListener("mouseleave",
@@ -394,6 +415,16 @@ Tooltip.prototype = {
       setNamedTimeout(this.uid, this._showDelay, () => {
         this.isValidHoverTarget(event.target).then(target => {
           this.show(target);
+        }, reason => {
+          if (reason === false) {
+            // isValidHoverTarget rejects with false if the tooltip should
+            // not be shown. This can be safely ignored.
+            return;
+          }
+          // Report everything else. Reason might be error that should not be
+          // hidden.
+          console.error("isValidHoverTarget rejected with an unexpected reason:");
+          console.error(reason);
         });
       });
     }
@@ -419,7 +450,8 @@ Tooltip.prototype = {
         return false;
       });
     } else {
-      return res ? promise.resolve(res) : promise.reject(false);
+      let newTarget = res instanceof Ci.nsIDOMNode ? res : target;
+      return res ? promise.resolve(newTarget) : promise.reject(false);
     }
   },
 
@@ -443,6 +475,9 @@ Tooltip.prototype = {
 
     this.empty();
     this.panel.removeAttribute("clamped-dimensions");
+    this.panel.removeAttribute("clamped-dimensions-no-min-height");
+    this.panel.removeAttribute("clamped-dimensions-no-max-or-min-height");
+    this.panel.removeAttribute("wide");
 
     if (content) {
       this.panel.appendChild(content);
@@ -508,6 +543,19 @@ Tooltip.prototype = {
     } else {
       this.content = vbox;
     }
+  },
+
+  /**
+   * Sets some event listener info as the content of this tooltip.
+   *
+   * @param {Object} (destructuring assignment)
+   *          @0 {array} eventListenerInfos
+   *             A list of event listeners.
+   *          @1 {toolbox} toolbox
+   *             Toolbox used to select debugger panel.
+   */
+  setEventContent: function({ eventListenerInfos, toolbox }) {
+    new EventTooltip(this, eventListenerInfos, toolbox);
   },
 
   /**
@@ -586,26 +634,24 @@ Tooltip.prototype = {
    * Uses the provided inspectorFront's getImageDataFromURL method to resolve
    * the relative URL on the server-side, in the page context, and then sets the
    * tooltip content with the resulting image just like |setImageContent| does.
-   *
-   * @return a promise that resolves when the image is shown in the tooltip
+   * @return a promise that resolves when the image is shown in the tooltip or
+   * resolves when the broken image tooltip content is ready, but never rejects.
    */
-  setRelativeImageContent: function(imageUrl, inspectorFront, maxDim) {
+  setRelativeImageContent: Task.async(function*(imageUrl, inspectorFront, maxDim) {
     if (imageUrl.startsWith("data:")) {
       // If the imageUrl already is a data-url, save ourselves a round-trip
       this.setImageContent(imageUrl, {maxDim: maxDim});
-      return promise.resolve();
     } else if (inspectorFront) {
-      return inspectorFront.getImageDataFromURL(imageUrl, maxDim).then(res => {
-        res.size.maxDim = maxDim;
-        return res.data.string().then(str => {
-          this.setImageContent(str, res.size);
-        });
-      }, () => {
+      try {
+        let {data, size} = yield inspectorFront.getImageDataFromURL(imageUrl, maxDim);
+        size.maxDim = maxDim;
+        let str = yield data.string();
+        this.setImageContent(str, size);
+      } catch (e) {
         this.setBrokenImageContent();
-      });
+      }
     }
-    return promise.resolve();
-  },
+  }),
 
   /**
    * Fill the tooltip with a message explaining the the image is missing
@@ -632,7 +678,9 @@ Tooltip.prototype = {
    *        it was resized, if if was resized before this function was called.
    *        If not provided, will be measured on the loaded image.
    *        - maxDim : if the image should be resized before being shown, pass
-   *        a number here
+   *        a number here.
+   *        - hideDimensionLabel : if the dimension label should be appended
+   *        after the image.
    */
   setImageContent: function(imageUrl, options={}) {
     if (!imageUrl) {
@@ -652,30 +700,33 @@ Tooltip.prototype = {
     }
     vbox.appendChild(image);
 
-    // Dimension label
-    let label = this.doc.createElement("label");
-    label.classList.add("devtools-tooltip-caption");
-    label.classList.add("theme-comment");
-    if (options.naturalWidth && options.naturalHeight) {
-      label.textContent = this._getImageDimensionLabel(options.naturalWidth,
-        options.naturalHeight);
-    } else {
-      // If no dimensions were provided, load the image to get them
-      label.textContent = l10n.strings.GetStringFromName("previewTooltip.image.brokenImage");
-      let imgObj = new this.doc.defaultView.Image();
-      imgObj.src = imageUrl;
-      imgObj.onload = () => {
-        imgObj.onload = null;
-        label.textContent = this._getImageDimensionLabel(imgObj.naturalWidth,
-          imgObj.naturalHeight);
+    if (!options.hideDimensionLabel) {
+      let label = this.doc.createElement("label");
+      label.classList.add("devtools-tooltip-caption");
+      label.classList.add("theme-comment");
+
+      if (options.naturalWidth && options.naturalHeight) {
+        label.textContent = this._getImageDimensionLabel(options.naturalWidth,
+          options.naturalHeight);
+      } else {
+        // If no dimensions were provided, load the image to get them
+        label.textContent = l10n.strings.GetStringFromName("previewTooltip.image.brokenImage");
+        let imgObj = new this.doc.defaultView.Image();
+        imgObj.src = imageUrl;
+        imgObj.onload = () => {
+          imgObj.onload = null;
+            label.textContent = this._getImageDimensionLabel(imgObj.naturalWidth,
+              imgObj.naturalHeight);
+        };
       }
+
+      vbox.appendChild(label);
     }
-    vbox.appendChild(label);
 
     this.content = vbox;
   },
 
-  _getImageDimensionLabel: (w, h) => w + " x " + h,
+  _getImageDimensionLabel: (w, h) => w + " \u00D7 " + h,
 
   /**
    * Fill the tooltip with a new instance of the spectrum color picker widget
@@ -689,7 +740,7 @@ Tooltip.prototype = {
     let iframe = this.doc.createElementNS(XHTML_NS, "iframe");
     iframe.setAttribute("transparent", true);
     iframe.setAttribute("width", "210");
-    iframe.setAttribute("height", "195");
+    iframe.setAttribute("height", "216");
     iframe.setAttribute("flex", "1");
     iframe.setAttribute("class", "devtools-tooltip-iframe");
 
@@ -704,12 +755,21 @@ Tooltip.prototype = {
       let container = win.document.getElementById("spectrum");
       let spectrum = new Spectrum(container, color);
 
-      // Finalize spectrum's init when the tooltip becomes visible
-      panel.addEventListener("popupshown", function shown() {
-        panel.removeEventListener("popupshown", shown, true);
+      function finalizeSpectrum() {
         spectrum.show();
         def.resolve(spectrum);
-      }, true);
+      }
+
+      // Finalize spectrum's init when the tooltip becomes visible
+      if (panel.state == "open") {
+        finalizeSpectrum();
+      }
+      else {
+        panel.addEventListener("popupshown", function shown() {
+          panel.removeEventListener("popupshown", shown, true);
+          finalizeSpectrum();
+        }, true);
+      }
     }
     iframe.addEventListener("load", onLoad, true);
     iframe.setAttribute("src", SPECTRUM_FRAME);
@@ -721,46 +781,47 @@ Tooltip.prototype = {
   },
 
   /**
-   * Set the content of the tooltip to be the result of CSSTransformPreviewer.
-   * Meaning a canvas previewing a css transformation.
-   *
-   * @param {String} transform
-   *        The CSS transform value (e.g. "rotate(45deg) translateX(50px)")
-   * @param {PageStyleActor} pageStyle
-   *        An instance of the PageStyleActor that will be used to retrieve
-   *        computed styles
-   * @param {NodeActor} node
-   *        The NodeActor for the currently selected node
-   * @return A promise that resolves when the tooltip content is ready, or
-   *         rejects if no transform is provided or is invalid
+   * Fill the tooltip with a new instance of the cubic-bezier widget
+   * initialized with the given value, and return a promise that resolves to
+   * the instance of the widget
    */
-  setCssTransformContent: function(transform, pageStyle, node) {
+  setCubicBezierContent: function(bezier) {
     let def = promise.defer();
 
-    if (transform) {
-      // Look into the computed styles to find the width and height and possibly
-      // the origin if it hadn't been provided
-      pageStyle.getComputed(node, {
-        filter: "user",
-        markMatched: false,
-        onlyMatched: false
-      }).then(styles => {
-        let origin = styles["transform-origin"].value;
-        let width = parseInt(styles["width"].value);
-        let height = parseInt(styles["height"].value);
+    // Create an iframe to host the cubic-bezier widget
+    let iframe = this.doc.createElementNS(XHTML_NS, "iframe");
+    iframe.setAttribute("transparent", true);
+    iframe.setAttribute("width", "200");
+    iframe.setAttribute("height", "415");
+    iframe.setAttribute("flex", "1");
+    iframe.setAttribute("class", "devtools-tooltip-iframe");
 
-        let root = this.doc.createElementNS(XHTML_NS, "div");
-        let previewer = new CSSTransformPreviewer(root);
-        this.content = root;
-        if (!previewer.preview(transform, origin, width, height)) {
-          def.reject();
-        } else {
-          def.resolve();
-        }
-      });
-    } else {
-      def.reject();
+    let panel = this.panel;
+    let xulWin = this.doc.ownerGlobal;
+
+    // Wait for the load to initialize the widget
+    function onLoad() {
+      iframe.removeEventListener("load", onLoad, true);
+      let win = iframe.contentWindow.wrappedJSObject;
+
+      let container = win.document.getElementById("container");
+      let widget = new CubicBezierWidget(container, bezier);
+
+      // Resolve to the widget instance whenever the popup becomes visible
+      if (panel.state == "open") {
+        def.resolve(widget);
+      } else {
+        panel.addEventListener("popupshown", function shown() {
+          panel.removeEventListener("popupshown", shown, true);
+          def.resolve(widget);
+        }, true);
+      }
     }
+    iframe.addEventListener("load", onLoad, true);
+    iframe.setAttribute("src", CUBIC_BEZIER_FRAME);
+
+    // Put the iframe in the tooltip
+    this.content = iframe;
 
     return def.promise;
   },
@@ -769,35 +830,31 @@ Tooltip.prototype = {
    * Set the content of the tooltip to display a font family preview.
    * This is based on Lea Verou's Dablet. See https://github.com/LeaVerou/dabblet
    * for more info.
-   *
-   * @param {String} font
-   *        The font family value.
+   * @param {String} font The font family value.
+   * @param {object} nodeFront
+   *        The NodeActor that will used to retrieve the dataURL for the font
+   *        family tooltip contents.
+   * @return A promise that resolves when the font tooltip content is ready, or
+   *         rejects if no font is provided
    */
-  setFontFamilyContent: function(font) {
-    let def = promise.defer();
-
-    if (font) {
-      // Main container
-      let vbox = this.doc.createElement("vbox");
-      vbox.setAttribute("flex", "1");
-
-      // Display the font family previewer
-      let previewer = this.doc.createElement("description");
-      previewer.setAttribute("flex", "1");
-      previewer.style.fontFamily = font;
-      previewer.classList.add("devtools-tooltip-font-previewer-text");
-      previewer.textContent = "(ABCabc123&@%)";
-      vbox.appendChild(previewer);
-
-      this.content = vbox;
-
-      def.resolve();
-    } else {
-      def.reject();
+  setFontFamilyContent: Task.async(function*(font, nodeFront) {
+    if (!font || !nodeFront) {
+      throw "Missing font";
     }
 
-    return def.promise;
-  }
+    if (typeof nodeFront.getFontFamilyDataURL === "function") {
+      font = font.replace(/"/g, "'");
+      font = font.replace("!important", "");
+      font = font.trim();
+
+      let fillStyle = (Services.prefs.getCharPref("devtools.theme") === "light") ?
+        "black" : "white";
+
+      let {data, size} = yield nodeFront.getFontFamilyDataURL(font, fillStyle);
+      let str = yield data.string();
+      this.setImageContent(str, { hideDimensionLabel: true, maxDim: size });
+    }
+  })
 };
 
 /**
@@ -843,6 +900,23 @@ SwatchBasedEditorTooltip.prototype = {
   show: function() {
     if (this.activeSwatch) {
       this.tooltip.show(this.activeSwatch, "topcenter bottomleft");
+
+      // When the tooltip is closed by clicking outside the panel we want to
+      // commit any changes. Because the "hidden" event destroys the tooltip we
+      // need to do this before the tooltip is destroyed (in the "hiding" event).
+      this.tooltip.once("hiding", () => {
+        if (!this._reverted && !this.eyedropperOpen) {
+          this.commit();
+        }
+        this._reverted = false;
+      });
+
+      // Once the tooltip is hidden we need to clean up any remaining objects.
+      this.tooltip.once("hidden", () => {
+        if (!this.eyedropperOpen) {
+          this.activeSwatch = null;
+        }
+      });
     }
   },
 
@@ -860,19 +934,18 @@ SwatchBasedEditorTooltip.prototype = {
    * @param {object} callbacks
    *        Callbacks that will be executed when the editor wants to preview a
    *        value change, or revert a change, or commit a change.
-   * @param {object} originalValue
-   *        The original value before the editor in the tooltip makes changes
-   *        This can be of any type, and will be passed, as is, in the revert
-   *        callback
+   *        - onPreview: will be called when one of the sub-classes calls preview
+   *        - onRevert: will be called when the user ESCapes out of the tooltip
+   *        - onCommit: will be called when the user presses ENTER or clicks
+   *        outside the tooltip.
    */
-  addSwatch: function(swatchEl, callbacks={}, originalValue) {
+  addSwatch: function(swatchEl, callbacks={}) {
     if (!callbacks.onPreview) callbacks.onPreview = function() {};
     if (!callbacks.onRevert) callbacks.onRevert = function() {};
     if (!callbacks.onCommit) callbacks.onCommit = function() {};
 
     this.swatches.set(swatchEl, {
-      callbacks: callbacks,
-      originalValue: originalValue
+      callbacks: callbacks
     });
     swatchEl.addEventListener("click", this._onSwatchClick, false);
   },
@@ -913,7 +986,8 @@ SwatchBasedEditorTooltip.prototype = {
   revert: function() {
     if (this.activeSwatch) {
       let swatch = this.swatches.get(this.activeSwatch);
-      swatch.callbacks.onRevert(swatch.originalValue);
+      swatch.callbacks.onRevert();
+      this._reverted = true;
     }
   },
 
@@ -951,6 +1025,7 @@ function SwatchColorPickerTooltip(doc) {
   // resolves to the spectrum instance
   this.spectrum = this.tooltip.setColorPickerContent([0, 0, 0, 1]);
   this._onSpectrumColorChange = this._onSpectrumColorChange.bind(this);
+  this._openEyeDropper = this._openEyeDropper.bind(this);
 }
 
 module.exports.SwatchColorPickerTooltip = SwatchColorPickerTooltip;
@@ -965,7 +1040,7 @@ SwatchColorPickerTooltip.prototype = Heritage.extend(SwatchBasedEditorTooltip.pr
     SwatchBasedEditorTooltip.prototype.show.call(this);
     // Then set spectrum's color and listen to color changes to preview them
     if (this.activeSwatch) {
-      let swatch = this.swatches.get(this.activeSwatch);
+      this.currentSwatchColor = this.activeSwatch.nextSibling;
       let color = this.activeSwatch.style.backgroundColor;
       this.spectrum.then(spectrum => {
         spectrum.off("changed", this._onSpectrumColorChange);
@@ -974,14 +1049,65 @@ SwatchColorPickerTooltip.prototype = Heritage.extend(SwatchBasedEditorTooltip.pr
         spectrum.updateUI();
       });
     }
+
+    let tooltipDoc = this.tooltip.content.contentDocument;
+    let eyeButton = tooltipDoc.querySelector("#eyedropper-button");
+    eyeButton.addEventListener("click", this._openEyeDropper);
   },
 
   _onSpectrumColorChange: function(event, rgba, cssColor) {
+    this._selectColor(cssColor);
+  },
+
+  _selectColor: function(color) {
     if (this.activeSwatch) {
-      this.activeSwatch.style.backgroundColor = cssColor;
-      this.activeSwatch.nextSibling.textContent = cssColor;
-      this.preview(cssColor);
+      this.activeSwatch.style.backgroundColor = color;
+      this.activeSwatch.parentNode.dataset.color = color;
+
+      color = this._toDefaultType(color);
+      this.currentSwatchColor.textContent = color;
+      this.preview(color);
+
+      if (this.eyedropperOpen) {
+        this.commit();
+      }
     }
+  },
+
+ _openEyeDropper: function() {
+    let chromeWindow = this.tooltip.doc.defaultView.top;
+    let windowType = chromeWindow.document.documentElement
+                     .getAttribute("windowtype");
+    let toolboxWindow;
+    if (windowType != "navigator:browser") {
+      // this means the toolbox is in a seperate window. We need to make
+      // sure we'll be inspecting the browser window instead
+      toolboxWindow = chromeWindow;
+      chromeWindow = Services.wm.getMostRecentWindow("navigator:browser");
+      chromeWindow.focus();
+    }
+    let dropper = new Eyedropper(chromeWindow, { copyOnSelect: false,
+                                                 context: "picker" });
+
+    dropper.once("select", (event, color) => {
+      if (toolboxWindow) {
+        toolboxWindow.focus();
+      }
+      this._selectColor(color);
+    });
+
+    dropper.once("destroy", () => {
+      this.eyedropperOpen = false;
+      this.activeSwatch = null;
+    });
+
+    dropper.open();
+    this.eyedropperOpen = true;
+
+    // close the colorpicker tooltip so that only the eyedropper is open.
+    this.hide();
+
+    this.tooltip.emit("eyedropper-opened", dropper);
   },
 
   _colorToRgba: function(color) {
@@ -990,8 +1116,14 @@ SwatchColorPickerTooltip.prototype = Heritage.extend(SwatchBasedEditorTooltip.pr
     return [rgba.r, rgba.g, rgba.b, rgba.a];
   },
 
+  _toDefaultType: function(color) {
+    let colorObj = new colorUtils.CssColor(color);
+    return colorObj.toString();
+  },
+
   destroy: function() {
     SwatchBasedEditorTooltip.prototype.destroy.call(this);
+    this.currentSwatchColor = null;
     this.spectrum.then(spectrum => {
       spectrum.off("changed", this._onSpectrumColorChange);
       spectrum.destroy();
@@ -999,22 +1131,349 @@ SwatchColorPickerTooltip.prototype = Heritage.extend(SwatchBasedEditorTooltip.pr
   }
 });
 
-/**
- * Internal util, checks whether a css declaration is a gradient
- */
-function isGradientRule(property, value) {
-  return (property === "background" || property === "background-image") &&
-    value.match(GRADIENT_RE);
+function EventTooltip(tooltip, eventListenerInfos, toolbox) {
+  this._tooltip = tooltip;
+  this._eventListenerInfos = eventListenerInfos;
+  this._toolbox = toolbox;
+  this._tooltip.eventEditors = new WeakMap();
+
+  this._headerClicked = this._headerClicked.bind(this);
+  this._debugClicked = this._debugClicked.bind(this);
+  this.destroy = this.destroy.bind(this);
+
+  this._init();
 }
 
+EventTooltip.prototype = {
+  _init: function() {
+    let config = {
+      mode: Editor.modes.js,
+      lineNumbers: false,
+      lineWrapping: false,
+      readOnly: true,
+      styleActiveLine: true,
+      extraKeys: {},
+      theme: "mozilla markup-view"
+    };
+
+    let doc = this._tooltip.doc;
+    let container = doc.createElement("vbox");
+    container.setAttribute("id", "devtools-tooltip-events-container");
+
+    for (let listener of this._eventListenerInfos) {
+      let phase = listener.capturing ? "Capturing" : "Bubbling";
+      let level = listener.DOM0 ? "DOM0" : "DOM2";
+
+      // Header
+      let header = doc.createElement("hbox");
+      header.className = "event-header devtools-toolbar";
+      container.appendChild(header);
+
+      if (!listener.hide.debugger) {
+        let debuggerIcon = doc.createElement("image");
+        debuggerIcon.className = "event-tooltip-debugger-icon";
+        debuggerIcon.setAttribute("src", "chrome://browser/skin/devtools/tool-debugger.svg");
+        let openInDebugger = l10n.strings.GetStringFromName("eventsTooltip.openInDebugger");
+        debuggerIcon.setAttribute("tooltiptext", openInDebugger);
+        header.appendChild(debuggerIcon);
+      }
+
+      if (!listener.hide.type) {
+        let eventTypeLabel = doc.createElement("label");
+        eventTypeLabel.className = "event-tooltip-event-type";
+        eventTypeLabel.setAttribute("value", listener.type);
+        eventTypeLabel.setAttribute("tooltiptext", listener.type);
+        header.appendChild(eventTypeLabel);
+      }
+
+      if (!listener.hide.filename) {
+        let filename = doc.createElement("label");
+        filename.className = "event-tooltip-filename devtools-monospace";
+        filename.setAttribute("value", listener.origin);
+        filename.setAttribute("tooltiptext", listener.origin);
+        filename.setAttribute("crop", "left");
+        header.appendChild(filename);
+      }
+
+      let attributesContainer = doc.createElement("hbox");
+      attributesContainer.setAttribute("class", "event-tooltip-attributes-container");
+      header.appendChild(attributesContainer);
+
+      if (!listener.hide.capturing) {
+        let attributesBox = doc.createElement("box");
+        attributesBox.setAttribute("class", "event-tooltip-attributes-box");
+        attributesContainer.appendChild(attributesBox);
+
+        let capturing = doc.createElement("label");
+        capturing.className = "event-tooltip-attributes";
+        capturing.setAttribute("value", phase);
+        capturing.setAttribute("tooltiptext", phase);
+        attributesBox.appendChild(capturing);
+      }
+
+      if (listener.tags) {
+        for (let tag of listener.tags.split(",")) {
+          let attributesBox = doc.createElement("box");
+          attributesBox.setAttribute("class", "event-tooltip-attributes-box");
+          attributesContainer.appendChild(attributesBox);
+
+          let tagBox = doc.createElement("label");
+          tagBox.className = "event-tooltip-attributes";
+          tagBox.setAttribute("value", tag);
+          tagBox.setAttribute("tooltiptext", tag);
+          attributesBox.appendChild(tagBox);
+        }
+      }
+
+      if (!listener.hide.dom0) {
+        let attributesBox = doc.createElement("box");
+        attributesBox.setAttribute("class", "event-tooltip-attributes-box");
+        attributesContainer.appendChild(attributesBox);
+
+        let dom0 = doc.createElement("label");
+        dom0.className = "event-tooltip-attributes";
+        dom0.setAttribute("value", level);
+        dom0.setAttribute("tooltiptext", level);
+        attributesBox.appendChild(dom0);
+      }
+
+      // Content
+      let content = doc.createElement("box");
+      let editor = new Editor(config);
+      this._tooltip.eventEditors.set(content, {
+        editor: editor,
+        handler: listener.handler,
+        searchString: listener.searchString,
+        uri: listener.origin,
+        dom0: listener.DOM0,
+        appended: false
+      });
+
+      content.className = "event-tooltip-content-box";
+      container.appendChild(content);
+
+      this._addContentListeners(header);
+    }
+
+    this._tooltip.content = container;
+    this._tooltip.panel.setAttribute("clamped-dimensions-no-max-or-min-height", "");
+    this._tooltip.panel.setAttribute("wide", "");
+
+    this._tooltip.panel.addEventListener("popuphiding", () => {
+      this.destroy(container);
+    }, false);
+  },
+
+  _addContentListeners: function(header) {
+    header.addEventListener("click", this._headerClicked);
+  },
+
+  _headerClicked: function(event) {
+    if (event.target.classList.contains("event-tooltip-debugger-icon")) {
+      this._debugClicked(event);
+      event.stopPropagation();
+      return;
+    }
+
+    let doc = this._tooltip.doc;
+    let header = event.currentTarget;
+    let content = header.nextElementSibling;
+
+    if (content.hasAttribute("open")) {
+      content.removeAttribute("open");
+    } else {
+      let contentNodes = doc.querySelectorAll(".event-tooltip-content-box");
+
+      for (let node of contentNodes) {
+        if (node !== content) {
+          node.removeAttribute("open");
+        }
+      }
+
+      content.setAttribute("open", "");
+
+      let eventEditors = this._tooltip.eventEditors.get(content);
+
+      if (eventEditors.appended) {
+        return;
+      }
+
+      let {editor, handler} = eventEditors;
+
+      let iframe = doc.createElement("iframe");
+      iframe.setAttribute("style", "width:100%;");
+
+      editor.appendTo(content, iframe).then(() => {
+        let tidied = beautify.js(handler, { indent_size: 2 });
+
+        editor.setText(tidied);
+
+        eventEditors.appended = true;
+
+        let container = header.parentElement.getBoundingClientRect();
+        if (header.getBoundingClientRect().top < container.top) {
+          header.scrollIntoView(true);
+        } else if (content.getBoundingClientRect().bottom > container.bottom) {
+          content.scrollIntoView(false);
+        }
+
+        this._tooltip.emit("event-tooltip-ready");
+      });
+    }
+  },
+
+  _debugClicked: function(event) {
+    let header = event.currentTarget;
+    let content = header.nextElementSibling;
+
+    let {uri, searchString, dom0} =
+      this._tooltip.eventEditors.get(content);
+
+    if (uri && uri !== "?") {
+      // Save a copy of toolbox as it will be set to null when we hide the
+      // tooltip.
+      let toolbox = this._toolbox;
+
+      this._tooltip.hide();
+
+      uri = uri.replace(/"/g, "");
+
+      let showSource = ({ DebuggerView }) => {
+        let matches = uri.match(/(.*):(\d+$)/);
+        let line = 1;
+
+        if (matches) {
+          uri = matches[1];
+          line = matches[2];
+        }
+
+        let item = DebuggerView.Sources.getItemForAttachment(
+          a => a.source.url === uri
+        );
+        if (item) {
+          let actor = item.attachment.source.actor;
+          DebuggerView.setEditorLocation(actor, line, {noDebug: true}).then(() => {
+            if (dom0) {
+              let text = DebuggerView.editor.getText();
+              let index = text.indexOf(searchString);
+              let lastIndex = text.lastIndexOf(searchString);
+
+              // To avoid confusion we only search for DOM0 event handlers when
+              // there is only one possible match in the file.
+              if (index !== -1 && index === lastIndex) {
+                text = text.substr(0, index);
+                let matches = text.match(/\n/g);
+
+                if (matches) {
+                  DebuggerView.editor.setCursor({
+                    line: matches.length
+                  });
+                }
+              }
+            }
+          });
+        }
+      };
+
+      let debuggerAlreadyOpen = toolbox.getPanel("jsdebugger");
+      toolbox.selectTool("jsdebugger").then(({ panelWin: dbg }) => {
+        if (debuggerAlreadyOpen) {
+          showSource(dbg);
+        } else {
+          dbg.once(dbg.EVENTS.SOURCES_ADDED, () => showSource(dbg));
+        }
+      });
+    }
+  },
+
+  destroy: function(container) {
+    if (this._tooltip) {
+      this._tooltip.panel.removeEventListener("popuphiding", this.destroy, false);
+
+      let boxes = container.querySelectorAll(".event-tooltip-content-box");
+
+      for (let box of boxes) {
+        let {editor} = this._tooltip.eventEditors.get(box);
+        editor.destroy();
+      }
+
+      this._tooltip.eventEditors.clear();
+      this._tooltip.eventEditors = null;
+    }
+
+    let headerNodes = container.querySelectorAll(".event-header");
+
+    for (let node of headerNodes) {
+      node.removeEventListener("click", this._headerClicked);
+    }
+
+    let sourceNodes = container.querySelectorAll(".event-tooltip-debugger-icon");
+    for (let node of sourceNodes) {
+      node.removeEventListener("click", this._debugClicked);
+    }
+
+    this._eventListenerInfos = this._toolbox = this._tooltip = null;
+  }
+};
+
 /**
- * Internal util, checks whether a css declaration is a color
+ * The swatch cubic-bezier tooltip class is a specific class meant to be used
+ * along with rule-view's generated cubic-bezier swatches.
+ * It extends the parent SwatchBasedEditorTooltip class.
+ * It just wraps a standard Tooltip and sets its content with an instance of a
+ * CubicBezierWidget.
+ *
+ * @param {XULDocument} doc
  */
-function isColorOnly(property, value) {
-  return property === "background-color" ||
-         property === "color" ||
-         property.match(BORDERCOLOR_RE);
+function SwatchCubicBezierTooltip(doc) {
+  SwatchBasedEditorTooltip.call(this, doc);
+
+  // Creating a cubic-bezier instance.
+  // this.widget will always be a promise that resolves to the widget instance
+  this.widget = this.tooltip.setCubicBezierContent([0, 0, 1, 1]);
+  this._onUpdate = this._onUpdate.bind(this);
 }
+
+module.exports.SwatchCubicBezierTooltip = SwatchCubicBezierTooltip;
+
+SwatchCubicBezierTooltip.prototype = Heritage.extend(SwatchBasedEditorTooltip.prototype, {
+  /**
+   * Overriding the SwatchBasedEditorTooltip.show function to set the cubic
+   * bezier curve in the widget
+   */
+  show: function() {
+    // Call then parent class' show function
+    SwatchBasedEditorTooltip.prototype.show.call(this);
+    // Then set the curve and listen to changes to preview them
+    if (this.activeSwatch) {
+      this.currentBezierValue = this.activeSwatch.nextSibling;
+      let swatch = this.swatches.get(this.activeSwatch);
+      this.widget.then(widget => {
+        widget.off("updated", this._onUpdate);
+        widget.cssCubicBezierValue = this.currentBezierValue.textContent;
+        widget.on("updated", this._onUpdate);
+      });
+    }
+  },
+
+  _onUpdate: function(event, bezier) {
+    if (!this.activeSwatch) {
+      return;
+    }
+
+    this.currentBezierValue.textContent = bezier + "";
+    this.preview(bezier + "");
+  },
+
+  destroy: function() {
+    SwatchBasedEditorTooltip.prototype.destroy.call(this);
+    this.currentBezierValue = null;
+    this.widget.then(widget => {
+      widget.off("updated", this._onUpdate);
+      widget.destroy();
+    });
+  }
+});
 
 /**
  * L10N utility class

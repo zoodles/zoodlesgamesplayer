@@ -9,9 +9,6 @@
 
 const BROWSER_SEARCH_PREF = "browser.search.";
 
-let runtime = Cc["@mozilla.org/xre/app-info;1"].getService(Ci.nsIXULRuntime);
-// Custom search parameters
-const PC_PARAM_VALUE = runtime.isOfficialBranding ? "MOZI" : null;
 
 function test() {
   let engine = Services.search.getEngineByName("Bing");
@@ -19,11 +16,9 @@ function test() {
 
   let previouslySelectedEngine = Services.search.currentEngine;
   Services.search.currentEngine = engine;
-
-  let base = "http://www.bing.com/search?q=foo";
-  if (typeof(PC_PARAM_VALUE) == "string")
-    base += "&pc=" + PC_PARAM_VALUE;
-
+  engine.alias = "b";
+  
+  let base = "http://www.bing.com/search?q=foo&pc=MOZI";
   let url;
 
   // Test search URLs (including purposes).
@@ -36,7 +31,7 @@ function test() {
   var gTests = [
     {
       name: "context menu search",
-      searchURL: base + "&form=MOZSBR",
+      searchURL: base + "&form=MOZCON",
       run: function () {
         // Simulate a contextmenu search
         // FIXME: This is a bit "low-level"...
@@ -48,6 +43,15 @@ function test() {
       searchURL: base + "&form=MOZLBR",
       run: function () {
         gURLBar.value = "? foo";
+        gURLBar.focus();
+        EventUtils.synthesizeKey("VK_RETURN", {});
+      }
+    },
+    {
+      name: "keyword search with alias",
+      searchURL: base + "&form=MOZLBR",
+      run: function () {
+        gURLBar.value = "b foo";
         gURLBar.focus();
         EventUtils.synthesizeKey("VK_RETURN", {});
       }
@@ -66,14 +70,21 @@ function test() {
       }
     },
     {
-      name: "home page search",
-      searchURL: base + "&form=MOZSPG",
+      name: "new tab search",
+      searchURL: base + "&form=MOZTSB",
       run: function () {
-        // load about:home, but remove the listener first so it doesn't
+        function doSearch(doc) {
+          // Re-add the listener, and perform a search
+          gBrowser.addProgressListener(listener);
+          doc.getElementById("newtab-search-text").value = "foo";
+          doc.getElementById("newtab-search-submit").click();
+        }
+
+        // load about:newtab, but remove the listener first so it doesn't
         // get in the way
         gBrowser.removeProgressListener(listener);
-        gBrowser.loadURI("about:home");
-        info("Waiting for about:home load");
+        gBrowser.loadURI("about:newtab");
+        info("Waiting for about:newtab load");
         tab.linkedBrowser.addEventListener("load", function load(event) {
           if (event.originalTarget != tab.linkedBrowser.contentDocument ||
               event.target.location.href == "about:blank") {
@@ -83,18 +94,22 @@ function test() {
           tab.linkedBrowser.removeEventListener("load", load, true);
 
           // Observe page setup
-          let doc = gBrowser.contentDocument;
-          let mutationObserver = new MutationObserver(function (mutations) {
-            for (let mutation of mutations) {
-              if (mutation.attributeName == "searchEngineName") {
-                // Re-add the listener, and perform a search
-                gBrowser.addProgressListener(listener);
-                doc.getElementById("searchText").value = "foo";
-                doc.getElementById("searchSubmit").click();
+          let win = gBrowser.contentWindow;
+          if (win.gSearch.currentEngineName ==
+              Services.search.currentEngine.name) {
+            doSearch(win.document);
+          }
+          else {
+            info("Waiting for newtab search init");
+            win.addEventListener("ContentSearchService", function done(event) {
+              info("Got newtab search event " + event.detail.type);
+              if (event.detail.type == "State") {
+                win.removeEventListener("ContentSearchService", done);
+                // Let gSearch respond to the event before continuing.
+                executeSoon(() => doSearch(win.document));
               }
-            }
-          });
-          mutationObserver.observe(doc.documentElement, { attributes: true });
+            });
+          }
         }, true);
       }
     }
@@ -134,6 +149,7 @@ function test() {
   }
 
   registerCleanupFunction(function () {
+    engine.alias = undefined;
     gBrowser.removeProgressListener(listener);
     gBrowser.removeTab(tab);
     Services.search.currentEngine = previouslySelectedEngine;

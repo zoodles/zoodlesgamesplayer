@@ -8,7 +8,7 @@
 
 namespace mozilla {
 
-NS_IMPL_ISUPPORTS1(SpdyZlibReporter, nsIMemoryReporter)
+NS_IMPL_ISUPPORTS(SpdyZlibReporter, nsIMemoryReporter)
 
 /* static */ Atomic<size_t> SpdyZlibReporter::sAmount;
 
@@ -28,7 +28,8 @@ SpdyZlibReporter::Free(void*, void* p)
 }
 
 NS_IMETHODIMP
-SpdyZlibReporter::CollectReports(nsIHandleReportCallback* aHandleReport, nsISupports* aData)
+SpdyZlibReporter::CollectReports(nsIHandleReportCallback* aHandleReport,
+                                 nsISupports* aData, bool aAnonymize)
 {
   return MOZ_COLLECT_REPORT(
     "explicit/network/spdy-zlib-buffers", KIND_HEAP, UNITS_BYTES, sAmount,

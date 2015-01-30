@@ -6,7 +6,7 @@
 #include "xpctest_interfaces.h"
 #include "js/Value.h"
 
-NS_IMPL_ISUPPORTS1(nsXPCTestParams, nsIXPCTestParams)
+NS_IMPL_ISUPPORTS(nsXPCTestParams, nsIXPCTestParams)
 
 nsXPCTestParams::nsXPCTestParams()
 {
@@ -338,4 +338,11 @@ NS_IMETHODIMP nsXPCTestParams::TestInterfaceIsArray(uint32_t aLength, const nsII
     //
     // Do this second, since the macro returns.
     BUFFER_METHOD_IMPL(void*, 0, TAKE_OWNERSHIP_INTERFACE);
+}
+
+/* void testOutAString (out AString o); */
+NS_IMETHODIMP nsXPCTestParams::TestOutAString(nsAString & o)
+{
+    o.AssignLiteral("out");
+    return NS_OK;
 }

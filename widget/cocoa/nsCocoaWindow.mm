@@ -27,6 +27,7 @@
 #include "nsMenuUtilsX.h"
 #include "nsStyleConsts.h"
 #include "nsNativeThemeColors.h"
+#include "nsNativeThemeCocoa.h"
 #include "nsChildView.h"
 #include "nsCocoaFeatures.h"
 #include "nsIScreenManager.h"
@@ -49,9 +50,6 @@ class LayerManager;
 using namespace mozilla::layers;
 using namespace mozilla::widget;
 using namespace mozilla;
-
-// defined in nsAppShell.mm
-extern nsCocoaAppModalWindowList *gCocoaAppModalWindowList;
 
 int32_t gXULModalLevel = 0;
 
@@ -80,7 +78,7 @@ extern "C" {
 
 #define NS_APPSHELLSERVICE_CONTRACTID "@mozilla.org/appshell/appShellService;1"
 
-NS_IMPL_ISUPPORTS_INHERITED1(nsCocoaWindow, Inherited, nsPIWidgetCocoa)
+NS_IMPL_ISUPPORTS_INHERITED(nsCocoaWindow, Inherited, nsPIWidgetCocoa)
 
 // A note on testing to see if your object is a sheet...
 // |mWindowType == eWindowType_sheet| is true if your gecko nsIWidget is a sheet
@@ -94,7 +92,7 @@ static void RollUpPopups()
   nsCOMPtr<nsIWidget> rollupWidget = rollupListener->GetRollupWidget();
   if (!rollupWidget)
     return;
-  rollupListener->Rollup(0, nullptr, nullptr);
+  rollupListener->Rollup(0, true, nullptr, nullptr);
 }
 
 nsCocoaWindow::nsCocoaWindow()
@@ -143,12 +141,12 @@ nsCocoaWindow::~nsCocoaWindow()
 
   // Notify the children that we're gone.  Popup windows (e.g. tooltips) can
   // have nsChildView children.  'kid' is an nsChildView object if and only if
-  // its 'type' is 'eWindowType_child' or 'eWindowType_plugin'.
+  // its 'type' is 'eWindowType_child'.
   // childView->ResetParent() can change our list of children while it's
   // being iterated, so the way we iterate the list must allow for this.
   for (nsIWidget* kid = mLastChild; kid;) {
     nsWindowType kidType = kid->WindowType();
-    if (kidType == eWindowType_child || kidType == eWindowType_plugin) {
+    if (kidType == eWindowType_child) {
       nsChildView* childView = static_cast<nsChildView*>(kid);
       kid = kid->GetPrevSibling();
       childView->ResetParent();
@@ -240,7 +238,7 @@ static void FitRectToVisibleAreaForScreen(nsIntRect &aRect, NSScreen *aScreen,
   }
 }
 
-// Some applications like Camino use native popup windows
+// Some applications use native popup windows
 // (native context menus, native tooltips)
 static bool UseNativePopupWindows()
 {
@@ -610,8 +608,6 @@ NS_IMETHODIMP nsCocoaWindow::SetModal(bool aState)
   nsCocoaWindow *aParent = static_cast<nsCocoaWindow*>(mParent);
   if (aState) {
     ++gXULModalLevel;
-    if (gCocoaAppModalWindowList)
-      gCocoaAppModalWindowList->PushGecko(mWindow, this);
     // When a non-sheet window gets "set modal", make the window(s) that it
     // appears over behave as they should.  We can't rely on native methods to
     // do this, for the following reason:  The OS runs modal non-sheet windows
@@ -643,8 +639,6 @@ NS_IMETHODIMP nsCocoaWindow::SetModal(bool aState)
   else {
     --gXULModalLevel;
     NS_ASSERTION(gXULModalLevel >= 0, "Mismatched call to nsCocoaWindow::SetModal(false)!");
-    if (gCocoaAppModalWindowList)
-      gCocoaAppModalWindowList->PopGecko(mWindow, this);
     if (mWindowType != eWindowType_sheet) {
       while (aParent) {
         if (--aParent->mNumModalDescendents == 0) {
@@ -930,12 +924,20 @@ struct ShadowParams {
 
 // These numbers have been determined by looking at the results of
 // CGSGetWindowShadowAndRimParameters for native window types.
-static const ShadowParams kWindowShadowParameters[] = {
+static const ShadowParams kWindowShadowParametersPreYosemite[] = {
   { 0.0f, 0.0f, 0, 0, 0 },        // none
   { 8.0f, 0.5f, 0, 6, 1 },        // default
   { 10.0f, 0.44f, 0, 10, 512 },   // menu
   { 8.0f, 0.5f, 0, 6, 1 },        // tooltip
   { 4.0f, 0.6f, 0, 4, 512 }       // sheet
+};
+
+static const ShadowParams kWindowShadowParametersPostYosemite[] = {
+  { 0.0f, 0.0f, 0, 0, 0 },        // none
+  { 8.0f, 0.5f, 0, 6, 1 },        // default
+  { 9.882353f, 0.3f, 0, 4, 0 },   // menu
+  { 3.294118f, 0.2f, 0, 1, 0 },   // tooltip
+  { 9.882353f, 0.3f, 0, 4, 0 }    // sheet
 };
 
 // This method will adjust the window shadow style for popup windows after
@@ -952,7 +954,9 @@ nsCocoaWindow::AdjustWindowShadow()
       [mWindow canBecomeKeyWindow] || [mWindow windowNumber] == -1)
     return;
 
-  const ShadowParams& params = kWindowShadowParameters[mShadowStyle];
+  const ShadowParams& params = nsCocoaFeatures::OnYosemiteOrLater()
+    ? kWindowShadowParametersPostYosemite[mShadowStyle]
+    : kWindowShadowParametersPreYosemite[mShadowStyle];
   CGSConnection cid = _CGSDefaultConnection();
   CGSSetWindowShadowAndRimParameters(cid, [mWindow windowNumber],
                                      params.standardDeviation, params.density,
@@ -1276,7 +1280,7 @@ void nsCocoaWindow::EnteredFullScreen(bool aFullScreen)
   DispatchSizeModeEvent();
 }
 
-NS_METHOD nsCocoaWindow::MakeFullScreen(bool aFullScreen)
+NS_METHOD nsCocoaWindow::MakeFullScreen(bool aFullScreen, nsIScreen* aTargetScreen)
 {
   NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
 
@@ -1797,6 +1801,10 @@ NS_IMETHODIMP nsCocoaWindow::SetFocus(bool aState)
     mPopupContentView->SetFocus(aState);
   }
   else if (aState && ([mWindow isVisible] || [mWindow isMiniaturized])) {
+    if ([mWindow isMiniaturized]) {
+      [mWindow deminiaturize:nil];
+    }
+
     [mWindow makeKeyAndOrderFront:nil];
     SendSetZLevelEvent();
   }
@@ -1992,6 +2000,16 @@ nsCocoaWindow::SetDrawsTitle(bool aDrawTitle)
   NS_OBJC_END_TRY_ABORT_BLOCK;
 }
 
+void
+nsCocoaWindow::SetUseBrightTitlebarForeground(bool aBrightForeground)
+{
+  NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
+
+  [mWindow setUseBrightTitlebarForeground:aBrightForeground];
+
+  NS_OBJC_END_TRY_ABORT_BLOCK;
+}
+
 NS_IMETHODIMP nsCocoaWindow::SetNonClientMargins(nsIntMargin &margins)
 {
   NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
@@ -2064,11 +2082,14 @@ NS_IMETHODIMP nsCocoaWindow::SynthesizeNativeMouseEvent(nsIntPoint aPoint,
   NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT;
 }
 
-gfxASurface* nsCocoaWindow::GetThebesSurface()
-{
-  if (mPopupContentView)
-    return mPopupContentView->GetThebesSurface();
-  return nullptr;
+void nsCocoaWindow::UpdateThemeGeometries(const nsTArray<ThemeGeometry>& aThemeGeometries) {
+  NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
+
+  if (mPopupContentView) {
+    return mPopupContentView->UpdateThemeGeometries(aThemeGeometries);
+  }
+
+  NS_OBJC_END_TRY_ABORT_BLOCK;
 }
 
 void nsCocoaWindow::SetPopupWindowLevel()
@@ -2090,43 +2111,15 @@ void nsCocoaWindow::SetPopupWindowLevel()
   }
 }
 
-bool nsCocoaWindow::IsChildInFailingLeftClickThrough(NSView *aChild)
-{
-  if ([aChild isKindOfClass:[ChildView class]]) {
-    ChildView* childView = (ChildView*) aChild;
-    if ([childView isInFailingLeftClickThrough])
-      return true;
-  }
-  NSArray* subviews = [aChild subviews];
-  if (subviews) {
-    NSUInteger count = [subviews count];
-    for (NSUInteger i = 0; i < count; ++i) {
-      NSView* aView = (NSView*) [subviews objectAtIndex:i];
-      if (IsChildInFailingLeftClickThrough(aView))
-        return true;
-    }
-  }
-  return false;
-}
-
-// Don't focus a plugin if we're in a left click-through that will
-// fail (see [ChildView isInFailingLeftClickThrough]).  Called from
-// [ChildView shouldFocusPlugin].
-bool nsCocoaWindow::ShouldFocusPlugin()
-{
-  if (!mWindow || IsChildInFailingLeftClickThrough([mWindow contentView]))
-    return false;
-
-  return true;
-}
-
-NS_IMETHODIMP
-nsCocoaWindow::NotifyIME(const IMENotification& aIMENotification)
+nsresult
+nsCocoaWindow::NotifyIMEInternal(const IMENotification& aIMENotification)
 {
   switch (aIMENotification.mMessage) {
     case NOTIFY_IME_OF_FOCUS:
       if (mInputContext.IsPasswordEditor()) {
         TextInputHandler::EnableSecureEventInput();
+      } else {
+        TextInputHandler::EnsureSecureEventInputDisabled();
       }
       return NS_OK;
     case NOTIFY_IME_OF_BLUR:
@@ -2295,6 +2288,29 @@ nsCocoaWindow::ExecuteNativeKeyBinding(NativeKeyBindingsType aType,
   }
 
   mGeckoWindow->EnteredFullScreen(true);
+
+  // On Yosemite, the NSThemeFrame class has two new properties --
+  // titlebarView (an NSTitlebarView object) and titlebarContainerView (an
+  // NSTitlebarContainerView object).  These are used to display the titlebar
+  // in fullscreen mode.  In Safari they're not transparent.  But in Firefox
+  // for some reason they are, which causes bug 1069658.  The following code
+  // works around this Apple bug or design flaw.
+  NSWindow *window = (NSWindow *) [notification object];
+  NSView *frameView = [[window contentView] superview];
+  NSView *titlebarView = nil;
+  NSView *titlebarContainerView = nil;
+  if ([frameView respondsToSelector:@selector(titlebarView)]) {
+    titlebarView = [frameView titlebarView];
+  }
+  if ([frameView respondsToSelector:@selector(titlebarContainerView)]) {
+    titlebarContainerView = [frameView titlebarContainerView];
+  }
+  if ([titlebarView respondsToSelector:@selector(setTransparent:)]) {
+    [titlebarView setTransparent:NO];
+  }
+  if ([titlebarContainerView respondsToSelector:@selector(setTransparent:)]) {
+    [titlebarContainerView setTransparent:NO];
+  }
 }
 
 - (void)windowDidExitFullScreen:(NSNotification *)notification
@@ -2489,8 +2505,9 @@ nsCocoaWindow::ExecuteNativeKeyBinding(NativeKeyBindingsType aType,
 {
   if (!mToplevelActiveState && mGeckoWindow) {
     nsIWidgetListener* listener = mGeckoWindow->GetWidgetListener();
-    if (listener)
+    if (listener) {
       listener->WindowActivated();
+    }
     mToplevelActiveState = true;
   }
 }
@@ -2499,8 +2516,9 @@ nsCocoaWindow::ExecuteNativeKeyBinding(NativeKeyBindingsType aType,
 {
   if (mToplevelActiveState && mGeckoWindow) {
     nsIWidgetListener* listener = mGeckoWindow->GetWidgetListener();
-    if (listener)
+    if (listener) {
       listener->WindowDeactivated();
+    }
     mToplevelActiveState = false;
   }
 }
@@ -2518,18 +2536,12 @@ GetDPI(NSWindow* aWindow)
     [[[screen deviceDescription] objectForKey:@"NSScreenNumber"] intValue];
   CGFloat heightMM = ::CGDisplayScreenSize(displayID).height;
   size_t heightPx = ::CGDisplayPixelsHigh(displayID);
-  CGFloat scaleFactor = [aWindow userSpaceScaleFactor];
-  if (scaleFactor < 0.01 || heightMM < 1 || heightPx < 1) {
+  if (heightMM < 1 || heightPx < 1) {
     // Something extremely bogus is going on
     return 96.0f;
   }
 
-  // Currently we don't do our own scaling to take account
-  // of userSpaceScaleFactor, so every "pixel" we draw is actually
-  // userSpaceScaleFactor screen pixels. So divide the screen height
-  // by userSpaceScaleFactor to get the number of "device pixels"
-  // available.
-  float dpi = (heightPx / scaleFactor) / (heightMM / MM_PER_INCH_FLOAT);
+  float dpi = heightPx / (heightMM / MM_PER_INCH_FLOAT);
 
   // Account for HiDPI mode where Cocoa's "points" do not correspond to real
   // device pixels
@@ -2569,6 +2581,13 @@ static NSMutableSet *gSwizzledFrameViewClasses = nil;
 
 @interface NSWindow(PrivateSetNeedsDisplayInRectMethod)
  - (void)_setNeedsDisplayInRect:(NSRect)aRect;
+@end
+
+// This method is on NSThemeFrame starting with 10.10, but since NSThemeFrame
+// is not a public class, we declare the method on NSView instead. We only have
+// this declaration in order to avoid compiler warnings.
+@interface NSView(PrivateAddKnownSubviewMethod)
+ - (void)_addKnownSubview:(NSView*)aView positioned:(NSWindowOrderingMode)place relativeTo:(NSView*)otherView;
 @end
 
 @interface BaseWindow(Private)
@@ -2642,8 +2661,10 @@ static NSMutableSet *gSwizzledFrameViewClasses = nil;
   mDisabledNeedsDisplay = NO;
   mDPI = GetDPI(self);
   mTrackingArea = nil;
+  mDirtyRect = NSZeroRect;
   mBeingShown = NO;
   mDrawTitle = NO;
+  mBrightTitlebarForeground = NO;
   [self updateTrackingArea];
 
   return self;
@@ -2740,6 +2761,17 @@ static const NSString* kStateShowsToolbarButton = @"showsToolbarButton";
 - (BOOL)wantsTitleDrawn
 {
   return mDrawTitle;
+}
+
+- (void)setUseBrightTitlebarForeground:(BOOL)aBrightForeground
+{
+  mBrightTitlebarForeground = aBrightForeground;
+  [[self standardWindowButton:NSWindowFullScreenButton] setNeedsDisplay:YES];
+}
+
+- (BOOL)useBrightTitlebarForeground
+{
+  return mBrightTitlebarForeground;
 }
 
 // Pass nil here to get the default appearance.
@@ -2851,7 +2883,15 @@ static const NSString* kStateShowsToolbarButton = @"showsToolbarButton";
     // it's available and don't need to check whether our superclass responds
     // to the selector.
     [super _setNeedsDisplayInRect:aRect];
+    mDirtyRect = NSUnionRect(mDirtyRect, aRect);
   }
+}
+
+- (NSRect)getAndResetNativeDirtyRect
+{
+  NSRect dirtyRect = mDirtyRect;
+  mDirtyRect = NSZeroRect;
+  return dirtyRect;
 }
 
 - (void)updateContentViewSize
@@ -2918,7 +2958,13 @@ static const NSString* kStateShowsToolbarButton = @"showsToolbarButton";
   // to be under the window buttons.
   NSView* frameView = [aView superview];
   [aView removeFromSuperview];
-  [frameView addSubview:aView positioned:NSWindowBelow relativeTo:nil];
+  if ([frameView respondsToSelector:@selector(_addKnownSubview:positioned:relativeTo:)]) {
+    // 10.10 prints a warning when we call addSubview on the frame view, so we
+    // silence the warning by calling a private method instead.
+    [frameView _addKnownSubview:aView positioned:NSWindowBelow relativeTo:nil];
+  } else {
+    [frameView addSubview:aView positioned:NSWindowBelow relativeTo:nil];
+  }
 }
 
 - (NSArray*)titlebarControls
@@ -3314,9 +3360,6 @@ static const NSString* kStateShowsToolbarButton = @"showsToolbarButton";
       if (delegate && [delegate isKindOfClass:[WindowDelegate class]]) {
         nsCocoaWindow *widget = [(WindowDelegate *)delegate geckoWidget];
         if (widget) {
-          if (type == NSMouseMoved) {
-            [[self mainChildView] updateWindowDraggableStateOnMouseMove:anEvent];
-          }
           if (gGeckoAppModalWindowList && (widget != gGeckoAppModalWindowList->window))
             return;
           if (widget->HasModalDescendents())
@@ -3350,19 +3393,7 @@ static void
 DrawNativeTitlebar(CGContextRef aContext, CGRect aTitlebarRect,
                    CGFloat aUnifiedToolbarHeight, BOOL aIsMain)
 {
-  if (aTitlebarRect.size.width * aTitlebarRect.size.height > CUIDRAW_MAX_AREA) {
-    return;
-  }
-
-  CUIDraw([NSWindow coreUIRenderer], aTitlebarRect, aContext,
-          (CFDictionaryRef)[NSDictionary dictionaryWithObjectsAndKeys:
-            @"kCUIWidgetWindowFrame", @"widget",
-            @"regularwin", @"windowtype",
-            (aIsMain ? @"normal" : @"inactive"), @"state",
-            [NSNumber numberWithDouble:aUnifiedToolbarHeight], @"kCUIWindowFrameUnifiedTitleBarHeightKey",
-            [NSNumber numberWithBool:YES], @"kCUIWindowFrameDrawTitleSeparatorKey",
-            nil],
-          nil);
+  nsNativeThemeCocoa::DrawNativeTitlebar(aContext, aTitlebarRect, aUnifiedToolbarHeight, aIsMain, NO);
 
   if (nsCocoaFeatures::OnLionOrLater()) {
     // On Lion the call to CUIDraw doesn't draw the top pixel strip at some

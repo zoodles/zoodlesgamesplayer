@@ -7,6 +7,8 @@
 #include "CacheLog.h"
 #include "CacheFileIOManager.h"
 #include "CacheFileMetadata.h"
+#include "CacheIndexIterator.h"
+#include "CacheIndexContextIterator.h"
 #include "nsThreadUtils.h"
 #include "nsISimpleEnumerator.h"
 #include "nsIDirectoryEnumerator.h"
@@ -24,8 +26,7 @@
 #define kMinDumpInterval       20000 // in milliseconds
 #define kMaxBufSize            16384
 #define kIndexVersion          0x00000001
-#define kBuildIndexStartDelay  10000 // in milliseconds
-#define kUpdateIndexStartDelay 10000 // in milliseconds
+#define kUpdateIndexStartDelay 50000 // in milliseconds
 
 const char kIndexName[]     = "index";
 const char kTempIndexName[] = "index.tmp";
@@ -52,7 +53,7 @@ public:
     mIndex->AssertOwnsLock();
 
     mHash = aHash;
-    CacheIndexEntry *entry = FindEntry();
+    const CacheIndexEntry *entry = FindEntry();
     mIndex->mIndexStats.BeforeChange(entry);
     if (entry && entry->IsInitialized() && !entry->IsRemoved()) {
       mOldRecord = entry->mRec;
@@ -65,7 +66,7 @@ public:
   {
     mIndex->AssertOwnsLock();
 
-    CacheIndexEntry *entry = FindEntry();
+    const CacheIndexEntry *entry = FindEntry();
     mIndex->mIndexStats.AfterChange(entry);
     if (!entry || !entry->IsInitialized() || entry->IsRemoved()) {
       entry = nullptr;
@@ -74,9 +75,11 @@ public:
     if (entry && !mOldRecord) {
       mIndex->InsertRecordToFrecencyArray(entry->mRec);
       mIndex->InsertRecordToExpirationArray(entry->mRec);
+      mIndex->AddRecordToIterators(entry->mRec);
     } else if (!entry && mOldRecord) {
       mIndex->RemoveRecordFromFrecencyArray(mOldRecord);
       mIndex->RemoveRecordFromExpirationArray(mOldRecord);
+      mIndex->RemoveRecordFromIterators(mOldRecord);
     } else if (entry && mOldRecord) {
       bool replaceFrecency = false;
       bool replaceExpiration = false;
@@ -84,14 +87,14 @@ public:
       if (entry->mRec != mOldRecord) {
         // record has a different address, we have to replace it
         replaceFrecency = replaceExpiration = true;
+        mIndex->ReplaceRecordInIterators(mOldRecord, entry->mRec);
       } else {
         if (entry->mRec->mFrecency == 0 &&
             entry->mRec->mExpirationTime == nsICacheEntry::NO_EXPIRATION_TIME) {
           // This is a special case when we want to make sure that the entry is
           // placed at the end of the lists even when the values didn't change.
           replaceFrecency = replaceExpiration = true;
-        }
-        else {
+        } else {
           if (entry->mRec->mFrecency != mOldFrecency) {
             replaceFrecency = true;
           }
@@ -122,9 +125,9 @@ public:
   void DoNotSearchInUpdates() { mDoNotSearchInUpdates = true; }
 
 private:
-  CacheIndexEntry * FindEntry()
+  const CacheIndexEntry * FindEntry()
   {
-    CacheIndexEntry *entry = nullptr;
+    const CacheIndexEntry *entry = nullptr;
 
     switch (mIndex->mState) {
       case CacheIndex::READING:
@@ -158,81 +161,15 @@ private:
   bool                 mDoNotSearchInUpdates;
 };
 
-class CacheIndexAutoLock {
-public:
-  CacheIndexAutoLock(CacheIndex *aIndex)
-    : mIndex(aIndex)
-    , mLocked(true)
-  {
-    mIndex->Lock();
-  }
-  ~CacheIndexAutoLock()
-  {
-    if (mLocked) {
-      mIndex->Unlock();
-    }
-  }
-  void Lock()
-  {
-    MOZ_ASSERT(!mLocked);
-    mIndex->Lock();
-    mLocked = true;
-  }
-  void Unlock()
-  {
-    MOZ_ASSERT(mLocked);
-    mIndex->Unlock();
-    mLocked = false;
-  }
-
-private:
-  nsRefPtr<CacheIndex> mIndex;
-  bool mLocked;
-};
-
-class CacheIndexAutoUnlock {
-public:
-  CacheIndexAutoUnlock(CacheIndex *aIndex)
-    : mIndex(aIndex)
-    , mLocked(false)
-  {
-    mIndex->Unlock();
-  }
-  ~CacheIndexAutoUnlock()
-  {
-    if (!mLocked) {
-      mIndex->Lock();
-    }
-  }
-  void Lock()
-  {
-    MOZ_ASSERT(!mLocked);
-    mIndex->Lock();
-    mLocked = true;
-  }
-  void Unlock()
-  {
-    MOZ_ASSERT(mLocked);
-    mIndex->Unlock();
-    mLocked = false;
-  }
-
-private:
-  nsRefPtr<CacheIndex> mIndex;
-  bool mLocked;
-};
-
 class FileOpenHelper : public CacheFileIOListener
 {
 public:
   NS_DECL_THREADSAFE_ISUPPORTS
 
-  FileOpenHelper(CacheIndex* aIndex)
+  explicit FileOpenHelper(CacheIndex* aIndex)
     : mIndex(aIndex)
     , mCanceled(false)
   {}
-
-  virtual ~FileOpenHelper() {}
 
   void Cancel() {
     mIndex->AssertOwnsLock();
@@ -240,26 +177,28 @@ public:
   }
 
 private:
-  NS_IMETHOD OnFileOpened(CacheFileHandle *aHandle, nsresult aResult);
+  virtual ~FileOpenHelper() {}
+
+  NS_IMETHOD OnFileOpened(CacheFileHandle *aHandle, nsresult aResult) MOZ_OVERRIDE;
   NS_IMETHOD OnDataWritten(CacheFileHandle *aHandle, const char *aBuf,
-                           nsresult aResult) {
+                           nsresult aResult) MOZ_OVERRIDE {
     MOZ_CRASH("FileOpenHelper::OnDataWritten should not be called!");
     return NS_ERROR_UNEXPECTED;
   }
   NS_IMETHOD OnDataRead(CacheFileHandle *aHandle, char *aBuf,
-                        nsresult aResult) {
+                        nsresult aResult) MOZ_OVERRIDE {
     MOZ_CRASH("FileOpenHelper::OnDataRead should not be called!");
     return NS_ERROR_UNEXPECTED;
   }
-  NS_IMETHOD OnFileDoomed(CacheFileHandle *aHandle, nsresult aResult) {
+  NS_IMETHOD OnFileDoomed(CacheFileHandle *aHandle, nsresult aResult) MOZ_OVERRIDE {
     MOZ_CRASH("FileOpenHelper::OnFileDoomed should not be called!");
     return NS_ERROR_UNEXPECTED;
   }
-  NS_IMETHOD OnEOFSet(CacheFileHandle *aHandle, nsresult aResult) {
+  NS_IMETHOD OnEOFSet(CacheFileHandle *aHandle, nsresult aResult) MOZ_OVERRIDE {
     MOZ_CRASH("FileOpenHelper::OnEOFSet should not be called!");
     return NS_ERROR_UNEXPECTED;
   }
-  NS_IMETHOD OnFileRenamed(CacheFileHandle *aHandle, nsresult aResult) {
+  NS_IMETHOD OnFileRenamed(CacheFileHandle *aHandle, nsresult aResult) MOZ_OVERRIDE {
     MOZ_CRASH("FileOpenHelper::OnFileRenamed should not be called!");
     return NS_ERROR_UNEXPECTED;
   }
@@ -286,7 +225,7 @@ NS_IMETHODIMP FileOpenHelper::OnFileOpened(CacheFileHandle *aHandle,
   return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS1(FileOpenHelper, CacheFileIOListener);
+NS_IMPL_ISUPPORTS(FileOpenHelper, CacheFileIOListener);
 
 
 CacheIndex * CacheIndex::gInstance = nullptr;
@@ -302,7 +241,7 @@ NS_INTERFACE_MAP_END_THREADSAFE
 
 
 CacheIndex::CacheIndex()
-  : mLock("CacheFile.mLock")
+  : mLock("CacheIndex.mLock")
   , mState(INITIAL)
   , mShuttingDown(false)
   , mIndexNeedsUpdate(false)
@@ -331,7 +270,7 @@ CacheIndex::~CacheIndex()
   ReleaseBuffer();
 }
 
-inline void
+void
 CacheIndex::Lock()
 {
   mLock.Lock();
@@ -339,7 +278,7 @@ CacheIndex::Lock()
   MOZ_ASSERT(!mIndexStats.StateLogged());
 }
 
-inline void
+void
 CacheIndex::Unlock()
 {
   MOZ_ASSERT(!mIndexStats.StateLogged());
@@ -411,6 +350,18 @@ CacheIndex::PreShutdown()
   LOG(("CacheIndex::PreShutdown() - [state=%d, indexOnDiskIsValid=%d, "
        "dontMarkIndexClean=%d]", index->mState, index->mIndexOnDiskIsValid,
        index->mDontMarkIndexClean));
+
+  LOG(("CacheIndex::PreShutdown() - Closing iterators."));
+  for (uint32_t i = 0; i < index->mIterators.Length(); ) {
+    rv = index->mIterators[i]->CloseInternal(NS_ERROR_FAILURE);
+    if (NS_FAILED(rv)) {
+      // CacheIndexIterator::CloseInternal() removes itself from mIteratos iff
+      // it returns success.
+      LOG(("CacheIndex::PreShutdown() - Failed to remove iterator %p. "
+           "[rv=0x%08x]", rv));
+      i++;
+    }
+  }
 
   index->mShuttingDown = true;
 
@@ -491,9 +442,11 @@ CacheIndex::Shutdown()
 
   CacheIndexAutoLock lock(index);
 
+  bool sanitize = CacheObserver::ClearCacheOnShutdown();
+
   LOG(("CacheIndex::Shutdown() - [state=%d, indexOnDiskIsValid=%d, "
-       "dontMarkIndexClean=%d]", index->mState, index->mIndexOnDiskIsValid,
-       index->mDontMarkIndexClean));
+       "dontMarkIndexClean=%d, sanitize=%d]", index->mState,
+       index->mIndexOnDiskIsValid, index->mDontMarkIndexClean, sanitize));
 
   MOZ_ASSERT(index->mShuttingDown);
 
@@ -511,7 +464,7 @@ CacheIndex::Shutdown()
       // no break
     case READY:
       if (index->mIndexOnDiskIsValid && !index->mDontMarkIndexClean) {
-        if (NS_FAILED(index->WriteLogToDisk())) {
+        if (!sanitize && NS_FAILED(index->WriteLogToDisk())) {
           index->RemoveIndexFromDisk();
         }
       } else {
@@ -527,6 +480,10 @@ CacheIndex::Shutdown()
       break;
     default:
       MOZ_ASSERT(false, "Unexpected state!");
+  }
+
+  if (sanitize) {
+    index->RemoveIndexFromDisk();
   }
 
   return NS_OK;
@@ -563,6 +520,7 @@ CacheIndex::AddEntry(const SHA1Sum::Hash *aHash)
 
     CacheIndexEntry *entry = index->mIndex.GetEntry(*aHash);
     bool entryRemoved = entry && entry->IsRemoved();
+    CacheIndexEntryUpdate *updated = nullptr;
 
     if (index->mState == READY || index->mState == UPDATING ||
         index->mState == BUILDING) {
@@ -601,7 +559,7 @@ CacheIndex::AddEntry(const SHA1Sum::Hash *aHash)
         entry = index->mIndex.PutEntry(*aHash);
       }
     } else { // WRITING, READING
-      CacheIndexEntry *updated = index->mPendingUpdates.GetEntry(*aHash);
+      updated = index->mPendingUpdates.GetEntry(*aHash);
       bool updatedRemoved = updated && updated->IsRemoved();
 
       if ((updated && !updatedRemoved) ||
@@ -621,12 +579,17 @@ CacheIndex::AddEntry(const SHA1Sum::Hash *aHash)
       }
 
       updated = index->mPendingUpdates.PutEntry(*aHash);
-      entry = updated;
     }
 
-    entry->InitNew();
-    entry->MarkDirty();
-    entry->MarkFresh();
+    if (updated) {
+      updated->InitNew();
+      updated->MarkDirty();
+      updated->MarkFresh();
+    } else {
+      entry->InitNew();
+      entry->MarkDirty();
+      entry->MarkFresh();
+    }
   }
 
   if (updateIfNonFreshEntriesExist &&
@@ -695,7 +658,7 @@ CacheIndex::EnsureEntryExists(const SHA1Sum::Hash *aHash)
       }
       entry->MarkFresh();
     } else { // WRITING, READING
-      CacheIndexEntry *updated = index->mPendingUpdates.GetEntry(*aHash);
+      CacheIndexEntryUpdate *updated = index->mPendingUpdates.GetEntry(*aHash);
       bool updatedRemoved = updated && updated->IsRemoved();
 
       if (updatedRemoved ||
@@ -775,6 +738,7 @@ CacheIndex::InitEntry(const SHA1Sum::Hash *aHash,
     CacheIndexEntryAutoManage entryMng(aHash, index);
 
     CacheIndexEntry *entry = index->mIndex.GetEntry(*aHash);
+    CacheIndexEntryUpdate *updated = nullptr;
     bool reinitEntry = false;
 
     if (entry && entry->IsRemoved()) {
@@ -796,7 +760,7 @@ CacheIndex::InitEntry(const SHA1Sum::Hash *aHash,
         }
       }
     } else {
-      CacheIndexEntry *updated = index->mPendingUpdates.GetEntry(*aHash);
+      updated = index->mPendingUpdates.GetEntry(*aHash);
       DebugOnly<bool> removed = updated && updated->IsRemoved();
 
       MOZ_ASSERT(updated || !removed);
@@ -813,7 +777,6 @@ CacheIndex::InitEntry(const SHA1Sum::Hash *aHash,
             return NS_OK;
           }
         }
-        entry = updated;
       } else {
         MOZ_ASSERT(entry->IsFresh());
 
@@ -829,18 +792,28 @@ CacheIndex::InitEntry(const SHA1Sum::Hash *aHash,
         // make a copy of a read-only entry
         updated = index->mPendingUpdates.PutEntry(*aHash);
         *updated = *entry;
-        entry = updated;
       }
     }
 
     if (reinitEntry) {
       // There is a collision and we are going to rewrite this entry. Initialize
       // it as a new entry.
-      entry->InitNew();
-      entry->MarkFresh();
+      if (updated) {
+        updated->InitNew();
+        updated->MarkFresh();
+      } else {
+        entry->InitNew();
+        entry->MarkFresh();
+      }
     }
-    entry->Init(aAppId, aAnonymous, aInBrowser);
-    entry->MarkDirty();
+
+    if (updated) {
+      updated->Init(aAppId, aAnonymous, aInBrowser);
+      updated->MarkDirty();
+    } else {
+      entry->Init(aAppId, aAnonymous, aInBrowser);
+      entry->MarkDirty();
+    }
   }
 
   index->StartUpdatingIndexIfNeeded();
@@ -908,7 +881,7 @@ CacheIndex::RemoveEntry(const SHA1Sum::Hash *aHash)
         }
       }
     } else { // WRITING, READING
-      CacheIndexEntry *updated = index->mPendingUpdates.GetEntry(*aHash);
+      CacheIndexEntryUpdate *updated = index->mPendingUpdates.GetEntry(*aHash);
       bool updatedRemoved = updated && updated->IsRemoved();
 
       if (updatedRemoved ||
@@ -988,42 +961,58 @@ CacheIndex::UpdateEntry(const SHA1Sum::Hash *aHash,
       if (!HasEntryChanged(entry, aFrecency, aExpirationTime, aSize)) {
         return NS_OK;
       }
+
+      MOZ_ASSERT(entry->IsFresh());
+      MOZ_ASSERT(entry->IsInitialized());
+      entry->MarkDirty();
+
+      if (aFrecency) {
+        entry->SetFrecency(*aFrecency);
+      }
+
+      if (aExpirationTime) {
+        entry->SetExpirationTime(*aExpirationTime);
+      }
+
+      if (aSize) {
+        entry->SetFileSize(*aSize);
+      }
     } else {
-      CacheIndexEntry *updated = index->mPendingUpdates.GetEntry(*aHash);
+      CacheIndexEntryUpdate *updated = index->mPendingUpdates.GetEntry(*aHash);
       DebugOnly<bool> removed = updated && updated->IsRemoved();
 
       MOZ_ASSERT(updated || !removed);
       MOZ_ASSERT(updated || entry);
 
       if (!updated) {
-        if (entry &&
-            HasEntryChanged(entry, aFrecency, aExpirationTime, aSize)) {
-          // make a copy of a read-only entry
-          updated = index->mPendingUpdates.PutEntry(*aHash);
-          *updated = *entry;
-          entry = updated;
-        } else {
+        if (!entry) {
+          LOG(("CacheIndex::UpdateEntry() - Entry was found neither in mIndex "
+               "nor in mPendingUpdates!"));
+          NS_WARNING(("CacheIndex::UpdateEntry() - Entry was found neither in "
+                      "mIndex nor in mPendingUpdates!"));
           return NS_ERROR_NOT_AVAILABLE;
         }
-      } else {
-        entry = updated;
+
+        // make a copy of a read-only entry
+        updated = index->mPendingUpdates.PutEntry(*aHash);
+        *updated = *entry;
       }
-    }
 
-    MOZ_ASSERT(entry->IsFresh());
-    MOZ_ASSERT(entry->IsInitialized());
-    entry->MarkDirty();
+      MOZ_ASSERT(updated->IsFresh());
+      MOZ_ASSERT(updated->IsInitialized());
+      updated->MarkDirty();
 
-    if (aFrecency) {
-      entry->SetFrecency(*aFrecency);
-    }
+      if (aFrecency) {
+        updated->SetFrecency(*aFrecency);
+      }
 
-    if (aExpirationTime) {
-      entry->SetExpirationTime(*aExpirationTime);
-    }
+      if (aExpirationTime) {
+        updated->SetExpirationTime(*aExpirationTime);
+      }
 
-    if (aSize) {
-      entry->SetFileSize(*aSize);
+      if (aSize) {
+        updated->SetFileSize(*aSize);
+      }
     }
   }
 
@@ -1139,7 +1128,7 @@ CacheIndex::HasEntry(const nsACString &aKey, EntryStatus *_retval)
   sum.update(aKey.BeginReading(), aKey.Length());
   sum.finish(hash);
 
-  CacheIndexEntry *entry = nullptr;
+  const CacheIndexEntry *entry = nullptr;
 
   switch (index->mState) {
     case READING:
@@ -1191,6 +1180,8 @@ CacheIndex::GetEntryForEviction(SHA1Sum::Hash *aHash, uint32_t *aCnt)
   if (!index)
     return NS_ERROR_NOT_INITIALIZED;
 
+  MOZ_ASSERT(CacheFileIOManager::IsOnIOThread());
+
   CacheIndexAutoLock lock(index);
 
   if (!index->IsIndexUsable()) {
@@ -1203,28 +1194,85 @@ CacheIndex::GetEntryForEviction(SHA1Sum::Hash *aHash, uint32_t *aCnt)
   if (index->mExpirationArray.Length() == 0)
     return NS_ERROR_NOT_AVAILABLE;
 
+  SHA1Sum::Hash hash;
+  bool foundEntry = false;
+  uint32_t i = 0, j = 0;
   uint32_t now = PR_Now() / PR_USEC_PER_SEC;
-  if (index->mExpirationArray[0]->mExpirationTime < now) {
-    memcpy(aHash, &index->mExpirationArray[0]->mHash, sizeof(SHA1Sum::Hash));
-    *aCnt = index->mExpirationArray.Length();
+
+  // find the first expired, non-forced valid entry
+  for (i = 0; i < index->mExpirationArray.Length(); i++) {
+    if (index->mExpirationArray[i]->mExpirationTime < now) {
+      memcpy(&hash, &index->mExpirationArray[i]->mHash, sizeof(SHA1Sum::Hash));
+
+      if (!IsForcedValidEntry(&hash)) {
+        foundEntry = true;
+        break;
+      }
+
+    } else {
+      // all further entries have not expired yet
+      break;
+    }
+  }
+
+  if (foundEntry) {
+    *aCnt = index->mExpirationArray.Length() - i;
+
     LOG(("CacheIndex::GetEntryForEviction() - returning entry from expiration "
          "array [hash=%08x%08x%08x%08x%08x, cnt=%u, expTime=%u, now=%u, "
-         "frecency=%u]", LOGSHA1(aHash), *aCnt,
-         index->mExpirationArray[0]->mExpirationTime, now,
-         index->mExpirationArray[0]->mFrecency));
+         "frecency=%u]", LOGSHA1(&hash), *aCnt,
+         index->mExpirationArray[i]->mExpirationTime, now,
+         index->mExpirationArray[i]->mFrecency));
   }
   else {
-    memcpy(aHash, &index->mFrecencyArray[0]->mHash, sizeof(SHA1Sum::Hash));
-    *aCnt = index->mFrecencyArray.Length();
+    // check if we've already tried all the entries
+    if (i == index->mExpirationArray.Length())
+      return NS_ERROR_NOT_AVAILABLE;
+
+    // find first non-forced valid entry with the lowest frecency
+    for (j = 0; j < index->mFrecencyArray.Length(); j++) {
+      memcpy(&hash, &index->mFrecencyArray[j]->mHash, sizeof(SHA1Sum::Hash));
+
+      if (!IsForcedValidEntry(&hash)) {
+        foundEntry = true;
+        break;
+      }
+    }
+
+    if (!foundEntry)
+      return NS_ERROR_NOT_AVAILABLE;
+
+    // forced valid entries skipped in both arrays could overlap, just use max
+    *aCnt = index->mFrecencyArray.Length() - std::max(i, j);
+
     LOG(("CacheIndex::GetEntryForEviction() - returning entry from frecency "
          "array [hash=%08x%08x%08x%08x%08x, cnt=%u, expTime=%u, now=%u, "
-         "frecency=%u]", LOGSHA1(aHash), *aCnt,
-         index->mExpirationArray[0]->mExpirationTime, now,
-         index->mExpirationArray[0]->mFrecency));
+         "frecency=%u]", LOGSHA1(&hash), *aCnt,
+         index->mFrecencyArray[j]->mExpirationTime, now,
+         index->mFrecencyArray[j]->mFrecency));
   }
+
+  memcpy(aHash, &hash, sizeof(SHA1Sum::Hash));
 
   return NS_OK;
 }
+
+
+// static
+bool CacheIndex::IsForcedValidEntry(const SHA1Sum::Hash *aHash)
+{
+  nsRefPtr<CacheFileHandle> handle;
+
+  CacheFileIOManager::gInstance->mHandles.GetHandle(
+    aHash, false, getter_AddRefs(handle));
+
+  if (!handle)
+    return false;
+
+  nsCString hashKey = handle->Key();
+  return CacheStorageService::Self()->IsForcedValidEntry(hashKey);
+}
+
 
 // static
 nsresult
@@ -1245,6 +1293,139 @@ CacheIndex::GetCacheSize(uint32_t *_retval)
 
   *_retval = index->mIndexStats.Size();
   LOG(("CacheIndex::GetCacheSize() - returning %u", *_retval));
+  return NS_OK;
+}
+
+// static
+nsresult
+CacheIndex::GetCacheStats(nsILoadContextInfo *aInfo, uint32_t *aSize, uint32_t *aCount)
+{
+  LOG(("CacheIndex::GetCacheStats() [info=%p]", aInfo));
+
+  nsRefPtr<CacheIndex> index = gInstance;
+
+  if (!index) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
+
+  CacheIndexAutoLock lock(index);
+
+  if (!index->IsIndexUsable()) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+
+  if (!aInfo) {
+    return NS_ERROR_INVALID_ARG;
+  }
+
+  *aSize = 0;
+  *aCount = 0;
+
+  for (uint32_t i = 0; i < index->mFrecencyArray.Length(); ++i) {
+    CacheIndexRecord* record = index->mFrecencyArray[i];
+    if (!CacheIndexEntry::RecordMatchesLoadContextInfo(record, aInfo))
+      continue;
+
+    *aSize += CacheIndexEntry::GetFileSize(record);
+    ++*aCount;
+  }
+
+  return NS_OK;
+}
+
+// static
+nsresult
+CacheIndex::AsyncGetDiskConsumption(nsICacheStorageConsumptionObserver* aObserver)
+{
+  LOG(("CacheIndex::AsyncGetDiskConsumption()"));
+
+  nsRefPtr<CacheIndex> index = gInstance;
+
+  if (!index) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
+
+  CacheIndexAutoLock lock(index);
+
+  if (!index->IsIndexUsable()) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+
+  nsRefPtr<DiskConsumptionObserver> observer =
+    DiskConsumptionObserver::Init(aObserver);
+
+  NS_ENSURE_ARG(observer);
+
+  if (index->mState == READY || index->mState == WRITING) {
+    LOG(("CacheIndex::AsyncGetDiskConsumption - calling immediately"));
+    // Safe to call the callback under the lock,
+    // we always post to the main thread.
+    observer->OnDiskConsumption(index->mIndexStats.Size() << 10);
+    return NS_OK;
+  }
+
+  LOG(("CacheIndex::AsyncGetDiskConsumption - remembering callback"));
+  // Will be called when the index get to the READY state.
+  index->mDiskConsumptionObservers.AppendElement(observer);
+
+  return NS_OK;
+}
+
+// static
+nsresult
+CacheIndex::GetIterator(nsILoadContextInfo *aInfo, bool aAddNew,
+                        CacheIndexIterator **_retval)
+{
+  LOG(("CacheIndex::GetIterator() [info=%p, addNew=%d]", aInfo, aAddNew));
+
+  nsRefPtr<CacheIndex> index = gInstance;
+
+  if (!index) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
+
+  CacheIndexAutoLock lock(index);
+
+  if (!index->IsIndexUsable()) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+
+  nsRefPtr<CacheIndexIterator> iter;
+  if (aInfo) {
+    iter = new CacheIndexContextIterator(index, aAddNew, aInfo);
+  } else {
+    iter = new CacheIndexIterator(index, aAddNew);
+  }
+
+  iter->AddRecords(index->mFrecencyArray);
+
+  index->mIterators.AppendElement(iter);
+  iter.swap(*_retval);
+  return NS_OK;
+}
+
+// static
+nsresult
+CacheIndex::IsUpToDate(bool *_retval)
+{
+  LOG(("CacheIndex::IsUpToDate()"));
+
+  nsRefPtr<CacheIndex> index = gInstance;
+
+  if (!index) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
+
+  CacheIndexAutoLock lock(index);
+
+  if (!index->IsIndexUsable()) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+
+  *_retval = (index->mState == READY || index->mState == WRITING) &&
+             !index->mIndexNeedsUpdate && !index->mShuttingDown;
+
+  LOG(("CacheIndex::IsUpToDate() - returning %p", *_retval));
   return NS_OK;
 }
 
@@ -1332,7 +1513,7 @@ CacheIndex::ProcessPendingOperations()
 
 // static
 PLDHashOperator
-CacheIndex::UpdateEntryInIndex(CacheIndexEntry *aEntry, void* aClosure)
+CacheIndex::UpdateEntryInIndex(CacheIndexEntryUpdate *aEntry, void* aClosure)
 {
   CacheIndex *index = static_cast<CacheIndex *>(aClosure);
 
@@ -1340,7 +1521,6 @@ CacheIndex::UpdateEntryInIndex(CacheIndexEntry *aEntry, void* aClosure)
        LOGSHA1(aEntry->Hash())));
 
   MOZ_ASSERT(aEntry->IsFresh());
-  MOZ_ASSERT(aEntry->IsDirty());
 
   CacheIndexEntry *entry = index->mIndex.GetEntry(*aEntry->Hash());
 
@@ -1368,8 +1548,16 @@ CacheIndex::UpdateEntryInIndex(CacheIndexEntry *aEntry, void* aClosure)
     return PL_DHASH_REMOVE;
   }
 
-  entry = index->mIndex.PutEntry(*aEntry->Hash());
-  *entry = *aEntry;
+  if (entry) {
+    // Some information in mIndex can be newer than in mPendingUpdates (see bug
+    // 1074832). This will copy just those values that were really updated.
+    aEntry->ApplyUpdate(entry);
+  } else {
+    // There is no entry in mIndex, copy all information from mPendingUpdates
+    // to mIndex.
+    entry = index->mIndex.PutEntry(*aEntry->Hash());
+    *entry = *aEntry;
+  }
 
   return PL_DHASH_REMOVE;
 }
@@ -1672,7 +1860,7 @@ CacheIndex::RemoveIndexFromDisk()
 class WriteLogHelper
 {
 public:
-  WriteLogHelper(PRFileDesc *aFD)
+  explicit WriteLogHelper(PRFileDesc *aFD)
     : mStatus(NS_OK)
     , mFD(aFD)
     , mBufSize(kMaxBufSize)
@@ -2013,9 +2201,10 @@ CacheIndex::ParseRecords()
 
   if (pos != mRWBufPos) {
     memmove(mRWBuf, mRWBuf + pos, mRWBufPos - pos);
-    mRWBufPos -= pos;
-    pos = 0;
   }
+
+  mRWBufPos -= pos;
+  pos = 0;
 
   int64_t fileOffset = sizeof(CacheIndexHeader) +
                        mSkipEntries * sizeof(CacheIndexRecord) + mRWBufPos;
@@ -2098,7 +2287,7 @@ CacheIndex::StartReadingJournal()
 void
 CacheIndex::ParseJournal()
 {
-  LOG(("CacheIndex::ParseRecords()"));
+  LOG(("CacheIndex::ParseJournal()"));
 
   nsresult rv;
 
@@ -2134,9 +2323,10 @@ CacheIndex::ParseJournal()
 
   if (pos != mRWBufPos) {
     memmove(mRWBuf, mRWBuf + pos, mRWBufPos - pos);
-    mRWBufPos -= pos;
-    pos = 0;
   }
+
+  mRWBufPos -= pos;
+  pos = 0;
 
   int64_t fileOffset = mSkipEntries * sizeof(CacheIndexRecord) + mRWBufPos;
 
@@ -2189,7 +2379,7 @@ CacheIndex::ProcessJournalEntry(CacheIndexEntry *aEntry, void* aClosure)
 {
   CacheIndex *index = static_cast<CacheIndex *>(aClosure);
 
-  LOG(("CacheFile::ProcessJournalEntry() [hash=%08x%08x%08x%08x%08x]",
+  LOG(("CacheIndex::ProcessJournalEntry() [hash=%08x%08x%08x%08x%08x]",
        LOGSHA1(aEntry->Hash())));
 
   CacheIndexEntry *entry = index->mIndex.GetEntry(*aEntry->Hash());
@@ -2651,6 +2841,9 @@ CacheIndex::StartUpdatingIndex(bool aRebuild)
 
   uint32_t elapsed = (TimeStamp::NowLoRes() - mStartTime).ToMilliseconds();
   if (elapsed < kUpdateIndexStartDelay) {
+    LOG(("CacheIndex::StartUpdatingIndex() - %u ms elapsed since startup, "
+         "scheduling timer to fire in %u ms.", elapsed,
+         kUpdateIndexStartDelay - elapsed));
     rv = ScheduleUpdateTimer(kUpdateIndexStartDelay - elapsed);
     if (NS_SUCCEEDED(rv)) {
       return;
@@ -2658,6 +2851,9 @@ CacheIndex::StartUpdatingIndex(bool aRebuild)
 
     LOG(("CacheIndex::StartUpdatingIndex() - ScheduleUpdateTimer() failed. "
          "Starting update immediately."));
+  } else {
+    LOG(("CacheIndex::StartUpdatingIndex() - %u ms elapsed since startup, "
+         "starting update now.", elapsed));
   }
 
   nsRefPtr<CacheIOThread> ioThread = CacheFileIOManager::IOThread();
@@ -2962,6 +3158,20 @@ CacheIndex::ChangeState(EState aNewState)
   }
 
   mState = aNewState;
+
+  if (mState != SHUTDOWN) {
+    CacheFileIOManager::CacheIndexStateChanged();
+  }
+
+  if (mState == READY && mDiskConsumptionObservers.Length()) {
+    for (uint32_t i = 0; i < mDiskConsumptionObservers.Length(); ++i) {
+      DiskConsumptionObserver* o = mDiskConsumptionObservers[i];
+      // Safe to call under the lock.  We always post to the main thread.
+      o->OnDiskConsumption(mIndexStats.Size() << 10);
+    }
+
+    mDiskConsumptionObservers.Clear();
+  }
 }
 
 void
@@ -3069,6 +3279,48 @@ CacheIndex::RemoveRecordFromExpirationArray(CacheIndexRecord *aRecord)
   DebugOnly<bool> removed;
   removed = mExpirationArray.RemoveElement(aRecord);
   MOZ_ASSERT(removed);
+}
+
+void
+CacheIndex::AddRecordToIterators(CacheIndexRecord *aRecord)
+{
+  AssertOwnsLock();
+
+  for (uint32_t i = 0; i < mIterators.Length(); ++i) {
+    // Add a new record only when iterator is supposed to be updated.
+    if (mIterators[i]->ShouldBeNewAdded()) {
+      mIterators[i]->AddRecord(aRecord);
+    }
+  }
+}
+
+void
+CacheIndex::RemoveRecordFromIterators(CacheIndexRecord *aRecord)
+{
+  AssertOwnsLock();
+
+  for (uint32_t i = 0; i < mIterators.Length(); ++i) {
+    // Remove the record from iterator always, it makes no sence to return
+    // non-existing entries. Also the pointer to the record is no longer valid
+    // once the entry is removed from index.
+    mIterators[i]->RemoveRecord(aRecord);
+  }
+}
+
+void
+CacheIndex::ReplaceRecordInIterators(CacheIndexRecord *aOldRecord,
+                                     CacheIndexRecord *aNewRecord)
+{
+  AssertOwnsLock();
+
+  for (uint32_t i = 0; i < mIterators.Length(); ++i) {
+    // We have to replace the record always since the pointer is no longer
+    // valid after this point. NOTE: Replacing the record doesn't mean that
+    // a new entry was added, it just means that the data in the entry was
+    // changed (e.g. a file size) and we had to track this change in
+    // mPendingUpdates since mIndex was read-only.
+    mIterators[i]->ReplaceRecord(aOldRecord, aNewRecord);
+  }
 }
 
 nsresult
@@ -3372,18 +3624,6 @@ CacheIndex::OnFileRenamed(CacheFileHandle *aHandle, nsresult aResult)
 
 // Memory reporting
 
-namespace { // anon
-
-size_t
-CollectIndexEntryMemory(CacheIndexEntry* aEntry,
-                        mozilla::MallocSizeOf mallocSizeOf,
-                        void *arg)
-{
-  return aEntry->SizeOfExcludingThis(mallocSizeOf);
-}
-
-} // anon
-
 size_t
 CacheIndex::SizeOfExcludingThisInternal(mozilla::MallocSizeOf mallocSizeOf) const
 {
@@ -3409,14 +3649,15 @@ CacheIndex::SizeOfExcludingThisInternal(mozilla::MallocSizeOf mallocSizeOf) cons
   n += mallocSizeOf(mRWBuf);
   n += mallocSizeOf(mRWHash);
 
-  n += mIndex.SizeOfExcludingThis(&CollectIndexEntryMemory, mallocSizeOf);
-  n += mPendingUpdates.SizeOfExcludingThis(&CollectIndexEntryMemory, mallocSizeOf);
-  n += mTmpJournal.SizeOfExcludingThis(&CollectIndexEntryMemory, mallocSizeOf);
+  n += mIndex.SizeOfExcludingThis(mallocSizeOf);
+  n += mPendingUpdates.SizeOfExcludingThis(mallocSizeOf);
+  n += mTmpJournal.SizeOfExcludingThis(mallocSizeOf);
 
   // mFrecencyArray and mExpirationArray items are reported by
   // mIndex/mPendingUpdates
   n += mFrecencyArray.SizeOfExcludingThis(mallocSizeOf);
   n += mExpirationArray.SizeOfExcludingThis(mallocSizeOf);
+  n += mDiskConsumptionObservers.SizeOfExcludingThis(mallocSizeOf);
 
   return n;
 }

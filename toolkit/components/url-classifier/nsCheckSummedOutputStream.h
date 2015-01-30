@@ -12,7 +12,7 @@
 #include "nsICryptoHash.h"
 #include "nsNetCID.h"
 #include "nsString.h"
-#include "../../../netwerk/base/src/nsFileStreams.h"
+#include "../../../netwerk/base/nsFileStreams.h"
 #include "nsToolkitCompsCID.h"
 
 class nsCheckSummedOutputStream : public nsSafeFileOutputStream
@@ -24,13 +24,14 @@ public:
   static const uint32_t CHECKSUM_SIZE = 16;
 
   nsCheckSummedOutputStream() {}
-  virtual ~nsCheckSummedOutputStream() { nsSafeFileOutputStream::Close(); }
 
-  NS_IMETHOD Finish();
-  NS_IMETHOD Write(const char *buf, uint32_t count, uint32_t *result);
-  NS_IMETHOD Init(nsIFile* file, int32_t ioFlags, int32_t perm, int32_t behaviorFlags);
+  NS_IMETHOD Finish() MOZ_OVERRIDE;
+  NS_IMETHOD Write(const char *buf, uint32_t count, uint32_t *result) MOZ_OVERRIDE;
+  NS_IMETHOD Init(nsIFile* file, int32_t ioFlags, int32_t perm, int32_t behaviorFlags) MOZ_OVERRIDE;
 
 protected:
+  virtual ~nsCheckSummedOutputStream() { nsSafeFileOutputStream::Close(); }
+
   nsCOMPtr<nsICryptoHash> mHash;
   nsAutoCString mCheckSum;
 };

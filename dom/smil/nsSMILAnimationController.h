@@ -40,12 +40,11 @@ class SVGAnimationElement;
 // a compound document. These time containers can be paused individually or
 // here, at the document level.
 //
-class nsSMILAnimationController : public nsSMILTimeContainer,
-                                  public nsARefreshObserver
+class nsSMILAnimationController MOZ_FINAL : public nsSMILTimeContainer,
+                                            public nsARefreshObserver
 {
 public:
-  nsSMILAnimationController(nsIDocument* aDoc);
-  ~nsSMILAnimationController();
+  explicit nsSMILAnimationController(nsIDocument* aDoc);
 
   // Clears mDocument pointer. (Called by our nsIDocument when it's going away)
   void Disconnect();
@@ -56,8 +55,8 @@ public:
   virtual nsSMILTime GetParentTime() const MOZ_OVERRIDE;
 
   // nsARefreshObserver
-  NS_IMETHOD_(nsrefcnt) AddRef() MOZ_OVERRIDE;
-  NS_IMETHOD_(nsrefcnt) Release() MOZ_OVERRIDE;
+  NS_IMETHOD_(MozExternalRefCountType) AddRef() MOZ_OVERRIDE;
+  NS_IMETHOD_(MozExternalRefCountType) Release() MOZ_OVERRIDE;
 
   virtual void WillRefresh(mozilla::TimeStamp aTime) MOZ_OVERRIDE;
 
@@ -107,6 +106,8 @@ public:
   { return mAnimationElementTable.Count() != 0; }
 
 protected:
+  ~nsSMILAnimationController();
+
   // Typedefs
   typedef nsPtrHashKey<nsSMILTimeContainer> TimeContainerPtrKey;
   typedef nsTHashtable<TimeContainerPtrKey> TimeContainerHashtable;
@@ -213,6 +214,9 @@ protected:
   // animation element. Then we'll reset this flag and actually start sampling.
   bool                       mDeferredStartSampling;
   bool                       mRunningSample;
+
+  // Are we registered with our document's refresh driver?
+  bool                       mRegisteredWithRefreshDriver;
 
   // Store raw ptr to mDocument.  It owns the controller, so controller
   // shouldn't outlive it

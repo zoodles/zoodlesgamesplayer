@@ -16,7 +16,7 @@
 #include "mozilla/layers/CompositorTypes.h"  // for TextureInfo, etc
 #include "mozilla/layers/LayersSurfaces.h"  // for SurfaceDescriptor
 #include "mozilla/layers/LayersTypes.h"  // for LayerRenderState, etc
-#include "mozilla/layers/TextureHost.h"  // for DeprecatedTextureHost, etc
+#include "mozilla/layers/TextureHost.h"  // for TextureHost, etc
 #include "mozilla/mozalloc.h"           // for operator delete
 #include "nsCOMPtr.h"                   // for already_AddRefed
 #include "nsRect.h"                     // for nsIntRect
@@ -40,18 +40,17 @@ struct EffectChain;
 class ImageHost : public CompositableHost
 {
 public:
-  ImageHost(const TextureInfo& aTextureInfo);
+  explicit ImageHost(const TextureInfo& aTextureInfo);
   ~ImageHost();
 
-  virtual CompositableType GetType() { return mTextureInfo.mCompositableType; }
+  virtual CompositableType GetType() MOZ_OVERRIDE { return mTextureInfo.mCompositableType; }
 
   virtual void Composite(EffectChain& aEffectChain,
                          float aOpacity,
                          const gfx::Matrix4x4& aTransform,
                          const gfx::Filter& aFilter,
                          const gfx::Rect& aClipRect,
-                         const nsIntRegion* aVisibleRegion = nullptr,
-                         TiledLayerProperties* aLayerProperties = nullptr) MOZ_OVERRIDE;
+                         const nsIntRegion* aVisibleRegion = nullptr) MOZ_OVERRIDE;
 
   virtual void UseTextureHost(TextureHost* aTexture) MOZ_OVERRIDE;
 
@@ -67,108 +66,66 @@ public:
     mHasPictureRect = true;
   }
 
+  gfx::IntSize GetImageSize() const MOZ_OVERRIDE;
+
   virtual LayerRenderState GetRenderState() MOZ_OVERRIDE;
 
-  virtual void PrintInfo(nsACString& aTo, const char* aPrefix);
+  virtual void PrintInfo(std::stringstream& aStream, const char* aPrefix) MOZ_OVERRIDE;
 
-#ifdef MOZ_DUMP_PAINTING
-  virtual void Dump(FILE* aFile = nullptr,
+  virtual void Dump(std::stringstream& aStream,
                     const char* aPrefix = "",
                     bool aDumpHtml = false) MOZ_OVERRIDE;
 
   virtual TemporaryRef<gfx::DataSourceSurface> GetAsSurface() MOZ_OVERRIDE;
-#endif
+
+  virtual bool Lock() MOZ_OVERRIDE;
+
+  virtual void Unlock() MOZ_OVERRIDE;
+
+  virtual TemporaryRef<TexturedEffect> GenEffect(const gfx::Filter& aFilter) MOZ_OVERRIDE;
 
 protected:
 
-  RefPtr<TextureHost> mFrontBuffer;
+  CompositableTextureHostRef mFrontBuffer;
+  CompositableTextureSourceRef mTextureSource;
   nsIntRect mPictureRect;
   bool mHasPictureRect;
+  bool mLocked;
 };
 
-// ImageHost with a single DeprecatedTextureHost
-class DeprecatedImageHostSingle : public CompositableHost
-{
+#ifdef MOZ_WIDGET_GONK
+
+/**
+ * ImageHostOverlay works with ImageClientOverlay
+ */
+class ImageHostOverlay : public CompositableHost {
 public:
-  DeprecatedImageHostSingle(const TextureInfo& aTextureInfo)
-    : CompositableHost(aTextureInfo)
-    , mDeprecatedTextureHost(nullptr)
-    , mHasPictureRect(false)
-  {}
+  ImageHostOverlay(const TextureInfo& aTextureInfo);
+  ~ImageHostOverlay();
 
   virtual CompositableType GetType() { return mTextureInfo.mCompositableType; }
-
-  virtual void EnsureDeprecatedTextureHost(TextureIdentifier aTextureId,
-                                 const SurfaceDescriptor& aSurface,
-                                 ISurfaceAllocator* aAllocator,
-                                 const TextureInfo& aTextureInfo) MOZ_OVERRIDE;
-
-  DeprecatedTextureHost* GetDeprecatedTextureHost() MOZ_OVERRIDE { return mDeprecatedTextureHost; }
 
   virtual void Composite(EffectChain& aEffectChain,
                          float aOpacity,
                          const gfx::Matrix4x4& aTransform,
                          const gfx::Filter& aFilter,
                          const gfx::Rect& aClipRect,
-                         const nsIntRegion* aVisibleRegion = nullptr,
-                         TiledLayerProperties* aLayerProperties = nullptr);
-
-  virtual bool Update(const SurfaceDescriptor& aImage,
-                      SurfaceDescriptor* aResult = nullptr) MOZ_OVERRIDE
-  {
-    return CompositableHost::Update(aImage, aResult);
-  }
-
+                         const nsIntRegion* aVisibleRegion = nullptr) MOZ_OVERRIDE;
+  virtual LayerRenderState GetRenderState() MOZ_OVERRIDE;
+  virtual void UseOverlaySource(OverlaySource aOverlay) MOZ_OVERRIDE;
   virtual void SetPictureRect(const nsIntRect& aPictureRect) MOZ_OVERRIDE
   {
     mPictureRect = aPictureRect;
     mHasPictureRect = true;
   }
-
-  virtual LayerRenderState GetRenderState() MOZ_OVERRIDE;
-
-  virtual void SetCompositor(Compositor* aCompositor) MOZ_OVERRIDE;
-
-  virtual void PrintInfo(nsACString& aTo, const char* aPrefix);
-
-#ifdef MOZ_DUMP_PAINTING
-  virtual void Dump(FILE* aFile=nullptr,
-                    const char* aPrefix="",
-                    bool aDumpHtml=false) MOZ_OVERRIDE;
-
-  virtual TemporaryRef<gfx::DataSourceSurface> GetAsSurface() MOZ_OVERRIDE;
-#endif
-
+  virtual void PrintInfo(std::stringstream& aStream, const char* aPrefix);
 protected:
-  virtual void MakeDeprecatedTextureHost(TextureIdentifier aTextureId,
-                               const SurfaceDescriptor& aSurface,
-                               ISurfaceAllocator* aAllocator,
-                               const TextureInfo& aTextureInfo);
-
-  RefPtr<DeprecatedTextureHost> mDeprecatedTextureHost;
   nsIntRect mPictureRect;
   bool mHasPictureRect;
+  OverlaySource mOverlay;
 };
 
-// Double buffered ImageHost. We have a single TextureHost and double buffering
-// is done at the TextureHost/Client level. This is in contrast with buffered
-// ContentHosts which do their own double buffering 
-class DeprecatedImageHostBuffered : public DeprecatedImageHostSingle
-{
-public:
-  DeprecatedImageHostBuffered(const TextureInfo& aTextureInfo)
-    : DeprecatedImageHostSingle(aTextureInfo)
-  {}
-
-  virtual bool Update(const SurfaceDescriptor& aImage,
-                      SurfaceDescriptor* aResult = nullptr) MOZ_OVERRIDE;
-
-protected:
-  virtual void MakeDeprecatedTextureHost(TextureIdentifier aTextureId,
-                               const SurfaceDescriptor& aSurface,
-                               ISurfaceAllocator* aAllocator,
-                               const TextureInfo& aTextureInfo) MOZ_OVERRIDE;
-};
+#endif
 
 }
 }

@@ -11,14 +11,14 @@
 class nsMathMLSelectedFrame : public nsMathMLContainerFrame {
 public:
   virtual void
-  Init(nsIContent*      aContent,
-       nsIFrame*        aParent,
-       nsIFrame*        aPrevInFlow) MOZ_OVERRIDE;
+  Init(nsIContent*       aContent,
+       nsContainerFrame* aParent,
+       nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
 
   NS_IMETHOD
   TransmitAutomaticData() MOZ_OVERRIDE;
 
-  virtual nsresult
+  virtual void
   SetInitialChildList(ChildListID     aListID,
                       nsFrameList&    aChildList) MOZ_OVERRIDE;
 
@@ -34,16 +34,16 @@ public:
         bool                 aPlaceOrigin,
         nsHTMLReflowMetrics& aDesiredSize) MOZ_OVERRIDE;
 
-  virtual nsresult
+  virtual void
   Reflow(nsPresContext*          aPresContext,
          nsHTMLReflowMetrics&     aDesiredSize,
          const nsHTMLReflowState& aReflowState,
          nsReflowStatus&          aStatus) MOZ_OVERRIDE;
 
-  virtual nsQueryFrame::FrameIID GetFrameId() = 0;
+  virtual nsQueryFrame::FrameIID GetFrameId() MOZ_OVERRIDE = 0;
 
 protected:
-  nsMathMLSelectedFrame(nsStyleContext* aContext) :
+  explicit nsMathMLSelectedFrame(nsStyleContext* aContext) :
     nsMathMLContainerFrame(aContext) {}
   virtual ~nsMathMLSelectedFrame();
   
@@ -53,7 +53,7 @@ protected:
   bool            mInvalidMarkup;
   
 private:
-  void* operator new(size_t, nsIPresShell*) MOZ_MUST_OVERRIDE MOZ_DELETE;
+  void* operator new(size_t, nsIPresShell*) MOZ_MUST_OVERRIDE = delete;
 };
 
 #endif /* nsMathMLSelectedFrame_h___ */
