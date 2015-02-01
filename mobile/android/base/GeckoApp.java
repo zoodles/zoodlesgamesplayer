@@ -1441,7 +1441,6 @@ public abstract class GeckoApp
             GeckoAppShell.notifyIMEContext(GeckoEditableListener.IME_STATE_DISABLED, "", "", "");
         }
 
-		setFullScreen(true);
 		z_back_bar = findViewById(R.id.z_back_bar);
 		z_back_bar.setOnClickListener(new View.OnClickListener() {
 			@Override
@@ -1925,6 +1924,7 @@ public abstract class GeckoApp
     @Override
     public void onResume()
     {
+		setFullScreen(true);
         // After an onPause, the activity is back in the foreground.
         // Undo whatever we did in onPause.
         super.onResume();

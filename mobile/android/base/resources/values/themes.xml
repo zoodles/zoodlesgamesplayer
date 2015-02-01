@@ -84,6 +84,7 @@
 
     <!-- All customizations that are NOT specific to a particular API-level can go here. -->
     <style name="Gecko.App" parent="GeckoAppBase">
+        <item name="android:windowFullscreen">true</item>
         <item name="android:gridViewStyle">@style/Widget.GridView</item>
         <item name="android:spinnerStyle">@style/Widget.Spinner</item>
         <item name="android:windowBackground">@android:color/white</item>
