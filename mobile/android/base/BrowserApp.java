@@ -737,11 +737,11 @@ public class BrowserApp extends GeckoApp
         super.onBackPressed();
     }
 
-    @Override
-    public void onAttachedToWindow() {
-        // We can't show the first run experience until Gecko has finished initialization (bug 1077583).
-        checkStartPane(this, new SafeIntent(getIntent()));
-    }
+//    @Override
+//    public void onAttachedToWindow() {
+//        // We can't show the first run experience until Gecko has finished initialization (bug 1077583).
+//        checkStartPane(this, new SafeIntent(getIntent()));
+//    }
 
     @Override
     public void onResume() {
