@@ -112,7 +112,7 @@ public class GeckoActivity extends FragmentActivity implements GeckoActivityStat
 		if(isKidModeRunning()) {
 			Intent intent = getIntent();
 			String action = intent.getAction();
-			if (intent == null || !GeckoApp.ACTION_OPEN_NORMAL_PAGE.equalsIgnoreCase(action)) {
+			if (intent == null || !GeckoApp.ACTION_VIEW_WEBSITE_FROM_ZOODLES.equalsIgnoreCase(action)) {
 				closeStatusBar(this);
 			}
 		}

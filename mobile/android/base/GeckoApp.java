@@ -148,7 +148,6 @@ public abstract class GeckoApp
 
 	private static final String LOGTAG = "GeckoApp";
 	private static final int ONE_DAY_MS = 1000*60*60*24;
-	public static final String ACTION_OPEN_NORMAL_PAGE = "com.zoodles.action.VIEW_WEBSITE_FROM_ZOODLES";
 	private View z_back_bar;
 
     private static final boolean ZOOMED_VIEW_ENABLED = AppConstants.NIGHTLY_BUILD;
@@ -159,12 +158,14 @@ public abstract class GeckoApp
         PREFETCH    /* launched with a passed URL that we prefetch */
     }
 
-    public static final String ACTION_ALERT_CALLBACK       = "org.mozilla.gecko.ACTION_ALERT_CALLBACK";
-    public static final String ACTION_HOMESCREEN_SHORTCUT  = "org.mozilla.gecko.BOOKMARK";
-    public static final String ACTION_DEBUG                = "org.mozilla.gecko.DEBUG";
-    public static final String ACTION_LAUNCH_SETTINGS      = "org.mozilla.gecko.SETTINGS";
-    public static final String ACTION_LOAD                 = "org.mozilla.gecko.LOAD";
-    public static final String ACTION_INIT_PW              = "org.mozilla.gecko.INIT_PW";
+    public static final String ACTION_ALERT_CALLBACK            = "org.mozilla.gecko.ACTION_ALERT_CALLBACK";
+    public static final String ACTION_HOMESCREEN_SHORTCUT       = "org.mozilla.gecko.BOOKMARK";
+    public static final String ACTION_DEBUG                     = "org.mozilla.gecko.DEBUG";
+    public static final String ACTION_LAUNCH_SETTINGS           = "org.mozilla.gecko.SETTINGS";
+    public static final String ACTION_LOAD                      = "org.mozilla.gecko.LOAD";
+    public static final String ACTION_INIT_PW                   = "org.mozilla.gecko.INIT_PW";
+	public static final String ACTION_VIEW_WEBSITE_FROM_ZOODLES = "com.zoodles.action.VIEW_WEBSITE_FROM_ZOODLES";
+	public static final String ACTION_VIEW_FLASH_FROM_ZOODLES   = "com.zoodles.action.VIEW_FLASH";
 
     public static final String EXTRA_STATE_BUNDLE          = "stateBundle";
 
@@ -1461,8 +1462,8 @@ public abstract class GeckoApp
      */
     protected void loadStartupTab(String url, int flags) {
         if (url == null) {
+			z_back_bar.setVisibility(View.GONE);
             if (!mShouldRestore) {
-				z_back_bar.setVisibility(View.GONE);
                 // Show about:home if we aren't restoring previous session and
                 // there's no external URL.
                 Tabs.getInstance().loadUrl(AboutPages.UPDATER, flags);
@@ -1539,10 +1540,10 @@ public abstract class GeckoApp
             }
 
 			if (passedUri != null) {
-				if(ACTION_OPEN_NORMAL_PAGE.equalsIgnoreCase(action)) {
-					z_back_bar.setVisibility(View.GONE);
-				} else {
+				if (ACTION_VIEW_FLASH_FROM_ZOODLES.equalsIgnoreCase(action)) {
 					z_back_bar.setVisibility(View.VISIBLE);
+				} else {
+					z_back_bar.setVisibility(View.GONE);
 				}
 			}
 
@@ -1876,10 +1877,18 @@ public abstract class GeckoApp
         }
 
         final String action = intent.getAction();
+        z_back_bar.setVisibility(View.GONE);
 
-        if (ACTION_LOAD.equals(action)) {
+        if (ACTION_LOAD.equals(action) || ACTION_VIEW_FLASH_FROM_ZOODLES.equals(action) || ACTION_VIEW_WEBSITE_FROM_ZOODLES.equals(action)) {
+        	// Load a blank page to clear the previous page
+        	Tabs.getInstance().loadUrl("about:blank");
+        	
             String uri = intent.getDataString();
             Tabs.getInstance().loadUrl(uri);
+            
+			if(uri != null && ACTION_VIEW_FLASH_FROM_ZOODLES.equals(action)) {
+				z_back_bar.setVisibility(View.VISIBLE);
+			}
         } else if (Intent.ACTION_VIEW.equals(action)) {
             String uri = intent.getDataString();
             Tabs.getInstance().loadUrl(uri, Tabs.LOADURL_NEW_TAB |
