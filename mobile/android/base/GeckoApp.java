@@ -149,6 +149,7 @@ public abstract class GeckoApp
 	private static final String LOGTAG = "GeckoApp";
 	private static final int ONE_DAY_MS = 1000*60*60*24;
 	private View z_back_bar;
+	private Intent mNewIntent;
 
     private static final boolean ZOOMED_VIEW_ENABLED = AppConstants.NIGHTLY_BUILD;
 
@@ -1860,6 +1861,7 @@ public abstract class GeckoApp
 
     @Override
     protected void onNewIntent(Intent externalIntent) {
+    	mNewIntent = externalIntent;
         final SafeIntent intent = new SafeIntent(externalIntent);
 
         if (GeckoThread.checkLaunchState(GeckoThread.LaunchState.GeckoExiting)) {
@@ -2307,13 +2309,23 @@ public abstract class GeckoApp
 
 	@Override
 	public void onBackPressed() {
-		Tab selectedTab = Tabs.getInstance().getSelectedTab();
-		Log.v("Cuong", "Selected tab " + selectedTab + ":" + selectedTab.canDoBack());
-		if (selectedTab != null && selectedTab.canDoBack()) {
-			selectedTab.doBack();
-		} else {
-			GeckoAppShell.systemExit();
-		}
+		// Get the latest intent that launched this activity
+		Intent latestIntent;
+		latestIntent = (mNewIntent != null) ? mNewIntent : getIntent();
+        String action = new SafeIntent(latestIntent).getAction();
+		
+        if (ACTION_VIEW_FLASH_FROM_ZOODLES.equals(action) || ACTION_VIEW_WEBSITE_FROM_ZOODLES.equals(action)) {
+        	// Disable the BACK button
+        } else {
+    		Tab selectedTab = Tabs.getInstance().getSelectedTab();
+    		Log.v("Cuong", "Selected tab " + selectedTab + ":" + selectedTab.canDoBack());
+    		
+    		if (selectedTab != null && selectedTab.canDoBack()) {
+    			selectedTab.doBack();
+    		} else {
+    			GeckoAppShell.systemExit();
+    		}
+        }
 	}
 
     @Override

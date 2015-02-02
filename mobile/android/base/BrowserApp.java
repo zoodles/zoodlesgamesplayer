@@ -732,10 +732,10 @@ public class BrowserApp extends GeckoApp
         return null;
     }
 
-    @Override
-    public void onBackPressed() {
-        super.onBackPressed();
-    }
+//    @Override
+//    public void onBackPressed() {
+//        super.onBackPressed();
+//    }
 
 //    @Override
 //    public void onAttachedToWindow() {
