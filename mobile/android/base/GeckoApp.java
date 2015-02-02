@@ -1446,7 +1446,7 @@ public abstract class GeckoApp
 		z_back_bar.setOnClickListener(new View.OnClickListener() {
 			@Override
 			public void onClick(View view) {
-				onBackPressed();
+				GeckoAppShell.systemExit();
 			}
 		});
     }
