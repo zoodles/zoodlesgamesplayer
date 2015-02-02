@@ -150,6 +150,10 @@ public abstract class GeckoApp
 	private static final int ONE_DAY_MS = 1000*60*60*24;
 	private View z_back_bar;
 	private Intent mNewIntent;
+	private final String[] mExceptionList = new String[] {
+			"http://www.pollypocket.com/images/en_US/media-test/games/best-vacation-adventure-ever/index_tm.swf",
+			"http://thisisemilyyeung.treehousetv.com/index.swf"
+	};
 
     private static final boolean ZOOMED_VIEW_ENABLED = AppConstants.NIGHTLY_BUILD;
 
@@ -242,6 +246,19 @@ public abstract class GeckoApp
         }
     }
 
+    private boolean IsUrlInTheExceptionList(String url) {
+    	if (url == null) {
+    		return false;
+    	}
+    	
+		for (int i = 0; i < mExceptionList.length; ++i) {
+			if (mExceptionList[i].equals(url)) {
+				return true;
+			}
+		}
+		return false;
+    }
+    
     void toggleChrome(final boolean aShow) { }
 
     void focusChrome() { }
@@ -1548,7 +1565,18 @@ public abstract class GeckoApp
 				}
 			}
 
-            loadStartupTab(passedUri, flags);
+			if (!IsUrlInTheExceptionList(passedUri)) {
+				loadStartupTab(passedUri, flags);
+			} else {
+				final int f = flags;
+				new Handler().postDelayed(new Runnable() {
+					@Override
+					public void run() {
+						loadStartupTab(passedUri, f);
+					}
+				}, 1800);
+			}
+            
         } else {
             if (!mIsRestoringActivity) {
                 loadStartupTab(null, Tabs.LOADURL_NEW_TAB);
