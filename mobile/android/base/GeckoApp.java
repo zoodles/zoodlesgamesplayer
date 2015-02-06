@@ -5,29 +5,57 @@
 
 package org.mozilla.gecko;
 
-import java.io.BufferedOutputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.app.Dialog;
+import android.content.Context;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager.NameNotFoundException;
+import android.content.res.Configuration;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.RectF;
+import android.graphics.drawable.Drawable;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.location.Location;
+import android.location.LocationListener;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Environment;
+import android.os.Handler;
+import android.os.PowerManager;
+import android.os.StrictMode;
+import android.provider.ContactsContract;
+import android.provider.MediaStore.Images.Media;
+import android.text.TextUtils;
+import android.util.AttributeSet;
+import android.util.Base64;
+import android.util.Log;
+import android.util.SparseBooleanArray;
+import android.view.Gravity;
+import android.view.KeyEvent;
+import android.view.Menu;
+import android.view.MenuInflater;
+import android.view.MenuItem;
+import android.view.MotionEvent;
+import android.view.OrientationEventListener;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.ViewStub;
+import android.view.Window;
+import android.widget.AbsoluteLayout;
+import android.widget.FrameLayout;
+import android.widget.ListView;
+import android.widget.RelativeLayout;
+import android.widget.SimpleAdapter;
+import android.widget.TextView;
+import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -69,69 +97,20 @@ import org.mozilla.gecko.webapp.EventListener;
 import org.mozilla.gecko.webapp.UninstallListener;
 import org.mozilla.gecko.widget.ButtonToast;
 
-import android.app.Activity;
-import android.app.AlertDialog;
-import android.app.Dialog;
-import android.content.Context;
-import android.content.DialogInterface;
-import android.content.Intent;
-import android.content.SharedPreferences;
-import android.content.pm.PackageManager.NameNotFoundException;
-import android.content.res.Configuration;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
-import android.graphics.RectF;
-import android.graphics.drawable.Drawable;
-import android.hardware.Sensor;
-import android.hardware.SensorEvent;
-import android.hardware.SensorEventListener;
-import android.location.Location;
-import android.location.LocationListener;
-import android.net.Uri;
-import android.net.wifi.ScanResult;
-import android.net.wifi.WifiManager;
-import android.os.Build;
-import android.os.Bundle;
-import android.os.Environment;
-import android.os.Handler;
-import android.os.PowerManager;
-import android.os.StrictMode;
-import android.preference.PreferenceManager;
-import android.provider.ContactsContract;
-import android.provider.MediaStore.Images.Media;
-import android.telephony.CellLocation;
-import android.telephony.NeighboringCellInfo;
-import android.telephony.PhoneStateListener;
-import android.telephony.SignalStrength;
-import android.telephony.TelephonyManager;
-import android.telephony.gsm.GsmCellLocation;
-import android.text.TextUtils;
-import android.util.AttributeSet;
-import android.util.Base64;
-import android.util.Log;
-import android.util.SparseBooleanArray;
-import android.view.Gravity;
-import android.view.KeyEvent;
-import android.view.Menu;
-import android.view.MenuInflater;
-import android.view.MenuItem;
-import android.view.MotionEvent;
-import android.view.OrientationEventListener;
-import android.view.SurfaceHolder;
-import android.view.SurfaceView;
-import android.view.TextureView;
-import android.view.View;
-import android.view.ViewGroup;
-import android.view.ViewStub;
-import android.view.Window;
-import android.view.WindowManager;
-import android.widget.AbsoluteLayout;
-import android.widget.FrameLayout;
-import android.widget.ListView;
-import android.widget.RelativeLayout;
-import android.widget.SimpleAdapter;
-import android.widget.TextView;
-import android.widget.Toast;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 public abstract class GeckoApp
     extends GeckoActivity
@@ -150,10 +129,8 @@ public abstract class GeckoApp
 	private static final int ONE_DAY_MS = 1000*60*60*24;
 	private View z_back_bar;
 	private Intent mNewIntent;
-	private final String[] mExceptionList = new String[] {
-			"http://www.pollypocket.com/images/en_US/media-test/games/best-vacation-adventure-ever/index_tm.swf",
-			"http://thisisemilyyeung.treehousetv.com/index.swf"
-	};
+    private String tmpUrl;
+    private int tmpFlags;
 
     private static final boolean ZOOMED_VIEW_ENABLED = AppConstants.NIGHTLY_BUILD;
 
@@ -244,19 +221,6 @@ public abstract class GeckoApp
         public SessionRestoreException(String message) {
             super(message);
         }
-    }
-
-    private boolean IsUrlInTheExceptionList(String url) {
-    	if (url == null) {
-    		return false;
-    	}
-    	
-		for (int i = 0; i < mExceptionList.length; ++i) {
-			if (mExceptionList[i].equals(url)) {
-				return true;
-			}
-		}
-		return false;
     }
     
     void toggleChrome(final boolean aShow) { }
@@ -736,6 +700,9 @@ public abstract class GeckoApp
                 final HealthRecorder rec = mHealthRecorder;
                 if (rec != null) {
                   rec.recordGeckoStartupTime(mGeckoReadyStartupTimer.getElapsed());
+                }
+                if (tmpUrl != null) {
+                    Tabs.getInstance().loadUrl(tmpUrl, tmpFlags);
                 }
             } else if ("NativeApp:IsDebuggable".equals(event)) {
                 JSONObject ret = new JSONObject();
@@ -1557,26 +1524,23 @@ public abstract class GeckoApp
                 flags |= Tabs.LOADURL_PINNED;
             }
 
-			if (passedUri != null) {
-				if (ACTION_VIEW_FLASH_FROM_ZOODLES.equalsIgnoreCase(action)) {
-					z_back_bar.setVisibility(View.VISIBLE);
-				} else {
-					z_back_bar.setVisibility(View.GONE);
-				}
-			}
+            // passedUri must NOT be null, up to this point
+            if (ACTION_VIEW_FLASH_FROM_ZOODLES.equalsIgnoreCase(action)) {
+                z_back_bar.setVisibility(View.VISIBLE);
+            } else {
+                z_back_bar.setVisibility(View.GONE);
+            }
 
-			if (!IsUrlInTheExceptionList(passedUri)) {
-				loadStartupTab(passedUri, flags);
-			} else {
-				final int f = flags;
-				new Handler().postDelayed(new Runnable() {
-					@Override
-					public void run() {
-						loadStartupTab(passedUri, f);
-					}
-				}, 1800);
-			}
-            
+            if (!passedUri.endsWith("swf")) {
+                Tabs.getInstance().loadUrl(passedUri, flags);
+                tmpUrl = null;
+            } else {
+                // In case of flash url,
+                // let's wait for Gecko to finalize its initialization, then load the url
+                tmpUrl = passedUri;
+                tmpFlags = flags;
+            }
+
         } else {
             if (!mIsRestoringActivity) {
                 loadStartupTab(null, Tabs.LOADURL_NEW_TAB);
