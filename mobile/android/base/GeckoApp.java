@@ -1144,7 +1144,8 @@ public abstract class GeckoApp
 
         // Enable Android Strict Mode for developers' local builds (the "default" channel).
         if ("default".equals(AppConstants.MOZ_UPDATE_CHANNEL)) {
-            enableStrictMode();
+            // In Zoodles Games Player, we don't enable StrictMode. No matter what type the build is
+            /* enableStrictMode(); */
         }
 
         // The clock starts...now. Better hurry!
