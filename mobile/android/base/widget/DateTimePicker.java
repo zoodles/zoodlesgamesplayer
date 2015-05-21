@@ -394,13 +394,13 @@ public class DateTimePicker extends FrameLayout {
         final int spinnerCount = order.length;
         for (int i = 0; i < spinnerCount; i++) {
             switch (order[i]) {
-                case DateFormat.DATE:
+                case 'd':
                     mDateSpinners.addView(mDaySpinner);
                     break;
-                case DateFormat.MONTH:
+                case 'M':
                     mDateSpinners.addView(mMonthSpinner);
                     break;
-                case DateFormat.YEAR:
+                case 'y':
                     mDateSpinners.addView(mYearSpinner);
                     break;
                 default:
